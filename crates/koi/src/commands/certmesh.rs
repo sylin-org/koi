@@ -7,16 +7,55 @@
 
 use std::sync::Arc;
 
-use koi_certmesh::entropy;
 use koi_certmesh::profiles::preset_bools;
+use koi_certmesh::protocol::{
+    AcceptPromotionResponse, AuditLogResponse, BackupResponse, CreateCaResponse, DestroyResponse,
+    EnrollmentState, EnrollmentSummary, InstallCertResponse, InviteResponse, JoinResponse,
+    RenewSelfResponse, RestoreResponse, RevokeResponse, RotateAuthResponse, SetHookResponse,
+    UnlockResponse,
+};
+use koi_certmesh::{
+    entropy, CertmeshBootstrapStatus, CertmeshRole, CertmeshStatus, IdentityCondition,
+};
 use koi_common::encoding::{hex_decode, hex_encode};
+use koi_common::types::{ServiceRecord, ServiceType};
 use koi_mdns::events::MdnsEvent;
+use koi_mdns::BrowseRecvError;
 
 use crate::client::KoiClient;
+use crate::commands::decode_response;
 use crate::format;
 
 /// mDNS discovery timeout for finding a CA on the local network.
 const CA_DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn fetch_certmesh_status(client: &KoiClient) -> anyhow::Result<CertmeshStatus> {
+    serde_json::from_value(client.certmesh_status()?)
+        .map_err(|error| anyhow::anyhow!("daemon returned an invalid Certmesh status: {error}"))
+}
+
+fn fetch_certmesh_bootstrap(client: &KoiClient) -> anyhow::Result<CertmeshBootstrapStatus> {
+    serde_json::from_value(client.certmesh_bootstrap()?)
+        .map_err(|error| anyhow::anyhow!("authority returned an invalid bootstrap status: {error}"))
+}
+
+const fn role_label(role: CertmeshRole) -> &'static str {
+    match role {
+        CertmeshRole::Open => "open",
+        CertmeshRole::Member => "member",
+        CertmeshRole::Authority => "authority",
+    }
+}
+
+const fn identity_label(condition: IdentityCondition) -> &'static str {
+    match condition {
+        IdentityCondition::Absent => "absent",
+        IdentityCondition::Healthy => "healthy",
+        IdentityCondition::Expired => "expired",
+        IdentityCondition::Invalid => "invalid",
+        IdentityCondition::Revoked => "revoked",
+    }
+}
 
 // ── Color helpers ────────────────────────────────────────────────────
 //
@@ -95,6 +134,77 @@ fn require_daemon(
     crate::commands::require_client(endpoint, explicit_token)
 }
 
+fn require_non_empty<'a>(value: &'a str, field: &str, operation: &str) -> anyhow::Result<&'a str> {
+    if value.trim().is_empty() {
+        anyhow::bail!("daemon returned an invalid {operation} response: '{field}' is empty");
+    }
+    Ok(value)
+}
+
+fn local_hostname(operation: &str) -> anyhow::Result<String> {
+    koi_compose::host::HostIdentity::observe()
+        .map(|identity| identity.hostname().to_string())
+        .map_err(|error| {
+            anyhow::anyhow!("cannot determine the local hostname for {operation}: {error}")
+        })
+}
+
+fn local_fqdn(operation: &str) -> anyhow::Result<String> {
+    koi_compose::host::HostIdentity::observe()
+        .map(|identity| identity.local_fqdn().to_string())
+        .map_err(|error| {
+            anyhow::anyhow!("cannot determine the local hostname for {operation}: {error}")
+        })
+}
+
+fn local_certificate_path(
+    endpoint: Option<&str>,
+    data_root: &std::path::Path,
+    hostname: &str,
+) -> Option<std::path::PathBuf> {
+    endpoint.is_none().then(|| {
+        koi_certmesh::CertmeshPaths::with_data_dir(data_root.to_path_buf())
+            .certs_dir()
+            .join(hostname)
+    })
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct CeremonyCreateResult {
+    passphrase: String,
+    #[serde(rename = "_entropy_seed")]
+    entropy_hex: String,
+    #[serde(default)]
+    operator: Option<String>,
+    #[serde(rename = "_enrollment_open")]
+    enrollment_open: bool,
+    #[serde(rename = "_requires_approval")]
+    requires_approval: bool,
+    #[serde(rename = "_auto_unlock")]
+    auto_unlock: bool,
+    #[serde(rename = "_effective_profile")]
+    effective_profile: String,
+    #[serde(rename = "_totp_secret_hex", default)]
+    totp_secret_hex: Option<String>,
+}
+
+fn decode_create_ceremony_result(
+    result: serde_json::Map<String, serde_json::Value>,
+) -> anyhow::Result<CeremonyCreateResult> {
+    let result: CeremonyCreateResult = serde_json::from_value(serde_json::Value::Object(result))
+        .map_err(|error| anyhow::anyhow!("init ceremony returned invalid result data: {error}"))?;
+    for (value, field) in [
+        (result.passphrase.as_str(), "passphrase"),
+        (result.entropy_hex.as_str(), "_entropy_seed"),
+        (result.effective_profile.as_str(), "_effective_profile"),
+    ] {
+        if value.trim().is_empty() {
+            anyhow::bail!("init ceremony returned invalid result data: '{field}' is empty");
+        }
+    }
+    Ok(result)
+}
+
 // ── Create ──────────────────────────────────────────────────────────
 
 // `create` mirrors the clap `Create` subcommand's flags one-to-one plus the
@@ -110,6 +220,7 @@ pub fn create(
     json: bool,
     endpoint: Option<&str>,
     token: Option<&str>,
+    data_root: &std::path::Path,
 ) -> anyhow::Result<()> {
     let client = require_daemon(endpoint, token)?;
     if preflight_ca_exists(&client)? {
@@ -147,11 +258,15 @@ pub fn create(
             "requires_approval": requires_approval,
             "auto_unlock": preset_auto_unlock,
         });
-        let resp = client.post_json("/v1/certmesh/create", &body)?;
-        let ca_fingerprint = resp
-            .get("ca_fingerprint")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
+        let response: CreateCaResponse = decode_response(
+            client.post_json("/v1/certmesh/create", &body)?,
+            "Certmesh create",
+        )?;
+        let ca_fingerprint = require_non_empty(
+            &response.ca_fingerprint,
+            "ca_fingerprint",
+            "Certmesh create",
+        )?;
         println!(
             "{}",
             serde_json::json!({
@@ -172,12 +287,10 @@ pub fn create(
     use koi_certmesh::init_ceremony::InitCeremonyRules;
     use koi_common::ceremony::CeremonyHost;
 
-    // CLI composition root: resolve the local data dir once for the ceremony
-    // (the unlock ceremony reads the slot table from it).
-    #[allow(clippy::disallowed_methods)]
-    let ceremony_paths =
-        koi_certmesh::CertmeshPaths::with_data_dir(koi_common::paths::koi_data_dir());
-    let host = CeremonyHost::new(InitCeremonyRules::new(ceremony_paths.clone()));
+    // Initialization is pure input orchestration. In particular, an explicit
+    // remote endpoint must never inspect this machine's unlock slots or data
+    // root while collecting the remote authority's create request.
+    let host = CeremonyHost::new(InitCeremonyRules::for_init());
 
     // Pre-fill initial data from CLI flags
     let mut initial_data = serde_json::Map::new();
@@ -200,41 +313,42 @@ pub fn create(
         );
     }
     // Provide hostname so TOTP URI is personalized
-    let hostname = hostname::get()
-        .map(|h| h.to_string_lossy().to_string())
-        .unwrap_or_else(|_| "localhost".to_string());
+    let hostname = local_hostname("Certmesh initialization")?;
     initial_data.insert("_self_hostname".into(), serde_json::json!(hostname));
 
-    let result_bag = super::ceremony_cli::run_ceremony(&host, "init", initial_data)?;
+    let result_bag = decode_create_ceremony_result(super::ceremony_cli::run_ceremony(
+        &host,
+        "init",
+        initial_data,
+    )?)?;
 
     // ── Map ceremony result → certmesh create API body ─────────────
     //
     // The ceremony already resolved the chosen preset (or custom answers) to
     // the three booleans. We forward those verbatim — the preset name survives
     // only as the display label `_effective_profile`.
-    let effective_profile = result_bag
-        .get("_effective_profile")
-        .and_then(|v| v.as_str())
-        .unwrap_or("Just Me")
-        .to_string();
+    let effective_profile = result_bag.effective_profile.clone();
 
     let body = serde_json::json!({
-        "passphrase": result_bag.get("passphrase").and_then(|v| v.as_str()).unwrap_or(""),
-        "entropy_hex": result_bag.get("_entropy_seed").and_then(|v| v.as_str()).unwrap_or(""),
-        "operator": result_bag.get("operator").and_then(|v| v.as_str()),
-        "enrollment_open": result_bag.get("_enrollment_open").and_then(|v| v.as_bool()).unwrap_or(true),
-        "requires_approval": result_bag.get("_requires_approval").and_then(|v| v.as_bool()).unwrap_or(false),
-        "auto_unlock": result_bag.get("_auto_unlock").and_then(|v| v.as_bool()).unwrap_or(false),
-        "totp_secret_hex": result_bag.get("_totp_secret_hex").and_then(|v| v.as_str()),
+        "passphrase": result_bag.passphrase,
+        "entropy_hex": result_bag.entropy_hex,
+        "operator": result_bag.operator,
+        "enrollment_open": result_bag.enrollment_open,
+        "requires_approval": result_bag.requires_approval,
+        "auto_unlock": result_bag.auto_unlock,
+        "totp_secret_hex": result_bag.totp_secret_hex,
     });
 
     println!("\n  Creating certificate mesh...\n");
-    let resp = client.post_json("/v1/certmesh/create", &body)?;
-
-    let ca_fingerprint = resp
-        .get("ca_fingerprint")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
+    let response: CreateCaResponse = decode_response(
+        client.post_json("/v1/certmesh/create", &body)?,
+        "Certmesh create",
+    )?;
+    let ca_fingerprint = require_non_empty(
+        &response.ca_fingerprint,
+        "ca_fingerprint",
+        "Certmesh create",
+    )?;
 
     // ── Post-creation verification ─────────────────────────────────
     println!("  {} CA keypair generated (ECDSA P-256)", color::green("✓"));
@@ -246,65 +360,54 @@ pub fn create(
     println!("  {} Audit log started", color::green("✓"));
 
     println!("\n  Verifying setup...\n");
-    if let Ok(status_resp) = client.get_json("/v1/certmesh/status") {
-        let ca_initialized = status_resp
-            .get("ca_initialized")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        let member_count = status_resp
-            .get("member_count")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        let ca_locked = status_resp
-            .get("ca_locked")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true);
+    let status = fetch_certmesh_status(&client)?;
+    let authority = status.authority.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "CA creation completed, but Certmesh status reports role '{}' with no authority state",
+            role_label(status.role)
+        )
+    })?;
+    let member_count = authority.member_count;
 
-        println!(
-            "  {} CA initialized",
-            if ca_initialized {
-                color::green("✓")
-            } else {
-                color::red("✗")
-            }
-        );
-        println!(
-            "  {} CA key decrypts successfully",
-            if !ca_locked {
-                color::green("✓")
-            } else {
-                color::red("✗")
-            }
-        );
-        println!(
-            "  {} Roster reachable ({member_count} member{})",
-            if member_count > 0 {
-                color::green("✓")
-            } else {
-                color::red("✗")
-            },
-            if member_count == 1 { "" } else { "s" }
-        );
-    }
+    println!("  {} CA initialized", color::green("✓"));
+    println!(
+        "  {} CA key decrypts successfully",
+        if !authority.locked {
+            color::green("✓")
+        } else {
+            color::red("✗")
+        }
+    );
+    println!(
+        "  {} Roster reachable ({member_count} member{})",
+        if member_count > 0 {
+            color::green("✓")
+        } else {
+            color::red("✗")
+        },
+        if member_count == 1 { "" } else { "s" }
+    );
 
     // ── Summary box ────────────────────────────────────────────────
-    let cert_path = ceremony_paths.certs_dir().join(&hostname);
+    let mut summary = vec![
+        String::new(),
+        format!("Profile:        {effective_profile}"),
+        format!("CA fingerprint: {}", truncate_str(ca_fingerprint, 35)),
+        format!("Hostname:       {}", truncate_str(&hostname, 35)),
+    ];
+    if let Some(cert_path) = local_certificate_path(endpoint, data_root, &hostname) {
+        summary.push(format!(
+            "Certificates:   {}",
+            truncate_str(&cert_path.display().to_string(), 35)
+        ));
+    }
+    summary.push(String::new());
 
     println!();
     print_box(
         "  ",
         Some(&color::green("Certificate mesh created")),
-        &[
-            String::new(),
-            format!("Profile:        {effective_profile}"),
-            format!("CA fingerprint: {}", truncate_str(ca_fingerprint, 35)),
-            format!("Hostname:       {}", truncate_str(&hostname, 35)),
-            format!(
-                "Certificates:   {}",
-                truncate_str(&cert_path.display().to_string(), 35)
-            ),
-            String::new(),
-        ],
+        &summary,
     );
     println!();
     println!("  What's next:");
@@ -422,27 +525,16 @@ fn print_box(indent: &str, title: Option<&str>, lines: &[String]) {
 }
 
 fn preflight_ca_exists(client: &KoiClient) -> anyhow::Result<bool> {
-    let status = client.get_json("/v1/certmesh/status")?;
-    let ca_init = status
-        .get("ca_initialized")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    if !ca_init {
+    let status = fetch_certmesh_status(client)?;
+    let Some(authority) = status.authority.as_ref() else {
         return Ok(false);
-    }
+    };
 
-    let enrollment_open = status
-        .get("enrollment_open")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let fingerprint = status
-        .get("ca_fingerprint")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-    let member_count = status
-        .get("member_count")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
+    let enrollment_open = authority.enrollment_open;
+    let fingerprint = authority.ca_fingerprint.as_deref().ok_or_else(|| {
+        anyhow::anyhow!("invalid Certmesh status: authority state has no CA fingerprint")
+    })?;
+    let member_count = authority.member_count;
 
     println!();
     println!(
@@ -524,41 +616,58 @@ fn base32_decode(input: &str) -> Option<Vec<u8>> {
 
 pub fn status(json: bool, endpoint: Option<&str>, token: Option<&str>) -> anyhow::Result<()> {
     let client = require_daemon(endpoint, token)?;
-    let resp = client.get_json("/v1/certmesh/status")?;
+    let status = fetch_certmesh_status(&client)?;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&resp)?);
+        println!("{}", serde_json::to_string_pretty(&status)?);
     } else {
-        let ca_init = resp
-            .get("ca_initialized")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        if !ca_init {
-            println!("Certificate mesh: not initialized");
-            println!("  Run `koi certmesh create` to set up a CA.");
-        } else {
-            // Deserialize into CertmeshStatus for formatting
-            match serde_json::from_value::<koi_certmesh::protocol::CertmeshStatus>(resp.clone()) {
-                Ok(s) => {
-                    println!("Certificate mesh: active");
-                    println!("  CA locked:  {}", s.ca_locked);
-                    println!(
-                        "  Enrollment: {} ({})",
-                        if s.enrollment_open { "open" } else { "closed" },
-                        if s.requires_approval {
-                            "approval required"
-                        } else {
-                            "no approval"
-                        }
-                    );
-                    println!("  Members:    {}", s.member_count);
-                    for m in &s.members {
-                        println!("    {} ({}) - {}", m.hostname, m.role, m.status);
-                    }
+        println!("Certificate mesh: {}", role_label(status.role));
+        println!(
+            "  Identity:   {}",
+            identity_label(status.identity.condition)
+        );
+        println!("  Trust:      {}", status.posture.level().as_wire());
+        if let Some(reason) = status.identity.reason.as_deref() {
+            println!("  Attention:  {reason}");
+        }
+
+        match status.role {
+            CertmeshRole::Open => {
+                println!("  Run `koi certmesh create` to set up a CA, or `koi certmesh join` to join one.");
+            }
+            CertmeshRole::Member => {
+                if let Some(identity) = status.identity.info.as_ref() {
+                    println!("  Hostname:   {}", identity.hostname);
+                    println!("  CA:         {}", identity.ca_fingerprint);
+                    println!("  Expires:    {}", identity.renewal.expires_at);
                 }
-                Err(_) => {
-                    // Fallback: print raw JSON
-                    println!("{}", serde_json::to_string_pretty(&resp)?);
+            }
+            CertmeshRole::Authority => {
+                let authority = status.authority.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "invalid Certmesh status: authority role has no authority state"
+                    )
+                })?;
+                println!("  CA locked:  {}", authority.locked);
+                println!(
+                    "  Enrollment: {} ({})",
+                    if authority.enrollment_open {
+                        "open"
+                    } else {
+                        "closed"
+                    },
+                    if authority.requires_approval {
+                        "approval required"
+                    } else {
+                        "no approval"
+                    }
+                );
+                println!("  Members:    {}", authority.member_count);
+                for member in &authority.members {
+                    println!(
+                        "    {} ({}) - {}",
+                        member.hostname, member.role, member.status
+                    );
                 }
             }
         }
@@ -571,9 +680,9 @@ pub fn status(json: bool, endpoint: Option<&str>, token: Option<&str>) -> anyhow
 
 pub fn log(endpoint: Option<&str>, token: Option<&str>) -> anyhow::Result<()> {
     let client = require_daemon(endpoint, token)?;
-    let resp = client.get_json("/v1/certmesh/log")?;
-
-    let entries = resp.get("entries").and_then(|v| v.as_str()).unwrap_or("");
+    let response: AuditLogResponse =
+        decode_response(client.get_json("/v1/certmesh/log")?, "Certmesh audit log")?;
+    let entries = response.entries;
     if entries.is_empty() {
         println!("No audit log entries.");
     } else {
@@ -597,7 +706,13 @@ pub fn unlock(endpoint: Option<&str>, token: Option<&str>) -> anyhow::Result<()>
     }
 
     let body = serde_json::json!({ "passphrase": passphrase });
-    client.post_json("/v1/certmesh/unlock", &body)?;
+    let response: UnlockResponse = decode_response(
+        client.post_json("/v1/certmesh/unlock", &body)?,
+        "Certmesh unlock",
+    )?;
+    if !response.success {
+        anyhow::bail!("daemon did not acknowledge Certmesh unlock");
+    }
     println!("CA unlocked successfully.");
     Ok(())
 }
@@ -611,20 +726,34 @@ pub fn set_hook(
     token: Option<&str>,
 ) -> anyhow::Result<()> {
     let client = require_daemon(endpoint, token)?;
-    let hostname = hostname::get()
-        .map(|h| h.to_string_lossy().to_string())
-        .unwrap_or_else(|_| "localhost".to_string());
+    let hostname = local_hostname("configuring the certificate reload hook")?;
 
     let body = serde_json::json!({
         "hostname": hostname,
         "reload": reload,
     });
-    let resp = client.put_json("/v1/certmesh/set-hook", &body)?;
+    let response: SetHookResponse = decode_response(
+        client.put_json("/v1/certmesh/set-hook", &body)?,
+        "Certmesh reload-hook configuration",
+    )?;
+    require_non_empty(
+        &response.hostname,
+        "hostname",
+        "Certmesh reload-hook configuration",
+    )?;
+    require_non_empty(
+        &response.reload,
+        "reload",
+        "Certmesh reload-hook configuration",
+    )?;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&resp)?);
+        println!("{}", serde_json::to_string_pretty(&response)?);
     } else {
-        println!("Reload hook set for {hostname}: {reload}");
+        println!(
+            "Reload hook set for {}: {}",
+            response.hostname, response.reload
+        );
     }
     Ok(())
 }
@@ -637,24 +766,23 @@ pub fn set_hook(
 /// normal mTLS renewal channel. The private key never leaves this host.
 pub fn renew(json: bool, endpoint: Option<&str>, token: Option<&str>) -> anyhow::Result<()> {
     let client = require_daemon(endpoint, token)?;
-    let response = client.post_json("/v1/certmesh/renew-self", &serde_json::json!({}))?;
+    let response: RenewSelfResponse = decode_response(
+        client.post_json("/v1/certmesh/renew-self", &serde_json::json!({}))?,
+        "Certmesh renewal",
+    )?;
+    require_non_empty(&response.expires, "expires", "Certmesh renewal")?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
     } else {
-        let expires = response
-            .get("expires")
-            .and_then(|value| value.as_str())
-            .unwrap_or("unknown");
-        println!("Certificate renewed; private key rotated. Expires {expires}.");
-        if let Some(hook) = response.get("hook") {
-            let success = hook
-                .get("success")
-                .and_then(|value| value.as_bool())
-                .unwrap_or(false);
+        println!(
+            "Certificate renewed; private key rotated. Expires {}.",
+            response.expires
+        );
+        if let Some(hook) = response.hook {
             println!(
                 "Reload hook: {}",
-                if success { "succeeded" } else { "failed" }
+                if hook.success { "succeeded" } else { "failed" }
             );
         }
     }
@@ -695,28 +823,27 @@ pub async fn join(
     };
 
     let remote = KoiClient::new(&resolved_endpoint);
-    let local_hostname = hostname::get()
-        .map(|h| h.to_string_lossy().to_string())
-        .unwrap_or_else(|_| "unknown".to_string());
+    let local_hostname = local_hostname("joining Certmesh")?;
 
-    // 0. Preflight + pin (ADR-017 F3). When the invite carries a CA fingerprint,
-    //    fetch the CA's self-reported status and refuse to continue unless its
-    //    fingerprint matches the pinned one — so a LAN MITM of plain-HTTP discovery
-    //    is rejected *before* we ever transmit a CSR. (`/status` is a GET, so it
-    //    needs no token.) The TOTP path has no fingerprint to pin and stays TOFU.
+    // 0. Public preflight + pin (ADR-017 F3). Bootstrap deliberately exposes only
+    //    authority availability and enrollment facts; the full domain status is a
+    //    protected management surface. When the invite carries a CA fingerprint,
+    //    refuse to continue unless bootstrap reports the same pin — so a LAN MITM
+    //    is rejected *before* we ever transmit a CSR. The TOTP path has no
+    //    out-of-band fingerprint and stays TOFU.
+    let bootstrap = fetch_certmesh_bootstrap(&remote).map_err(|error| {
+        anyhow::anyhow!("could not preflight the CA at {resolved_endpoint}: {error}")
+    })?;
+    if !bootstrap.authority_available {
+        anyhow::bail!("the Koi daemon at {resolved_endpoint} is not a Certmesh authority");
+    }
     if let Some(ref pin) = pinned_fp {
-        let status = remote.get_json("/v1/certmesh/status").map_err(|e| {
-            anyhow::anyhow!("could not preflight the CA at {resolved_endpoint}: {e}")
+        let advertised = bootstrap.ca_fingerprint.as_deref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "CA at {resolved_endpoint} did not report a fingerprint — aborting (the \
+                 invite expects {pin})"
+            )
         })?;
-        let advertised = status
-            .get("ca_fingerprint")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "CA at {resolved_endpoint} did not report a fingerprint — aborting (the \
-                     invite expects {pin})"
-                )
-            })?;
         if !koi_crypto::pinning::fingerprints_match(advertised, pin) {
             anyhow::bail!(
                 "CA fingerprint mismatch — refusing to join.\n  invite pinned: {pin}\n  \
@@ -761,16 +888,14 @@ pub async fn join(
             serde_json::json!({ "method": "totp", "code": code.trim() }),
         );
     }
-    let resp = remote.post_json("/v1/certmesh/join", &serde_json::Value::Object(body))?;
-
-    let service_cert = resp
-        .get("service_cert")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("CA response missing service_cert"))?;
-    let ca_cert = resp
-        .get("ca_cert")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("CA response missing ca_cert"))?;
+    let response: JoinResponse = decode_response(
+        remote.post_json("/v1/certmesh/join", &serde_json::Value::Object(body))?,
+        "Certmesh join",
+    )?;
+    let service_cert = require_non_empty(&response.service_cert, "service_cert", "Certmesh join")?;
+    let ca_cert = require_non_empty(&response.ca_cert, "ca_cert", "Certmesh join")?;
+    let response_ca_fingerprint =
+        require_non_empty(&response.ca_fingerprint, "ca_fingerprint", "Certmesh join")?;
 
     // 3. Hand the signed cert to the LOCAL daemon to install next to the key. We
     //    also pass the CA coordinates (endpoint + pinned fingerprint + policy) so
@@ -792,24 +917,27 @@ pub async fn join(
     // `pinned_fp` is `Some` for every invite join, so the `or_else` (the CA's
     // self-reported fingerprint — TOFU) is reached ONLY on the TOTP path, which has
     // no out-of-band pin. Never let an invite join fall through to the response fp.
-    let install_fp = pinned_fp
-        .as_deref()
-        .or_else(|| resp.get("ca_fingerprint").and_then(|v| v.as_str()));
-    if let Some(fp) = install_fp {
-        install_body.insert("ca_fingerprint".into(), serde_json::json!(fp));
-    }
+    let install_fp = pinned_fp.as_deref().unwrap_or(response_ca_fingerprint);
+    install_body.insert("ca_fingerprint".into(), serde_json::json!(install_fp));
     install_body.insert("sans".into(), serde_json::json!([]));
-    if let Some(policy) = resp.get("policy") {
-        install_body.insert("policy".into(), policy.clone());
-    }
-    let install = local.post_json(
-        "/v1/certmesh/member-cert",
-        &serde_json::Value::Object(install_body),
+    install_body.insert("policy".into(), serde_json::to_value(&response.policy)?);
+    let install: InstallCertResponse = decode_response(
+        local.post_json(
+            "/v1/certmesh/member-cert",
+            &serde_json::Value::Object(install_body),
+        )?,
+        "Certmesh certificate installation",
     )?;
-    let cert_path = install
-        .get("cert_path")
-        .and_then(|v| v.as_str())
-        .unwrap_or("(local certs dir)");
+    if !install.installed {
+        anyhow::bail!(
+            "daemon returned an invalid Certmesh certificate installation response: installation was not acknowledged"
+        );
+    }
+    let cert_path = require_non_empty(
+        &install.cert_path,
+        "cert_path",
+        "Certmesh certificate installation",
+    )?;
 
     if json {
         println!(
@@ -818,7 +946,7 @@ pub async fn join(
                 "enrolled": true,
                 "hostname": local_hostname,
                 "cert_path": cert_path,
-                "ca_fingerprint": resp.get("ca_fingerprint").and_then(|v| v.as_str()),
+                "ca_fingerprint": response_ca_fingerprint,
             })
         );
     } else {
@@ -855,18 +983,17 @@ pub fn invite(
     if client {
         body["role"] = serde_json::json!("client");
     }
-    let resp = client_.post_json("/v1/certmesh/invite", &body)?;
+    let response: InviteResponse = decode_response(
+        client_.post_json("/v1/certmesh/invite", &body)?,
+        "Certmesh invite",
+    )?;
+    let token_str = require_non_empty(&response.token, "token", "Certmesh invite")?;
+    let expires_at = require_non_empty(&response.expires_at, "expires_at", "Certmesh invite")?;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&resp)?);
+        println!("{}", serde_json::to_string_pretty(&response)?);
         return Ok(());
     }
-
-    let token_str = resp.get("token").and_then(|v| v.as_str()).unwrap_or("");
-    let expires_at = resp
-        .get("expires_at")
-        .and_then(|v| v.as_str())
-        .unwrap_or("(unknown)");
 
     println!("Invite minted for {hostname} (single-use, expires {expires_at}):");
     println!();
@@ -882,7 +1009,7 @@ pub fn invite(
 pub async fn promote(endpoint: Option<&str>, json: bool) -> anyhow::Result<()> {
     // The local (standby) daemon must be running — always the local breadcrumb daemon,
     // never a global `--endpoint`. The CA being promoted from is the `endpoint` arg / mDNS.
-    let _local = require_daemon(None, None)?;
+    let local = require_daemon(None, None)?;
 
     let resolved_endpoint = match endpoint {
         Some(ep) => ep.to_string(),
@@ -903,66 +1030,47 @@ pub async fn promote(endpoint: Option<&str>, json: bool) -> anyhow::Result<()> {
         anyhow::bail!("Passphrase cannot be empty.");
     }
 
-    // Generate ephemeral X25519 keypair for DH key agreement
-    let client_kp = koi_crypto::key_agreement::EphemeralKeyPair::generate();
-    let client_pub = client_kp.public_key_bytes();
-    let client_pub_hex = koi_common::encoding::hex_encode(&client_pub);
+    // The local daemon owns the ephemeral secret and the eventual durable
+    // install. The CLI carries only public/opaque protocol material.
+    let session = local.post_json(
+        koi_certmesh::http::paths::PROMOTION_SESSION,
+        &serde_json::json!({}),
+    )?;
+    let session_id = session
+        .get("session_id")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| anyhow::anyhow!("local daemon did not return a promotion session"))?;
+    // The daemon presents its member certificate to the authority. A generic
+    // HTTP client cannot reach this deliberately mTLS-only endpoint, and the CLI
+    // must never read the member private key.
+    let resp = local.post_json(
+        koi_certmesh::http::paths::RELAY_PROMOTION,
+        &serde_json::json!({
+            "session_id": session_id,
+            "authority_endpoint": resolved_endpoint,
+            "auth": { "method": "totp", "code": code },
+        }),
+    )?;
 
-    // Request promotion from the primary with DH public key
-    let client = KoiClient::new(&resolved_endpoint);
-    let body = serde_json::json!({
-        "auth": { "method": "totp", "code": code },
-        "ephemeral_public": client_pub_hex,
-    });
-    let resp = client.post_json("/v1/certmesh/promote", &body)?;
-
-    // Parse the promotion response
-    let promote_response: koi_certmesh::protocol::PromoteResponse =
-        serde_json::from_value(resp.clone())
-            .map_err(|e| anyhow::anyhow!("Failed to parse promotion response: {e}"))?;
-
-    // Decrypt and install the CA key, auth credential, and roster locally
-    // using DH key agreement (the passphrase is NOT sent over the wire)
-    let (ca_key, auth_state, roster) =
-        koi_certmesh::failover::accept_promotion(&promote_response, client_kp)?;
-
-    // Save to local disk. CLI composition root: resolve the data dir once.
-    #[allow(clippy::disallowed_methods)]
-    let paths = koi_certmesh::CertmeshPaths::with_data_dir(koi_common::paths::koi_data_dir());
-    let ca_dir = paths.ca_dir();
-    std::fs::create_dir_all(&ca_dir)?;
-
-    let ca_key_der = koi_crypto::keys::ca_keypair_to_der(&ca_key)?;
-    let (encrypted_key, slot_table, _master_key) =
-        koi_crypto::unlock_slots::envelope_encrypt_new(&ca_key_der, &passphrase)?;
-    koi_crypto::keys::save_encrypted_key(&paths.ca_key_path(), &encrypted_key)?;
-    slot_table.save(&paths.slot_table_path())?;
-    std::fs::write(paths.ca_cert_path(), &promote_response.ca_cert_pem)?;
-
-    // Persist auth credential to auth.json
-    let koi_crypto::auth::AuthState::Totp(secret) = &auth_state;
-    let stored = koi_crypto::auth::store_totp(secret, &passphrase)?;
-    let auth_json = serde_json::to_string_pretty(&stored)?;
-    std::fs::write(paths.auth_path(), auth_json)?;
-
-    koi_certmesh::roster::save_roster(&roster, &paths.roster_path())?;
-
-    // Update local member role to Standby
-    let hostname = hostname::get()
-        .map(|h| h.to_string_lossy().to_string())
-        .unwrap_or_else(|_| "localhost".to_string());
-
-    let mut roster = koi_certmesh::roster::load_roster(&paths.roster_path())?;
-    if let Some(member) = roster.find_member_mut(&hostname) {
-        member.role = koi_certmesh::roster::MemberRole::Standby;
-        koi_certmesh::roster::save_roster(&roster, &paths.roster_path())?;
+    let accepted: AcceptPromotionResponse = decode_response(
+        local.post_json(
+            koi_certmesh::http::paths::ACCEPT_PROMOTION,
+            &serde_json::json!({
+                "session_id": session_id,
+                "promotion": resp,
+                "passphrase": passphrase,
+            }),
+        )?,
+        "Certmesh promotion acceptance",
+    )?;
+    if !accepted.promoted {
+        anyhow::bail!("local daemon did not acknowledge Certmesh promotion");
     }
-
-    let _ = koi_certmesh::audit::append_entry_to(
-        &paths.audit_log_path(),
-        "promoted_to_standby",
-        &[("hostname", &hostname)],
-    );
+    let hostname = require_non_empty(
+        &accepted.hostname,
+        "hostname",
+        "Certmesh promotion acceptance",
+    )?;
 
     if json {
         println!(
@@ -974,7 +1082,7 @@ pub async fn promote(endpoint: Option<&str>, json: bool) -> anyhow::Result<()> {
             })
         );
     } else {
-        print!("{}", format::promote_success(&hostname));
+        print!("{}", format::promote_success(hostname));
     }
 
     Ok(())
@@ -988,15 +1096,18 @@ pub fn open_enrollment(
     token: Option<&str>,
 ) -> anyhow::Result<()> {
     let client = require_daemon(endpoint, token)?;
-    let resp = client.post_json("/v1/certmesh/open-enrollment", &serde_json::json!({}))?;
+    let response: EnrollmentSummary = decode_response(
+        client.post_json("/v1/certmesh/open-enrollment", &serde_json::json!({}))?,
+        "Certmesh enrollment-open",
+    )?;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&resp)?);
+        println!("{}", serde_json::to_string_pretty(&response)?);
     } else {
-        let state = resp
-            .get("enrollment_state")
-            .and_then(|v| v.as_str())
-            .unwrap_or("open");
+        let state = match response.enrollment_state {
+            EnrollmentState::Open => "open",
+            EnrollmentState::Closed => "closed",
+        };
         println!("Enrollment: {state}");
     }
     Ok(())
@@ -1010,12 +1121,19 @@ pub fn close_enrollment(
     token: Option<&str>,
 ) -> anyhow::Result<()> {
     let client = require_daemon(endpoint, token)?;
-    let resp = client.post_json("/v1/certmesh/close-enrollment", &serde_json::json!({}))?;
+    let response: EnrollmentSummary = decode_response(
+        client.post_json("/v1/certmesh/close-enrollment", &serde_json::json!({}))?,
+        "Certmesh enrollment-close",
+    )?;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&resp)?);
+        println!("{}", serde_json::to_string_pretty(&response)?);
     } else {
-        println!("Enrollment: closed");
+        let state = match response.enrollment_state {
+            EnrollmentState::Open => "open",
+            EnrollmentState::Closed => "closed",
+        };
+        println!("Enrollment: {state}");
     }
     Ok(())
 }
@@ -1035,32 +1153,34 @@ pub fn rotate_auth(json: bool, endpoint: Option<&str>, token: Option<&str>) -> a
     }
 
     let body = serde_json::json!({ "passphrase": passphrase });
-    let resp = client.post_json("/v1/certmesh/rotate-auth", &body)?;
-
-    let totp_uri = resp
-        .get("auth_setup")
-        .and_then(|s| s.get("totp_uri"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let response: RotateAuthResponse = decode_response(
+        client.post_json("/v1/certmesh/rotate-auth", &body)?,
+        "Certmesh authentication rotation",
+    )?;
+    let koi_crypto::auth::AuthSetup::Totp { totp_uri } = response.auth_setup;
+    require_non_empty(
+        &totp_uri,
+        "auth_setup.totp_uri",
+        "Certmesh authentication rotation",
+    )?;
 
     if json {
         println!("{}", serde_json::json!({ "rotated": true }));
     } else {
         println!("Auth credential rotated successfully.");
-        if !totp_uri.is_empty() {
-            if let Some(secret) = extract_totp_secret_from_uri(totp_uri) {
-                let hostname = hostname::get()
-                    .map(|h| h.to_string_lossy().to_string())
-                    .unwrap_or_else(|_| "localhost".to_string());
-                let qr = koi_crypto::totp::qr_code_unicode(
-                    &secret,
-                    "Koi Certmesh",
-                    &format!("admin@{hostname}"),
-                );
-                println!("\nScan this QR code with your authenticator app:\n");
-                println!("{qr}");
-            }
-        }
+        let secret = extract_totp_secret_from_uri(&totp_uri).ok_or_else(|| {
+            anyhow::anyhow!(
+                "daemon returned an invalid Certmesh authentication rotation response: auth_setup.totp_uri has no valid secret"
+            )
+        })?;
+        let hostname = local_hostname("rendering the rotated Certmesh credential")?;
+        let qr = koi_crypto::totp::qr_code_unicode(
+            &secret,
+            "Koi Certmesh",
+            &format!("admin@{hostname}"),
+        );
+        println!("\nScan this QR code with your authenticator app:\n");
+        println!("{qr}");
     }
     Ok(())
 }
@@ -1088,11 +1208,11 @@ pub fn backup(
         "ca_passphrase": ca_passphrase,
         "backup_passphrase": backup_passphrase,
     });
-    let resp = client.post_json("/v1/certmesh/backup", &body)?;
-    let backup_hex = resp
-        .get("backup_hex")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("backup response missing backup_hex"))?;
+    let response: BackupResponse = decode_response(
+        client.post_json("/v1/certmesh/backup", &body)?,
+        "Certmesh backup",
+    )?;
+    let backup_hex = require_non_empty(&response.backup_hex, "backup_hex", "Certmesh backup")?;
 
     let bytes = hex_decode(backup_hex).map_err(|e| anyhow::anyhow!("invalid backup hex: {e}"))?;
     std::fs::write(path, bytes)?;
@@ -1137,12 +1257,11 @@ pub fn restore(
         "backup_passphrase": backup_passphrase,
         "new_passphrase": new_passphrase,
     });
-    let resp = client.post_json("/v1/certmesh/restore", &body)?;
-
-    let restored = resp
-        .get("restored")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let response: RestoreResponse = decode_response(
+        client.post_json("/v1/certmesh/restore", &body)?,
+        "Certmesh restore",
+    )?;
+    let restored = response.restored;
 
     if json {
         println!("{}", serde_json::json!({ "restored": restored }));
@@ -1169,11 +1288,11 @@ pub fn revoke(
         "hostname": hostname,
         "reason": reason,
     });
-    let resp = client.post_json("/v1/certmesh/revoke", &body)?;
-    let revoked = resp
-        .get("revoked")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let response: RevokeResponse = decode_response(
+        client.post_json("/v1/certmesh/revoke", &body)?,
+        "Certmesh revocation",
+    )?;
+    let revoked = response.revoked;
 
     if json {
         println!(
@@ -1205,12 +1324,11 @@ pub fn destroy(
     crate::help::confirm::gate_meta(meta, json, yes)?;
 
     let client = require_daemon(endpoint, token)?;
-    let resp = client.post_json("/v1/certmesh/destroy", &serde_json::json!({}))?;
-
-    let destroyed = resp
-        .get("destroyed")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let response: DestroyResponse = decode_response(
+        client.post_json("/v1/certmesh/destroy", &serde_json::json!({}))?,
+        "Certmesh destroy",
+    )?;
+    let destroyed = response.destroyed;
 
     if json {
         println!("{}", serde_json::json!({ "destroyed": destroyed }));
@@ -1261,6 +1379,8 @@ async fn discover_ca(pinned_fp: Option<&str>) -> anyhow::Result<String> {
         .await?;
 
     let deadline = tokio::time::Instant::now() + CA_DISCOVERY_TIMEOUT;
+    let certmesh_type = ServiceType::parse(koi_certmesh::CERTMESH_SERVICE_TYPE)
+        .expect("the built-in Certmesh service type is valid");
     // (endpoint, instance name, advertised fp= TXT)
     let mut found: Vec<(String, String, Option<String>)> = Vec::new();
 
@@ -1268,23 +1388,25 @@ async fn discover_ca(pinned_fp: Option<&str>) -> anyhow::Result<String> {
         tokio::select! {
             event = handle.recv() => {
                 match event {
-                    Some(MdnsEvent::Resolved(record)) => {
-                        if let (Some(ip), Some(port)) = (&record.ip, record.port) {
-                            let endpoint = format!("http://{ip}:{port}");
-                            if !found.iter().any(|(ep, _, _)| ep == &endpoint) {
-                                let fp = record.txt.get("fp").cloned();
-                                found.push((endpoint, record.name.clone(), fp));
-                            }
-                        }
+                    Ok(MdnsEvent::Resolved(record)) => add_discovered_ca(&mut found, &record),
+                    Ok(_) => continue,
+                    Err(BrowseRecvError::Lagged { .. }) => {
+                        // Browse delivery is deliberately best-effort. Rebuild from
+                        // the domain-owned latest-value projection so a busy LAN
+                        // cannot make the join picker retain a partial event history.
+                        rebuild_discovered_cas(&mut found, &core, &certmesh_type);
                     }
-                    Some(_) => continue,
-                    None => break,
+                    Err(BrowseRecvError::Closed) => break,
                 }
             }
             _ = tokio::time::sleep_until(deadline) => break,
         }
     }
 
+    // The deadline and a committed discovery update may become ready together.
+    // Take one final authoritative projection after leaving the event loop so a
+    // queued delivery can neither hide a new CA nor retain a removed one.
+    rebuild_discovered_cas(&mut found, &core, &certmesh_type);
     let _ = core.shutdown().await;
 
     // F12 cross-check: drop CAs whose advertised fp contradicts the invite pin. CAs
@@ -1333,6 +1455,31 @@ async fn discover_ca(pinned_fp: Option<&str>) -> anyhow::Result<String> {
     }
 }
 
+fn rebuild_discovered_cas(
+    found: &mut Vec<(String, String, Option<String>)>,
+    core: &koi_mdns::MdnsCore,
+    certmesh_type: &ServiceType,
+) {
+    found.clear();
+    for record in &core.discovery_snapshot().records {
+        let is_certmesh = ServiceType::parse(&record.service_type)
+            .is_ok_and(|service_type| &service_type == certmesh_type);
+        if is_certmesh {
+            add_discovered_ca(found, record);
+        }
+    }
+}
+
+fn add_discovered_ca(found: &mut Vec<(String, String, Option<String>)>, record: &ServiceRecord) {
+    let (Some(ip), Some(port)) = (&record.ip, record.port) else {
+        return;
+    };
+    let endpoint = format!("http://{ip}:{port}");
+    if !found.iter().any(|(existing, _, _)| existing == &endpoint) {
+        found.push((endpoint, record.name.clone(), record.txt.get("fp").cloned()));
+    }
+}
+
 // ── ACME (RFC 8555) ──────────────────────────────────────────────────
 
 /// Default ACME server-auth TLS port (mirrors `adapters::acme::DEFAULT_ACME_PORT`).
@@ -1340,66 +1487,78 @@ const ACME_PORT: u16 = 5643;
 
 /// Derive the ACME directory URL from a daemon endpoint, swapping the scheme to
 /// https and the port to the ACME port. `https://<host>:5643/acme/directory`.
-fn acme_directory_url(endpoint: &str) -> String {
-    // endpoint looks like "http://host:5641"; extract the host.
+fn acme_directory_url(endpoint: &str) -> anyhow::Result<String> {
+    let endpoint = url::Url::parse(endpoint)
+        .map_err(|error| anyhow::anyhow!("invalid Certmesh endpoint '{endpoint}': {error}"))?;
     let host = endpoint
-        .trim_start_matches("http://")
-        .trim_start_matches("https://")
-        .split(['/', ':'])
-        .next()
-        .filter(|h| !h.is_empty())
-        .unwrap_or("localhost");
-    format!("https://{host}:{ACME_PORT}/acme/directory")
+        .host()
+        .ok_or_else(|| anyhow::anyhow!("Certmesh endpoint has no host"))?;
+    let authority = match host {
+        url::Host::Domain(domain) => domain.to_string(),
+        url::Host::Ipv4(address) => address.to_string(),
+        url::Host::Ipv6(address) => format!("[{address}]"),
+    };
+    Ok(format!("https://{authority}:{ACME_PORT}/acme/directory"))
 }
 
-/// Path to the CA root certificate clients must trust to bootstrap.
-fn ca_cert_path_hint() -> String {
-    #[allow(clippy::disallowed_methods)]
-    let data_dir = koi_common::paths::koi_data_dir();
-    data_dir
-        .join("certmesh")
-        .join("ca")
-        .join("ca-cert.pem")
-        .display()
-        .to_string()
+/// Path to the selected local owner's CA root certificate. A remote daemon's
+/// filesystem is deliberately unknowable at this boundary, so no path is
+/// advertised for an explicit endpoint.
+fn ca_cert_path_hint(endpoint: Option<&str>, data_root: &std::path::Path) -> Option<String> {
+    endpoint.is_none().then(|| {
+        data_root
+            .join("certmesh")
+            .join("ca")
+            .join("ca-cert.pem")
+            .display()
+            .to_string()
+    })
 }
 
 /// `koi certmesh acme enable` — print the directory URL + the client bootstrap
 /// recipe. The ACME server starts automatically with the daemon when the CA is
 /// initialized + unlocked and `--no-acme` is not set; this command surfaces the
 /// connection details and the one-time CA-root trust step.
-pub fn acme_enable(json: bool, endpoint: Option<&str>, token: Option<&str>) -> anyhow::Result<()> {
+pub fn acme_enable(
+    json: bool,
+    endpoint: Option<&str>,
+    token: Option<&str>,
+    data_root: &std::path::Path,
+) -> anyhow::Result<()> {
     let client = require_daemon(endpoint, token)?;
-    let resp = client.get_json("/v1/certmesh/status")?;
-    let ca_init = resp
-        .get("ca_initialized")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let ca_locked = resp
-        .get("ca_locked")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(true);
-    let fingerprint = resp
-        .get("ca_fingerprint")
-        .and_then(|v| v.as_str())
-        .unwrap_or("(unknown)");
+    let status = fetch_certmesh_status(&client)?;
+    let authority = status.authority.as_ref();
+    let ca_init = authority.is_some();
+    let ca_locked = authority.is_none_or(|authority| authority.locked);
+    let fingerprint = authority
+        .map(|authority| {
+            authority.ca_fingerprint.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("invalid Certmesh status: authority state has no CA fingerprint")
+            })
+        })
+        .transpose()?;
 
-    let dir_url = endpoint
-        .map(acme_directory_url)
-        .unwrap_or_else(|| format!("https://localhost:{ACME_PORT}/acme/directory"));
-    let ca_path = ca_cert_path_hint();
+    let dir_url = endpoint.map(acme_directory_url).transpose()?.map_or_else(
+        || {
+            local_fqdn("locating the local ACME service")
+                .map(|host| format!("https://{host}:{ACME_PORT}/acme/directory"))
+        },
+        Ok,
+    )?;
+    let ca_path = ca_cert_path_hint(endpoint, data_root);
 
     if json {
-        let out = serde_json::json!({
-            "acme": {
-                "directory": dir_url,
-                "ca_initialized": ca_init,
-                "ca_locked": ca_locked,
-                "ca_fingerprint": fingerprint,
-                "ca_cert_path": ca_path,
-                "enabled": ca_init && !ca_locked,
-            }
+        let mut acme = serde_json::json!({
+            "directory": dir_url,
+            "ca_initialized": ca_init,
+            "ca_locked": ca_locked,
+            "ca_fingerprint": fingerprint,
+            "enabled": ca_init && !ca_locked,
         });
+        if let Some(path) = ca_path.as_deref() {
+            acme["ca_cert_path"] = serde_json::json!(path);
+        }
+        let out = serde_json::json!({ "acme": acme });
         println!("{}", serde_json::to_string_pretty(&out)?);
         return Ok(());
     }
@@ -1418,50 +1577,51 @@ pub fn acme_enable(json: bool, endpoint: Option<&str>, token: Option<&str>) -> a
     println!("ACME (RFC 8555) server is active.");
     println!();
     println!("  Directory URL : {dir_url}");
-    println!("  CA root cert  : {ca_path}");
-    println!("  CA fingerprint: {fingerprint}");
+    if let Some(path) = ca_path.as_deref() {
+        println!("  CA root cert  : {path}");
+    }
+    println!(
+        "  CA fingerprint: {}",
+        fingerprint.expect("initialized authority was validated above")
+    );
     println!();
     println!("Bootstrap (one time): clients must trust the CA root, then point their");
     println!("ACME client at the directory above. dns-01 is the only challenge type;");
     println!("only names inside the Koi DNS zone are issuable.");
     println!();
     println!("  Caddy   : tls {{ issuer acme {{ dir {dir_url} }} }}");
-    println!("            (and trust {ca_path} via acme_ca_root / a trusted root)");
-    println!("  Traefik : certificatesResolvers.koi.acme.caServer={dir_url}");
-    println!("            certificatesResolvers.koi.acme.caCertificates={ca_path}");
-    println!("  lego    : LEGO_CA_CERTIFICATES={ca_path} lego --server {dir_url} ...");
+    if let Some(path) = ca_path.as_deref() {
+        println!("            (and trust {path} via acme_ca_root / a trusted root)");
+        println!("  Traefik : certificatesResolvers.koi.acme.caServer={dir_url}");
+        println!("            certificatesResolvers.koi.acme.caCertificates={path}");
+        println!("  lego    : LEGO_CA_CERTIFICATES={path} lego --server {dir_url} ...");
+    } else {
+        println!("  Export the CA root from the selected authority and trust that exported file");
+        println!("  before configuring Caddy, Traefik, lego, or another ACME client.");
+    }
     println!();
     println!("See `docs/guides/acme.md` for full recipes.");
     Ok(())
 }
 
 /// `koi certmesh acme status` — show the ACME directory URL and whether the
-/// server is serving (derived from CA state) plus the ACME-sourced member count.
+/// server is serving (derived from authority state) plus the mesh member count.
 pub fn acme_status(json: bool, endpoint: Option<&str>, token: Option<&str>) -> anyhow::Result<()> {
     let client = require_daemon(endpoint, token)?;
-    let resp = client.get_json("/v1/certmesh/status")?;
-    let ca_init = resp
-        .get("ca_initialized")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let ca_locked = resp
-        .get("ca_locked")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(true);
-    let enrollment_open = resp
-        .get("enrollment_open")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let dir_url = endpoint
-        .map(acme_directory_url)
-        .unwrap_or_else(|| format!("https://localhost:{ACME_PORT}/acme/directory"));
+    let status = fetch_certmesh_status(&client)?;
+    let authority = status.authority.as_ref();
+    let ca_init = authority.is_some();
+    let ca_locked = authority.is_none_or(|authority| authority.locked);
+    let enrollment_open = authority.is_some_and(|authority| authority.enrollment_open);
+    let dir_url = endpoint.map(acme_directory_url).transpose()?.map_or_else(
+        || {
+            local_fqdn("locating the local ACME service")
+                .map(|host| format!("https://{host}:{ACME_PORT}/acme/directory"))
+        },
+        Ok,
+    )?;
 
-    // ACME-issued members are recorded with enrolled_by "acme:*".
-    let acme_members = resp
-        .get("members")
-        .and_then(|v| v.as_array())
-        .map(|arr| arr.len())
-        .unwrap_or(0);
+    let member_count = authority.map_or(0, |authority| authority.member_count);
 
     let serving = ca_init && !ca_locked;
     if json {
@@ -1470,7 +1630,7 @@ pub fn acme_status(json: bool, endpoint: Option<&str>, token: Option<&str>) -> a
                 "serving": serving,
                 "directory": dir_url,
                 "mode": if enrollment_open { "open" } else { "closed (EAB required)" },
-                "member_count": acme_members,
+                "member_count": member_count,
             }
         });
         println!("{}", serde_json::to_string_pretty(&out)?);
@@ -1503,6 +1663,115 @@ pub fn acme_status(json: bool, endpoint: Option<&str>, token: Option<&str>) -> a
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn valid_create_ceremony_result() -> serde_json::Map<String, serde_json::Value> {
+        serde_json::json!({
+            "passphrase": "correct horse battery staple",
+            "_entropy_seed": "11".repeat(32),
+            "operator": "operator@example.test",
+            "_enrollment_open": true,
+            "_requires_approval": true,
+            "_auto_unlock": false,
+            "_effective_profile": "My Team",
+            "_totp_secret_hex": "22".repeat(20),
+        })
+        .as_object()
+        .unwrap()
+        .clone()
+    }
+
+    #[test]
+    fn create_ceremony_result_requires_every_authoritative_field() {
+        for field in [
+            "passphrase",
+            "_entropy_seed",
+            "_enrollment_open",
+            "_requires_approval",
+            "_auto_unlock",
+            "_effective_profile",
+        ] {
+            let mut result = valid_create_ceremony_result();
+            result.remove(field);
+            let error = decode_create_ceremony_result(result)
+                .err()
+                .unwrap_or_else(|| panic!("missing {field} unexpectedly decoded"));
+            assert!(error.to_string().contains(field), "{error:#}");
+        }
+    }
+
+    #[test]
+    fn create_ceremony_result_rejects_wrong_types_and_empty_secrets() {
+        let mut wrong_type = valid_create_ceremony_result();
+        wrong_type.insert("_auto_unlock".into(), serde_json::json!("yes"));
+        assert!(decode_create_ceremony_result(wrong_type).is_err());
+
+        let mut empty = valid_create_ceremony_result();
+        empty.insert("passphrase".into(), serde_json::json!(""));
+        let error = decode_create_ceremony_result(empty).unwrap_err();
+        assert!(error.to_string().contains("'passphrase' is empty"));
+    }
+
+    #[test]
+    fn daemon_response_decoder_rejects_missing_required_certmesh_fields() {
+        let error = decode_response::<InviteResponse>(
+            serde_json::json!({
+                "hostname": "node-02",
+                "expires_at": "2026-09-04T12:00:00Z",
+                "ca_fingerprint": "sha256:abc"
+            }),
+            "Certmesh invite",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("missing field `token`"));
+    }
+
+    #[test]
+    fn required_response_strings_cannot_be_empty() {
+        let error = require_non_empty("", "ca_fingerprint", "Certmesh create").unwrap_err();
+        assert!(error.to_string().contains("'ca_fingerprint' is empty"));
+    }
+
+    #[test]
+    fn ca_certificate_hint_uses_only_the_selected_local_root() {
+        let root = std::path::Path::new("/explicit/koi-data");
+        assert_eq!(
+            ca_cert_path_hint(None, root),
+            Some(
+                root.join("certmesh")
+                    .join("ca")
+                    .join("ca-cert.pem")
+                    .display()
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            ca_cert_path_hint(Some("https://remote.example:5641"), root),
+            None,
+            "a remote owner's filesystem path must never be inferred from local configuration"
+        );
+    }
+
+    #[test]
+    fn create_certificate_hint_never_infers_a_remote_filesystem_path() {
+        let root = std::path::Path::new("/explicit/koi-data");
+        assert_eq!(
+            local_certificate_path(None, root, "node-01"),
+            Some(root.join("certs").join("node-01"))
+        );
+        assert_eq!(
+            local_certificate_path(Some("https://remote.example:5641"), root, "node-01"),
+            None
+        );
+    }
+
+    #[test]
+    fn acme_directory_rejects_missing_remote_hosts_and_preserves_ipv6() {
+        assert!(acme_directory_url("not a URL").is_err());
+        assert_eq!(
+            acme_directory_url("http://[::1]:5641").unwrap(),
+            format!("https://[::1]:{ACME_PORT}/acme/directory")
+        );
+    }
 
     #[test]
     fn preset_labels_match_names() {

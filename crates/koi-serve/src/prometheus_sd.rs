@@ -30,6 +30,7 @@ use serde::Serialize;
 
 use koi_common::integration::MemberSummary;
 use koi_common::types::ServiceRecord;
+use koi_compose::status::KoiStatus;
 use koi_health::{ServiceHealth, ServiceStatus};
 use koi_runtime::Instance;
 
@@ -69,19 +70,49 @@ const LABEL_SERVICE_TYPE: &str = "__meta_koi_service_type";
 const LABEL_HEALTH: &str = "__meta_koi_health";
 const LABEL_CERT_EXPIRY_DAYS: &str = "__meta_koi_cert_expiry_days";
 
-/// Build the full list of Prometheus target groups from the daemon's data sources.
+/// Build the full list of Prometheus target groups from one accepted product snapshot.
 ///
 /// Pure function (no I/O, no locks) so it is unit-testable without standing up a
-/// daemon: callers snapshot the cores first and pass the results in.
+/// daemon. The caller obtains exactly one [`KoiStatus`] `Arc`; this adapter never
+/// rereads individual cores or reconstructs a cross-domain view.
 ///
-/// - `health` — health-checked services (`HealthCore::snapshot().services`).
-/// - `instances` — runtime instances (`RuntimeCore::list_instances()`).
-/// - `members` — active certmesh members (`CertmeshSnapshot::active_members()`),
-///   used only to attach `__meta_koi_cert_expiry_days`.
-/// - `discovered` — mDNS records (`MdnsSnapshot::cached_records()`); included only
-///   when `slice == WithDiscovered`.
+/// - Health targets come from `status.domains.health.services`.
+/// - Runtime targets come from `status.domains.runtime.instances`.
+/// - Certificate labels come from `status.domains.certmesh_roster.active_members`;
+///   Certmesh has already decided membership semantics and normalized expiry.
+/// - Discovered targets come from `status.domains.mdns_discovery.records` and are
+///   included only when `slice == WithDiscovered`.
 /// - `now` — injected so the cert-expiry math is deterministic in tests.
 pub fn build_target_groups(
+    status: &KoiStatus,
+    slice: Slice,
+    now: DateTime<Utc>,
+) -> Vec<TargetGroup> {
+    let health = status
+        .domains
+        .health
+        .as_ref()
+        .map_or(&[][..], |snapshot| snapshot.services.as_slice());
+    let instances = status
+        .domains
+        .runtime
+        .as_ref()
+        .map_or(&[][..], |snapshot| snapshot.instances.as_slice());
+    let members = status
+        .domains
+        .certmesh_roster
+        .as_ref()
+        .map_or(&[][..], |snapshot| snapshot.active_members.as_slice());
+    let discovered = status
+        .domains
+        .mdns_discovery
+        .as_ref()
+        .map_or(&[][..], |snapshot| snapshot.records.as_slice());
+
+    build_target_groups_from_sources(health, instances, members, discovered, slice, now)
+}
+
+fn build_target_groups_from_sources(
     health: &[ServiceHealth],
     instances: &[Instance],
     members: &[MemberSummary],
@@ -280,27 +311,41 @@ fn normalize_authority(authority: &str, default_port: Option<u16>) -> Option<Str
     }
 }
 
-/// Build `host:port` from a runtime instance: the first published host port, with
-/// its host IP (falling back to the instance's first IP, then `127.0.0.1`).
+/// Build `host:port` from a runtime instance: the first published host port and
+/// a concrete address observed by Runtime. A wildcard bind without any observed
+/// instance address is absence, not permission to invent a loopback target.
 fn host_port_from_instance(inst: &Instance) -> Option<String> {
     let port = inst.ports.first()?;
-    let host = pick_instance_host(&port.host_ip, inst);
-    Some(format!("{host}:{}", port.host_port))
+    let host = pick_instance_host(&port.host_ip, inst)?;
+    Some(format_host_port(host, port.host_port))
 }
 
 /// Choose a reachable host for a runtime target. A `0.0.0.0` / `::` / empty bind
 /// means "all interfaces" — Prometheus needs a concrete address, so prefer the
-/// instance's first IP, then loopback.
-fn pick_instance_host(host_ip: &str, inst: &Instance) -> String {
-    let unusable =
-        host_ip.is_empty() || host_ip == "0.0.0.0" || host_ip == "::" || host_ip == "[::]";
-    if !unusable {
-        return host_ip.to_string();
+/// first concrete instance address. If Runtime observed neither, there is no
+/// truthful target to publish.
+fn pick_instance_host<'a>(host_ip: &'a str, inst: &'a Instance) -> Option<&'a str> {
+    if is_concrete_host(host_ip) {
+        return Some(host_ip);
     }
     inst.ips
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "127.0.0.1".to_string())
+        .iter()
+        .map(String::as_str)
+        .find(|candidate| is_concrete_host(candidate))
+}
+
+fn is_concrete_host(host: &str) -> bool {
+    let host = host.trim();
+    !host.is_empty() && !matches!(host, "0.0.0.0" | "::" | "[::]")
+}
+
+fn format_host_port(host: &str, port: u16) -> String {
+    let host = host.trim();
+    if host.starts_with('[') || !host.contains(':') {
+        format!("{host}:{port}")
+    } else {
+        format!("[{host}]:{port}")
+    }
 }
 
 /// Build `host:port` from an mDNS record. Prefer the resolved IP, fall back to the
@@ -314,16 +359,18 @@ fn host_port_from_record(rec: &ServiceRecord) -> Option<String> {
         .or(rec.host.as_deref())
         .map(|h| h.trim_end_matches('.'))
         .filter(|h| !h.is_empty())?;
-    Some(format!("{host}:{port}"))
+    Some(format_host_port(host, port))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::TimeZone;
+    use koi_common::integration::{CertmeshRosterSnapshot, MdnsDiscoverySnapshot};
     use koi_common::types::ServiceCheckKind;
+    use koi_compose::status::DomainStatuses;
     use koi_runtime::instance::PortProtocol;
-    use koi_runtime::{InstanceState, KoiMetadata, PortMapping};
+    use koi_runtime::{InstanceState, KoiMetadata, PortMapping, RuntimeStatus};
     use std::collections::HashMap;
 
     fn fixed_now() -> DateTime<Utc> {
@@ -378,11 +425,81 @@ mod tests {
         }
     }
 
+    #[test]
+    fn aggregate_projection_reads_every_source_from_one_revision() {
+        let health = health_service(
+            "health-only",
+            "http://10.0.0.1:8001/health",
+            ServiceStatus::Up,
+        );
+        let runtime = instance("runtime-only", vec![tcp_port(8002, "10.0.0.2")], Vec::new());
+        let discovered = ServiceRecord {
+            name: "mdns-only".to_string(),
+            service_type: "_http._tcp".to_string(),
+            host: Some("mdns-only.local.".to_string()),
+            ip: Some("10.0.0.3".to_string()),
+            port: Some(8003),
+            txt: HashMap::new(),
+        };
+        let expires = Utc.with_ymd_and_hms(2026, 7, 15, 0, 0, 0).unwrap();
+        let status = KoiStatus {
+            revision: 42,
+            capabilities: Vec::new(),
+            domains: DomainStatuses {
+                health: Some(
+                    koi_health::HealthSnapshot {
+                        revision: 3,
+                        running: true,
+                        machines: Vec::new(),
+                        services: vec![health],
+                    }
+                    .into(),
+                ),
+                runtime: Some(
+                    RuntimeStatus {
+                        revision: 5,
+                        instances: vec![runtime],
+                        instance_count: 1,
+                        ..RuntimeStatus::default()
+                    }
+                    .into(),
+                ),
+                certmesh_roster: Some(
+                    CertmeshRosterSnapshot {
+                        revision: 7,
+                        active_members: vec![member("health-only.lan", Some(expires))],
+                    }
+                    .into(),
+                ),
+                mdns_discovery: Some(
+                    MdnsDiscoverySnapshot {
+                        revision: 9,
+                        service_types: vec!["_http._tcp".to_string()],
+                        records: vec![discovered],
+                    }
+                    .into(),
+                ),
+                ..DomainStatuses::default()
+            },
+        };
+
+        let groups = build_target_groups(&status, Slice::WithDiscovered, fixed_now());
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[0].targets, ["10.0.0.1:8001"]);
+        assert_eq!(groups[0].labels[LABEL_SOURCE], "health");
+        assert_eq!(groups[0].labels[LABEL_CERT_EXPIRY_DAYS], "30");
+        assert_eq!(groups[1].targets, ["10.0.0.2:8002"]);
+        assert_eq!(groups[1].labels[LABEL_SOURCE], "runtime");
+        assert_eq!(groups[2].targets, ["10.0.0.3:8003"]);
+        assert_eq!(groups[2].labels[LABEL_SOURCE], "mdns");
+    }
+
     // ── Empty → [] ──
 
     #[test]
     fn empty_sources_yield_no_groups() {
-        let groups = build_target_groups(&[], &[], &[], &[], Slice::Managed, fixed_now());
+        let groups =
+            build_target_groups_from_sources(&[], &[], &[], &[], Slice::Managed, fixed_now());
         assert!(groups.is_empty());
         // And the empty array serializes to "[]".
         assert_eq!(serde_json::to_string(&groups).unwrap(), "[]");
@@ -393,7 +510,8 @@ mod tests {
     #[test]
     fn health_url_target_parses_host_port() {
         let svc = health_service("grafana", "http://10.0.0.5:3000/health", ServiceStatus::Up);
-        let groups = build_target_groups(&[svc], &[], &[], &[], Slice::Managed, fixed_now());
+        let groups =
+            build_target_groups_from_sources(&[svc], &[], &[], &[], Slice::Managed, fixed_now());
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].targets, vec!["10.0.0.5:3000"]);
         assert_eq!(groups[0].labels.get(LABEL_NAME).unwrap(), "grafana");
@@ -404,7 +522,8 @@ mod tests {
     #[test]
     fn health_https_url_without_port_uses_443() {
         let svc = health_service("api", "https://api.lan/health", ServiceStatus::Down);
-        let groups = build_target_groups(&[svc], &[], &[], &[], Slice::Managed, fixed_now());
+        let groups =
+            build_target_groups_from_sources(&[svc], &[], &[], &[], Slice::Managed, fixed_now());
         assert_eq!(groups[0].targets, vec!["api.lan:443"]);
         assert_eq!(groups[0].labels.get(LABEL_HEALTH).unwrap(), "down");
     }
@@ -412,7 +531,8 @@ mod tests {
     #[test]
     fn health_bare_host_port_target() {
         let svc = health_service("db", "10.0.0.9:5432", ServiceStatus::Unknown);
-        let groups = build_target_groups(&[svc], &[], &[], &[], Slice::Managed, fixed_now());
+        let groups =
+            build_target_groups_from_sources(&[svc], &[], &[], &[], Slice::Managed, fixed_now());
         assert_eq!(groups[0].targets, vec!["10.0.0.9:5432"]);
         assert_eq!(groups[0].labels.get(LABEL_HEALTH).unwrap(), "unknown");
     }
@@ -421,7 +541,8 @@ mod tests {
     fn health_target_without_port_is_skipped() {
         // A bare hostname (no scheme, no port) cannot become a Prometheus target.
         let svc = health_service("bad", "just-a-host", ServiceStatus::Up);
-        let groups = build_target_groups(&[svc], &[], &[], &[], Slice::Managed, fixed_now());
+        let groups =
+            build_target_groups_from_sources(&[svc], &[], &[], &[], Slice::Managed, fixed_now());
         assert!(groups.is_empty(), "groups: {groups:?}");
     }
 
@@ -434,7 +555,8 @@ mod tests {
             vec![tcp_port(8080, "192.168.1.10")],
             vec!["192.168.1.10".to_string()],
         );
-        let groups = build_target_groups(&[], &[inst], &[], &[], Slice::Managed, fixed_now());
+        let groups =
+            build_target_groups_from_sources(&[], &[inst], &[], &[], Slice::Managed, fixed_now());
         assert_eq!(groups[0].targets, vec!["192.168.1.10:8080"]);
         assert_eq!(groups[0].labels.get(LABEL_SOURCE).unwrap(), "runtime");
     }
@@ -446,14 +568,44 @@ mod tests {
             vec![tcp_port(9000, "0.0.0.0")],
             vec!["10.1.1.1".to_string()],
         );
-        let groups = build_target_groups(&[], &[inst], &[], &[], Slice::Managed, fixed_now());
+        let groups =
+            build_target_groups_from_sources(&[], &[inst], &[], &[], Slice::Managed, fixed_now());
         assert_eq!(groups[0].targets, vec!["10.1.1.1:9000"]);
+    }
+
+    #[test]
+    fn runtime_wildcard_without_observed_address_is_omitted() {
+        let inst = instance("svc", vec![tcp_port(9000, "0.0.0.0")], vec![]);
+        let groups =
+            build_target_groups_from_sources(&[], &[inst], &[], &[], Slice::Managed, fixed_now());
+        assert!(groups.is_empty(), "must not manufacture a loopback target");
+    }
+
+    #[test]
+    fn runtime_wildcard_ignores_non_concrete_instance_addresses() {
+        let inst = instance(
+            "svc",
+            vec![tcp_port(9000, "::")],
+            vec![String::new(), "0.0.0.0".to_string(), "10.1.1.9".to_string()],
+        );
+        let groups =
+            build_target_groups_from_sources(&[], &[inst], &[], &[], Slice::Managed, fixed_now());
+        assert_eq!(groups[0].targets, vec!["10.1.1.9:9000"]);
+    }
+
+    #[test]
+    fn runtime_ipv6_address_is_bracketed() {
+        let inst = instance("svc", vec![tcp_port(9000, "2001:db8::5")], vec![]);
+        let groups =
+            build_target_groups_from_sources(&[], &[inst], &[], &[], Slice::Managed, fixed_now());
+        assert_eq!(groups[0].targets, vec!["[2001:db8::5]:9000"]);
     }
 
     #[test]
     fn runtime_instance_without_ports_is_skipped() {
         let inst = instance("noports", vec![], vec!["10.1.1.1".to_string()]);
-        let groups = build_target_groups(&[], &[inst], &[], &[], Slice::Managed, fixed_now());
+        let groups =
+            build_target_groups_from_sources(&[], &[inst], &[], &[], Slice::Managed, fixed_now());
         assert!(groups.is_empty());
     }
 
@@ -462,7 +614,8 @@ mod tests {
         let mut inst = instance("container-abc", vec![tcp_port(80, "127.0.0.1")], vec![]);
         inst.metadata.name = Some("My Web".to_string());
         inst.metadata.service_type = Some("_http._tcp".to_string());
-        let groups = build_target_groups(&[], &[inst], &[], &[], Slice::Managed, fixed_now());
+        let groups =
+            build_target_groups_from_sources(&[], &[inst], &[], &[], Slice::Managed, fixed_now());
         assert_eq!(groups[0].labels.get(LABEL_NAME).unwrap(), "My Web");
         assert_eq!(
             groups[0].labels.get(LABEL_SERVICE_TYPE).unwrap(),
@@ -483,11 +636,18 @@ mod tests {
             txt: HashMap::new(),
         };
         let recs = std::slice::from_ref(&rec);
-        let managed = build_target_groups(&[], &[], &[], recs, Slice::Managed, fixed_now());
+        let managed =
+            build_target_groups_from_sources(&[], &[], &[], recs, Slice::Managed, fixed_now());
         assert!(managed.is_empty());
 
-        let discovered =
-            build_target_groups(&[], &[], &[], recs, Slice::WithDiscovered, fixed_now());
+        let discovered = build_target_groups_from_sources(
+            &[],
+            &[],
+            &[],
+            recs,
+            Slice::WithDiscovered,
+            fixed_now(),
+        );
         assert_eq!(discovered.len(), 1);
         assert_eq!(discovered[0].targets, vec!["10.0.0.50:631"]);
         assert_eq!(discovered[0].labels.get(LABEL_SOURCE).unwrap(), "mdns");
@@ -503,7 +663,14 @@ mod tests {
             port: Some(5432),
             txt: HashMap::new(),
         };
-        let groups = build_target_groups(&[], &[], &[], &[rec], Slice::WithDiscovered, fixed_now());
+        let groups = build_target_groups_from_sources(
+            &[],
+            &[],
+            &[],
+            &[rec],
+            Slice::WithDiscovered,
+            fixed_now(),
+        );
         assert!(groups.is_empty());
     }
 
@@ -514,7 +681,8 @@ mod tests {
         let svc = health_service("grafana", "http://grafana.lan:3000/", ServiceStatus::Up);
         let expires = Utc.with_ymd_and_hms(2026, 7, 15, 0, 0, 0).unwrap(); // +30 days
         let m = member("grafana.lan", Some(expires));
-        let groups = build_target_groups(&[svc], &[], &[m], &[], Slice::Managed, fixed_now());
+        let groups =
+            build_target_groups_from_sources(&[svc], &[], &[m], &[], Slice::Managed, fixed_now());
         assert_eq!(
             groups[0].labels.get(LABEL_CERT_EXPIRY_DAYS).unwrap(),
             "30",
@@ -527,7 +695,22 @@ mod tests {
     fn cert_expiry_omitted_when_no_member_matches() {
         let svc = health_service("lonely", "http://lonely.lan:80/", ServiceStatus::Up);
         let m = member("other.lan", Some(fixed_now()));
-        let groups = build_target_groups(&[svc], &[], &[m], &[], Slice::Managed, fixed_now());
+        let groups =
+            build_target_groups_from_sources(&[svc], &[], &[m], &[], Slice::Managed, fixed_now());
+        assert!(!groups[0].labels.contains_key(LABEL_CERT_EXPIRY_DAYS));
+    }
+
+    #[test]
+    fn cert_expiry_is_omitted_when_the_domain_has_no_expiry() {
+        let svc = health_service("grafana", "http://grafana.lan:3000/", ServiceStatus::Up);
+        let groups = build_target_groups_from_sources(
+            &[svc],
+            &[],
+            &[member("grafana.lan", None)],
+            &[],
+            Slice::Managed,
+            fixed_now(),
+        );
         assert!(!groups[0].labels.contains_key(LABEL_CERT_EXPIRY_DAYS));
     }
 
@@ -537,7 +720,8 @@ mod tests {
         let inst = instance("grafana", vec![tcp_port(3000, "127.0.0.1")], vec![]);
         let expires = Utc.with_ymd_and_hms(2026, 6, 25, 0, 0, 0).unwrap(); // +10 days
         let m = member("grafana.lan", Some(expires));
-        let groups = build_target_groups(&[], &[inst], &[m], &[], Slice::Managed, fixed_now());
+        let groups =
+            build_target_groups_from_sources(&[], &[inst], &[m], &[], Slice::Managed, fixed_now());
         assert_eq!(groups[0].labels.get(LABEL_CERT_EXPIRY_DAYS).unwrap(), "10");
     }
 
@@ -557,7 +741,8 @@ mod tests {
     #[test]
     fn ipv6_url_target_keeps_brackets() {
         let svc = health_service("v6", "http://[::1]:8080/health", ServiceStatus::Up);
-        let groups = build_target_groups(&[svc], &[], &[], &[], Slice::Managed, fixed_now());
+        let groups =
+            build_target_groups_from_sources(&[svc], &[], &[], &[], Slice::Managed, fixed_now());
         assert_eq!(groups[0].targets, vec!["[::1]:8080"]);
     }
 }

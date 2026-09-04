@@ -16,6 +16,10 @@ operations while native Koi supplies continuous browsing and explicit-address
 publication. Native Koi is always present in the catalog at the lowest priority.
 Routes never overlap, transitions retire the old owner before arming a replacement,
 and `koi status` names the live route owners and evidence.
+If an active browse route disappears, Koi retains its last observations for inspection
+and marks that browse unavailable rather than inventing removals. Those stale records do
+not satisfy a new resolve or subscription replay; reopening the route retires them before
+fresh provider events repopulate the view.
 
 On Windows these are deliberately separate capabilities. The built-in provider owns
 ordinary and explicit-address publication. The official Windows DNS-SD adapter owns
@@ -83,6 +87,12 @@ koi mdns discover http --timeout 0        # indefinite (Ctrl+C to stop)
 
 For automation, the indefinite mode is powerful: pipe the output to a script that reacts as services appear.
 
+Long-lived consumers should treat stream events as notifications, not as the database. Koi
+commits each observation to its revisioned discovery snapshot before emitting the event. If
+a bounded stream lags, the wire stream emits a `resync` frame containing that authoritative
+snapshot; replace your local view with it. You can also read the latest value directly at
+`GET /v1/mdns/snapshot`.
+
 ---
 
 ## Network browser
@@ -116,7 +126,7 @@ koi status
 ```
 
 ```
-Koi v1.0.0-rc.2
+Koi v1.0.0-dev.0
   ...
   Browse:    idle      # or "active" while the meta-browse is running
 ```
@@ -153,11 +163,16 @@ The snapshot is the current cache - every type, every instance, with counts and 
 }
 ```
 
+`host`, `ip`, and `port` remain `null` when the mDNS domain did not observe them;
+the browser never substitutes empty strings or port zero. `resolved: true` means
+the presentation has a nonzero port plus at least one usable observed locator
+(hostname or IP), so it can form an endpoint without guessing.
+
 The events feed is Server-Sent Events. Each `resolved` event carries a service record; `removed` carries the name and type; a periodic `heartbeat` carries running totals:
 
 ```
 event: resolved
-data: {"name":"My NAS","service_type":"_http._tcp","ip":"192.168.1.50","port":8080,...}
+data: {"name":"My NAS","type":"_http._tcp","ip":"192.168.1.50","port":8080,...}
 
 event: removed
 data: {"name":"My NAS._http._tcp.local.","service_type":"_http._tcp"}
@@ -433,7 +448,7 @@ This is the most important conceptual piece to understand. mDNS services should 
 | Mode          | Mechanism                                       | When it's used                     | Default timing                  |
 | ------------- | ----------------------------------------------- | ---------------------------------- | ------------------------------- |
 | **Heartbeat** | Client sends periodic `PUT /heartbeat/{id}`     | HTTP API registrations             | 90s lease, 30s grace            |
-| **Session**   | Connection open = alive. Drop = grace starts.   | IPC (pipe/socket) and piped stdin  | 30s grace (IPC), 5s grace (CLI) |
+| **Session**   | Connection open = alive. Drop = grace starts.   | Authenticated IPC (pipe/socket)    | 30s grace                     |
 | **Permanent** | Lives until explicit removal or daemon shutdown | `lease_secs: 0` from any transport | No expiry                       |
 
 The choice is automatic - the adapter picks the right mode for the transport. HTTP is stateless, so it uses heartbeats. IPC has a persistent connection, so it uses session awareness. You only need to think about this if you want to override the defaults.
@@ -482,7 +497,7 @@ All `{id}` parameters support **prefix matching** - use any unambiguous prefix o
 
 ## IPC (Named Pipe / Unix Socket)
 
-The IPC interface is the fastest path to the daemon - no HTTP overhead, no process spawn. It uses the same NDJSON protocol as piped stdin, over a persistent connection:
+The IPC interface is the fastest path to the daemon - no HTTP overhead, no process spawn. It uses Koi's verb-oriented NDJSON protocol over a persistent connection:
 
 - **Windows**: `\\.\pipe\koi`
 - **Linux/macOS**: `$XDG_RUNTIME_DIR/koi.sock` (or `/var/run/koi.sock`)

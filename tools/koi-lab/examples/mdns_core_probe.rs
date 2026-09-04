@@ -14,16 +14,24 @@ async fn main() {
     let mut found = 0;
     while std::time::Instant::now() < deadline {
         match tokio::time::timeout(Duration::from_millis(500), sub.recv()).await {
-            Ok(Some(event)) => match &event {
+            Ok(Ok(event)) => match &event {
                 koi_mdns::MdnsEvent::Found(record) => {
                     found += 1;
                     println!("Found: name={}", record.name);
                 }
                 other => println!("other: {other:?}"),
             },
-            Ok(None) => {
+            Ok(Err(koi_mdns::BrowseRecvError::Closed)) => {
                 println!("subscription closed");
                 break;
+            }
+            Ok(Err(koi_mdns::BrowseRecvError::Lagged { dropped })) => {
+                let snapshot = core.discovery_snapshot();
+                println!(
+                    "subscription lagged by {dropped}; authoritative snapshot revision={} records={}",
+                    snapshot.revision,
+                    snapshot.records.len()
+                );
             }
             Err(_) => {}
         }

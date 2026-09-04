@@ -1,23 +1,26 @@
 //! Koi Certmesh - certificate mesh with pluggable enrollment auth (Phase 2+).
 //!
 //! Provides a private Certificate Authority that mints ECDSA P-256 certificates,
-//! pluggable enrollment authentication (TOTP), trust store installation,
+//! pluggable enrollment authentication (TOTP), a typed CA-anchor projection,
 //! and a roster of enrolled members. Two machines on the same LAN can establish
 //! mutual TLS trust without external infrastructure.
 
 pub mod acme;
-pub mod audit;
+mod audit;
 pub mod backup;
+mod blocking_worker;
+mod bootstrap;
 pub mod bundle;
 pub mod ca;
-pub mod certfiles;
+#[cfg(test)]
+mod certfiles;
 pub mod certmesh_paths;
 pub mod client;
 #[cfg(test)]
 mod conformance;
 pub mod csr;
 pub mod diagnosis;
-pub mod enrollment;
+mod enrollment;
 pub mod entropy;
 pub mod envelope;
 pub mod error;
@@ -30,12 +33,15 @@ mod issuance_names;
 pub mod lifecycle;
 pub mod member;
 pub mod mtls;
+mod observation;
 pub mod principal;
 pub mod profiles;
 pub mod protocol;
+mod repository;
 pub mod roster;
 pub mod sealed;
 pub mod serve;
+pub mod status;
 pub mod wordlist;
 
 pub use certmesh_paths::CertmeshPaths;
@@ -43,11 +49,10 @@ pub use certmesh_paths::CertmeshPaths;
 use std::sync::Arc;
 
 use axum::Router;
-use koi_common::capability::{Capability, CapabilityStatus};
 use koi_common::posture::Posture;
 use koi_crypto::auth::AuthState;
 use koi_crypto::totp::RateLimiter;
-use tokio::sync::{broadcast, mpsc, oneshot, watch};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use zeroize::Zeroizing;
 
 pub use bundle::SignedBundle;
@@ -56,7 +61,13 @@ pub use client::PeerClient;
 pub use csr::sign_csr;
 pub use error::CertmeshError;
 pub use issuance_names::IssuanceNames;
+pub use observation::CertmeshObservation;
 use roster::Roster;
+pub use status::{
+    CertmeshAuthorityStatus, CertmeshBootstrapStatus, CertmeshCaAnchor, CertmeshCaAnchorSnapshot,
+    CertmeshCaAnchorState, CertmeshIdentityStatus, CertmeshMemberStatus, CertmeshReloadStatus,
+    CertmeshRenewalStatus, CertmeshRole, CertmeshStatus, IdentityCondition,
+};
 
 /// mDNS service type for CA discovery.
 /// Used by the binary crate to announce the CA via koi-mdns.
@@ -110,31 +121,154 @@ pub enum CertmeshEvent {
         /// should stop serving and surface a clear error (ADR-020 §revocation).
         self_revoked: bool,
     },
+    /// This node durably accepted CA material and is now an unlocked standby.
+    PromotedToAuthority { hostname: String },
+    /// The post-certificate activation hook completed and its durable intent
+    /// was cleared.
+    ReloadHookCompleted { command: String },
+    /// The active certificate remains authoritative, but its local consumer
+    /// did not reload; the durable intent will be retried at startup.
+    ReloadHookFailed { command: String, reason: String },
 }
 
 // ── Internal shared state ───────────────────────────────────────────
 
 /// Internal shared state for CertmeshCore and HTTP handlers.
 /// Not exposed outside this crate - all access goes through CertmeshCore methods.
+///
+/// Aggregate model cells are synchronous on purpose. Their critical sections are
+/// short, in-memory reads or replacements and every writer already holds the
+/// asynchronous `transition` gate. Once a durable repository commit succeeds,
+/// updating these cells and publishing projections must remain in the same poll:
+/// dropping a caller may not strand disk one generation ahead of memory/status.
+pub(crate) struct ModelCell<T>(std::sync::Mutex<T>);
+
+impl<T> ModelCell<T> {
+    fn new(value: T) -> Self {
+        Self(std::sync::Mutex::new(value))
+    }
+
+    /// Acquire a bounded in-memory model cell without introducing a cancellation
+    /// point. Callers must not retain the guard across an operation that can wait.
+    fn lock(&self) -> std::sync::MutexGuard<'_, T> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// HTTP/facade sharing wrapper. The worker and aggregate are siblings so an
+/// accepted worker closure can retain the aggregate without creating an
+/// `Arc<State> -> worker -> Arc<State>` ownership cycle.
 pub(crate) struct CertmeshState {
+    pub(crate) domain: Arc<CertmeshDomain>,
+    pub(crate) blocking: blocking_worker::CertmeshBlockingWorker,
+    pub(crate) reloads: Arc<lifecycle::ReloadExecutor>,
+}
+
+impl CertmeshState {
+    fn own(domain: CertmeshDomain) -> Self {
+        Self {
+            domain: Arc::new(domain),
+            blocking: blocking_worker::CertmeshBlockingWorker::new(),
+            reloads: Arc::new(lifecycle::ReloadExecutor::new()),
+        }
+    }
+}
+
+impl std::ops::Deref for CertmeshState {
+    type Target = CertmeshDomain;
+
+    fn deref(&self) -> &Self::Target {
+        &self.domain
+    }
+}
+
+pub(crate) struct CertmeshDomain {
     /// Resolved filesystem paths (immutable after construction).
     pub(crate) paths: CertmeshPaths,
+    /// Machine identity accepted by the application composition. Certmesh does
+    /// not re-observe the operating system: certificate names, roster role
+    /// changes, renewal, and failover all use this one launch fact.
+    pub(crate) local_hostname: Option<Arc<str>>,
     /// Immutable certificate-name policy, injected once by the composition root.
     pub(crate) issuance_names: IssuanceNames,
-    pub(crate) ca: tokio::sync::Mutex<Option<ca::CaState>>,
-    pub(crate) roster: tokio::sync::Mutex<Roster>,
-    pub(crate) auth: tokio::sync::Mutex<Option<AuthState>>,
-    pub(crate) pending_challenge: tokio::sync::Mutex<Option<koi_crypto::auth::AuthChallenge>>,
-    pub(crate) rate_limiter: tokio::sync::Mutex<RateLimiter>,
-    pub(crate) approval_tx: tokio::sync::Mutex<Option<mpsc::Sender<ApprovalRequest>>>,
+    pub(crate) ca: ModelCell<Option<ca::CaState>>,
+    pub(crate) roster: ModelCell<Roster>,
+    pub(crate) auth: ModelCell<Option<AuthState>>,
+    /// The one live ACME account model shared by every HTTP adapter. Its durable
+    /// file participates in the Certmesh repository; adapters never load their
+    /// own parallel registry.
+    pub(crate) acme_accounts: acme::account::AccountStore,
+    pub(crate) pending_challenge: ModelCell<Option<koi_crypto::auth::AuthChallenge>>,
+    pub(crate) rate_limiter: ModelCell<RateLimiter>,
+    pub(crate) approval_tx: ModelCell<Option<mpsc::Sender<ApprovalRequest>>>,
+    /// One-shot, short-lived key agreement held only by the local daemon while
+    /// an operator-driven promotion is in flight.
+    pub(crate) pending_promotion: ModelCell<Option<PendingPromotion>>,
     pub(crate) event_tx: broadcast::Sender<CertmeshEvent>,
-    /// Latest node posture, published on every identity-mutating op so a listener
-    /// supervisor (ADR-020 §5) can react to Open↔Authenticated transitions without
-    /// polling. Seeded from disk at construction; coalesced (no-op when unchanged).
-    pub(crate) posture_tx: watch::Sender<Posture>,
-    /// Tracks consecutive renewal failures so `CertRenewalFailed` can report the
-    /// streak to consumers. Reset to zero on each successful renewal.
-    pub(crate) renewal_failure_count: std::sync::atomic::AtomicU32,
+    /// The sole Certmesh read model exposed across the domain boundary.
+    pub(crate) status: koi_common::status::StatusFeed<CertmeshStatus>,
+    /// Narrow public roster projection for DNS, Health, and other integration
+    /// consumers that must not gain access to private Certmesh status.
+    pub(crate) roster_snapshot:
+        koi_common::status::StatusFeed<koi_common::integration::CertmeshRosterSnapshot>,
+    /// Sensitive in-process identity projection for TLS consumers. It is kept
+    /// separate from serializable status so private keys cannot leak onto a
+    /// transport by accident.
+    pub(crate) tls_identity:
+        koi_common::status::StatusFeed<koi_common::integration::TlsIdentitySnapshot>,
+    /// Sensitive CA desired-state projection consumed only by composition's
+    /// Trust bridge. It publishes before primary status as a causal fence.
+    pub(crate) ca_anchor: koi_common::status::StatusFeed<CertmeshCaAnchorSnapshot>,
+    /// Serializes complete domain transitions: model reads/writes, durable
+    /// artifact commits, projection publication, and semantic events. This is
+    /// deliberately broader than a persistence lock: readers can never observe
+    /// mixed generations while a multi-artifact command is committing.
+    pub(crate) transition: Arc<tokio::sync::Mutex<()>>,
+    /// The sole persistence boundary for aggregate artifact write-sets.
+    pub(crate) repository: Arc<repository::CertmeshRepository>,
+    /// Process-local renewal attempt truth. This model cell is projected into
+    /// `CertmeshStatus` before renewal events leave the domain.
+    pub(crate) renewal: ModelCell<CertmeshRenewalStatus>,
+    /// A visible repository generation whose crash durability has not yet been
+    /// confirmed. Status remains qualified until recovery or a later durable
+    /// commit settles this process-local fact.
+    pub(crate) repository_settlement_error: ModelCell<Option<String>>,
+}
+
+fn initial_local_hostname() -> Option<Arc<str>> {
+    #[cfg(test)]
+    {
+        // Unit tests exercise domain transitions without an application
+        // composition root. Their explicit fixture identity never ships in a
+        // production build.
+        Some(Arc::from("certmesh-test-host"))
+    }
+    #[cfg(not(test))]
+    {
+        None
+    }
+}
+
+pub(crate) struct PendingPromotion {
+    id: String,
+    keypair: koi_crypto::key_agreement::EphemeralKeyPair,
+    expires_at: tokio::time::Instant,
+}
+
+const CREDENTIAL_CLEANUP_LEDGER_VERSION: u32 = 1;
+
+/// Durable outbox record for irreversible platform credential retirement.
+/// It lives outside `certmesh/`, so removing the aggregate and recording the
+/// remaining effects share one filesystem transaction.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CredentialCleanupLedger {
+    version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    totp_slot_table: Option<Vec<u8>>,
+    delete_auto_unlock_vault: bool,
+    delete_ca_tpm: bool,
 }
 
 /// Enrollment approval request sent to the operator prompt.
@@ -257,7 +391,7 @@ impl RenewalHealth {
 /// The private key and all raw PEM material are omitted — only the non-sensitive
 /// scheduling and anchor facts that a consumer needs to surface "who is this node
 /// and when does its identity expire?" without leaking key material.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct IdentityInfo {
     /// This node's hostname (its certificate CN).
     pub hostname: String,
@@ -277,156 +411,449 @@ impl From<&Identity> for IdentityInfo {
     }
 }
 
-/// The posture watch seeded from disk: a node is `signed` when it already holds a
-/// usable CA-anchored leaf. Used by every `CertmeshState` constructor so the watch
-/// reports the right value before any mutation (ADR-020 §5).
-fn initial_posture_tx(paths: &CertmeshPaths) -> watch::Sender<Posture> {
-    watch::channel(Posture {
-        signed: node_has_identity(paths),
-        encrypted: false,
-    })
-    .0
-}
+impl CertmeshDomain {
+    fn require_local_hostname(&self, operation: &str) -> Result<String, CertmeshError> {
+        self.local_hostname
+            .as_deref()
+            .map(ToString::to_string)
+            .ok_or_else(|| {
+                CertmeshError::Internal(format!(
+                    "local hostname was not supplied while {operation}; refusing to invent a certificate identity"
+                ))
+            })
+    }
 
-impl CertmeshState {
-    /// Recompute this node's posture from disk and publish it on the watch
-    /// (ADR-020 §5). Coalesced — a `send` (and thus a `PostureChanged`) fires only
-    /// when the posture actually changed. Called after every identity-mutating op
-    /// (create / self-enroll / member install / destroy).
-    pub(crate) fn republish_posture(&self) {
-        let next = Posture {
-            signed: node_has_identity(&self.paths),
-            encrypted: false,
+    /// Fail closed unless the durable aggregate says this node owns the CA.
+    /// Every roster mutation passes through this gate, including internal ACME
+    /// and health paths, so a joined member can never grow a shadow authority
+    /// roster on disk.
+    fn require_authority_under_transition(&self) -> Result<(), CertmeshError> {
+        match self.status.current().role {
+            CertmeshRole::Authority => Ok(()),
+            CertmeshRole::Member => Err(CertmeshError::Conflict(
+                "member nodes cannot mutate the Certmesh authority roster".into(),
+            )),
+            CertmeshRole::Open => Err(CertmeshError::CaNotInitialized),
+        }
+    }
+
+    /// Rebuild and publish the authoritative projection after a successful
+    /// transition. No-op refreshes preserve both the allocation and revision.
+    pub(crate) async fn refresh_status(&self) -> Arc<CertmeshStatus> {
+        let _transition = self.transition.lock().await;
+        self.refresh_status_under_transition()
+    }
+
+    /// Rebuild status while the caller holds [`Self::transition`].
+    pub(crate) fn refresh_status_under_transition(&self) -> Arc<CertmeshStatus> {
+        let (ca_unlocked, ca_fingerprint) = {
+            let ca = self.ca.lock();
+            (ca.is_some(), ca.as_ref().map(ca::ca_fingerprint))
         };
-        self.posture_tx.send_if_modified(|cur| {
-            if *cur != next {
-                *cur = next;
-                true
+        let roster = self.roster.lock().clone();
+        let auth_method = self
+            .auth
+            .lock()
+            .as_ref()
+            .map(|auth| auth.method_name().to_string());
+        let current_status = self.status.current();
+        let revision = current_status.revision;
+        let (mut next, next_tls_material) = status::build_with_tls(
+            &self.paths,
+            self.local_hostname.as_deref(),
+            ca_unlocked,
+            ca_fingerprint,
+            &roster,
+            auth_method,
+            revision,
+        );
+        next.renewal = self.renewal.lock().clone();
+        if let Some(reason) = self.repository_settlement_error.lock().as_deref() {
+            status::qualify_repository_durability(&mut next, reason);
+        }
+        let status_changed = next != *current_status;
+        if status_changed {
+            next.revision = current_status.revision.saturating_add(1);
+        }
+
+        // Specialized projections publish before the primary status. The
+        // primary feed is the causal fence: once a status watcher observes a
+        // transition, every projection derived from that same aggregate
+        // generation is already current.
+        self.tls_identity.update(move |current| {
+            if current.material == next_tls_material {
+                None
             } else {
-                false
+                Some(koi_common::integration::TlsIdentitySnapshot {
+                    revision: current.revision.saturating_add(1),
+                    material: next_tls_material,
+                })
             }
         });
+        let active_members = status::active_members(&next);
+        self.roster_snapshot.update(move |current| {
+            if current.active_members == active_members {
+                None
+            } else {
+                Some(koi_common::integration::CertmeshRosterSnapshot {
+                    revision: current.revision.saturating_add(1),
+                    active_members,
+                })
+            }
+        });
+        let next_anchor =
+            status::build_ca_anchor(&self.paths, self.local_hostname.as_deref(), next.role, 0)
+                .state;
+        self.ca_anchor.update(move |current| {
+            if current.state == next_anchor {
+                None
+            } else {
+                Some(CertmeshCaAnchorSnapshot {
+                    revision: current.revision.saturating_add(1),
+                    state: next_anchor,
+                })
+            }
+        });
+        if status_changed {
+            self.status.publish(next)
+        } else {
+            current_status
+        }
+    }
+
+    /// Accept one failed local renewal attempt into the aggregate model. The
+    /// caller holds `transition` and publishes status before emitting its event.
+    pub(crate) fn record_renewal_failure_under_transition(&self, reason: String) -> u32 {
+        let mut renewal = self.renewal.lock();
+        renewal.consecutive_failures = renewal.consecutive_failures.saturating_add(1);
+        renewal.last_error = Some(reason);
+        renewal.consecutive_failures
+    }
+
+    /// Clear a local failure streak only when a replacement certificate really
+    /// committed. The caller holds `transition` and publishes the same causal
+    /// generation before success events leave the boundary.
+    pub(crate) fn clear_renewal_failure_under_transition(&self) {
+        *self.renewal.lock() = CertmeshRenewalStatus::default();
+    }
+
+    /// Settle a repository commit only after the caller has accepted its
+    /// visible generation into every affected in-memory model.
+    pub(crate) fn finish_commit_under_transition(
+        &self,
+        outcome: koi_common::persist::AtomicCommit,
+    ) -> Result<(), CertmeshError> {
+        let result = match outcome {
+            koi_common::persist::AtomicCommit::Durable => {
+                *self.repository_settlement_error.lock() = None;
+                Ok(())
+            }
+            koi_common::persist::AtomicCommit::DurabilityUncertain(error) => {
+                let reason = error.to_string();
+                *self.repository_settlement_error.lock() = Some(reason.clone());
+                Err(CertmeshError::DurabilityUncertain(reason))
+            }
+        };
+        self.refresh_status_under_transition();
+        result
     }
 
     /// Destroy all certmesh state - shared by CertmeshCore::destroy() and the HTTP handler.
-    pub(crate) async fn destroy(&self) -> Result<(), CertmeshError> {
-        // A slot table is the ownership ledger for its platform credentials.
-        // Retire those exact labels before removing the ledger from disk; a
-        // failure leaves the table intact so the operation can be retried.
+    pub(crate) fn destroy_under_transition(&self) -> Result<(), CertmeshError> {
+        // A prior teardown may have committed while its platform store was
+        // temporarily unavailable. Retry those independent outbox records before
+        // adding this command's cleanup work.
+        self.retry_credential_cleanups_under_transition();
+
         let slot_path = self.paths.slot_table_path();
-        if slot_path.exists() {
-            let mut table = koi_crypto::unlock_slots::SlotTable::load(&slot_path)
-                .map_err(|error| CertmeshError::Crypto(error.to_string()))?;
-            table
-                .remove_totp_slot(&slot_path)
-                .map_err(|error| CertmeshError::Crypto(error.to_string()))?;
-        }
+        let totp_slot_table = if slot_path.exists() {
+            koi_crypto::unlock_slots::SlotTable::prepare_totp_cleanup_ledger(&slot_path)
+                .map_err(|error| CertmeshError::Crypto(error.to_string()))?
+        } else {
+            None
+        };
+        let cleanup_path = new_credential_cleanup_path(&self.paths);
+        let cleanup_bytes = serde_json::to_vec_pretty(&CredentialCleanupLedger {
+            version: CREDENTIAL_CLEANUP_LEDGER_VERSION,
+            totp_slot_table,
+            delete_auto_unlock_vault: true,
+            delete_ca_tpm: true,
+        })
+        .map_err(|error| {
+            CertmeshError::Internal(format!("serialize credential cleanup ledger: {error}"))
+        })?;
 
-        // Remove platform-sealed key material (best-effort)
-        if let Err(e) = koi_crypto::tpm::delete_key_material("koi-certmesh-ca") {
-            tracing::debug!(error = %e, "No platform-sealed key material to clean up");
-        }
-
-        // Filesystem cleanup via spawn_blocking to avoid blocking the async executor
+        // All local artifacts disappear at one repository commit point. A
+        // pre-replace failure restores the complete prior generation and
+        // publishes nothing; post-replace uncertainty leaves the new visible
+        // generation in force but withholds semantic success.
+        // The cleanup ledger joins that commit, so no external credential is
+        // touched until its ownership record is independently durable.
         let certmesh_dir = self.paths.certmesh_dir();
         let certs_dir = self.paths.certs_dir();
         let audit_path = self.paths.audit_log_path();
-        tokio::task::spawn_blocking(move || {
-            if certmesh_dir.exists() {
-                if let Err(e) = std::fs::remove_dir_all(&certmesh_dir) {
-                    tracing::warn!(error = %e, "Failed to remove certmesh directory");
-                } else {
-                    tracing::info!(path = %certmesh_dir.display(), "Certmesh data directory removed");
-                }
-            }
-            if certs_dir.exists() {
-                if let Err(e) = std::fs::remove_dir_all(&certs_dir) {
-                    tracing::warn!(error = %e, "Failed to remove certificate files");
-                } else {
-                    tracing::info!(path = %certs_dir.display(), "Certificate files removed");
-                }
-            }
-            if audit_path.exists() {
-                if let Err(e) = std::fs::remove_file(&audit_path) {
-                    tracing::warn!(error = %e, "Failed to remove audit log");
-                } else {
-                    tracing::info!(path = %audit_path.display(), "Audit log removed");
-                }
-            }
-        })
-        .await
-        .map_err(|e| CertmeshError::Internal(format!("destroy task: {e}")))?;
+        let mut transaction = repository::ArtifactTransaction::new();
+        transaction.write(cleanup_path.clone(), cleanup_bytes, true);
+        transaction.remove_tree(&certmesh_dir)?;
+        transaction.remove_tree(&certs_dir)?;
+        transaction.remove(audit_path);
+        let outcome = self.commit_artifacts_under_transition(transaction)?;
 
-        // Clear in-memory state only after persistent state and credential
-        // ownership have been retired successfully.
-        *self.ca.lock().await = None;
-        *self.auth.lock().await = None;
-        *self.pending_challenge.lock().await = None;
-        *self.roster.lock().await = Roster::empty();
+        // Clear in-memory state only after persistent state and any required
+        // external-credential ownership ledger have committed successfully.
+        *self.ca.lock() = None;
+        *self.auth.lock() = None;
+        *self.pending_challenge.lock() = None;
+        *self.pending_promotion.lock() = None;
+        *self.roster.lock() = Roster::empty();
+        self.clear_renewal_failure_under_transition();
+        self.acme_accounts.clear();
+
+        self.finish_commit_under_transition(outcome)?;
 
         tracing::info!("Certmesh state destroyed");
-        self.republish_posture();
+
+        // Platform stores cannot participate in the filesystem transaction.
+        // Retire their exact product-owned labels only after the aggregate is
+        // durably gone. A failed attempt leaves the outbox in place for boot
+        // retry and remains visible as a degraded diagnosis.
+        let repository = Arc::clone(&self.repository);
+        let cleanup_paths = self.paths.clone();
+        let attempted_path = cleanup_path.clone();
+        match koi_common::blocking::run_to_completion(move || {
+            retire_credential_cleanup(&cleanup_paths, &repository, &attempted_path)
+        }) {
+            Ok(()) => {
+                self.refresh_status_under_transition();
+            }
+            Err(error) => {
+                tracing::warn!(%error, path = %cleanup_path.display(), "Certmesh credential cleanup deferred");
+            }
+        }
+
+        // Directory and platform-store cleanup cannot affect the committed
+        // aggregate generation. Remove only directories that remain empty so a
+        // concurrently-created unrelated artifact can never be erased.
+        for directory in [&certs_dir, &certmesh_dir, &self.paths.log_dir()] {
+            if let Err(error) = remove_empty_tree(directory) {
+                tracing::debug!(%error, path = %directory.display(), "Could not remove empty Certmesh directory");
+            }
+        }
         Ok(())
     }
 
-    /// Single-writer commit of a **membership** change (ADR-017 F8).
-    ///
-    /// Holds the roster lock for the entire read-modify-write, bumps `seq`, and
-    /// persists atomically *while still holding the lock* — so concurrent commits
-    /// serialize in `seq` order and can never lose an update (the old
-    /// `clone → drop → write` pattern could). Persists only when `mutate` returns
-    /// `Ok`; the closure must not leave the roster mutated on `Err`.
-    pub(crate) async fn commit_roster<F, R>(&self, mutate: F) -> Result<R, CertmeshError>
-    where
-        F: FnOnce(&mut Roster) -> Result<R, CertmeshError>,
-    {
-        self.commit_inner(true, mutate).await
+    /// Retry pending external effects while the caller holds the transition.
+    pub(crate) fn retry_credential_cleanups_under_transition(&self) {
+        let paths = self.paths.clone();
+        let repository = Arc::clone(&self.repository);
+        koi_common::blocking::run_to_completion(move || {
+            retry_credential_cleanups(&paths, &repository)
+        });
     }
 
-    /// Persist a **non-membership** change (e.g. `last_seen`) without bumping
-    /// `seq`, still holding the lock across the atomic write. The trust bundle is
-    /// unaffected (it does not carry liveness), so its `seq`/cache stay stable.
-    pub(crate) async fn touch_roster<F, R>(&self, mutate: F) -> Result<R, CertmeshError>
-    where
-        F: FnOnce(&mut Roster) -> Result<R, CertmeshError>,
-    {
-        self.commit_inner(false, mutate).await
+    /// Fence creation of a new trust generation until every cleanup owned by a
+    /// prior destroyed generation has completed. This makes replay safe: an old
+    /// fixed-label credential can never be retired after a replacement CA starts.
+    pub(crate) fn require_cleanup_complete_under_transition(&self) -> Result<(), CertmeshError> {
+        self.retry_credential_cleanups_under_transition();
+        if self.paths.credential_cleanup_pending() {
+            return Err(CertmeshError::Conflict(
+                "platform credential cleanup from a prior Certmesh generation is still pending"
+                    .into(),
+            ));
+        }
+        Ok(())
     }
 
-    async fn commit_inner<F, R>(&self, bump_seq: bool, mutate: F) -> Result<R, CertmeshError>
+    /// Commit a roster mutation while the caller holds [`Self::transition`].
+    pub(crate) fn commit_roster_under_transition<F, R>(
+        &self,
+        bump_seq: bool,
+        audit_line: Option<Vec<u8>>,
+        mutate: F,
+    ) -> Result<(R, koi_common::persist::AtomicCommit), CertmeshError>
     where
         F: FnOnce(&mut Roster) -> Result<R, CertmeshError>,
     {
-        let mut roster = self.roster.lock().await;
-        let out = mutate(&mut roster)?;
+        self.require_authority_under_transition()?;
+        // Prepare against a private generation. Nothing — including a fallible
+        // audit read or serialization — may make an uncommitted roster visible
+        // through the live aggregate model.
+        let mut snapshot = self.roster.lock().clone();
+        let out = mutate(&mut snapshot)?;
         if bump_seq {
-            roster.metadata.seq = roster.metadata.seq.saturating_add(1);
+            snapshot.metadata.seq = snapshot.metadata.seq.saturating_add(1);
         }
-        let snapshot = roster.clone();
-        let path = self.paths.roster_path();
-        // Persist off the executor but keep the roster lock held so writes
-        // serialize in seq order (single writer).
-        let saved = tokio::task::spawn_blocking(move || roster::save_roster(&snapshot, &path))
-            .await
-            .map_err(|e| std::io::Error::other(format!("roster save task: {e}")))
-            .and_then(|r| r)
-            .map_err(CertmeshError::Io);
-        if let Err(e) = saved {
-            // A failed persist is a trust-relevant event: the in-memory roster
-            // advanced but the durable copy did not (ADR-017 F9). Audit before
-            // returning so the gap is visible.
-            let _ = audit::append_entry_to(
-                &self.paths.audit_log_path(),
-                "roster_persist_failed",
-                &[("error", &e.to_string())],
-            );
-            return Err(e);
+        let mut transaction = repository::ArtifactTransaction::new();
+        let bytes = serde_json::to_vec_pretty(&snapshot)
+            .map_err(|error| CertmeshError::Internal(format!("serialize roster: {error}")))?;
+        transaction.write(self.paths.roster_path(), bytes, true);
+        if let Some(line) = audit_line {
+            transaction.append(self.paths.audit_log_path(), line, true)?;
         }
-        Ok(out)
+        let repository = Arc::clone(&self.repository);
+        let outcome =
+            koi_common::blocking::run_to_completion(move || repository.commit(transaction))?;
+        // Persistence is the commit point. The caller's retained transition
+        // closure owns this model publication and every subsequent projection
+        // and semantic-event step, even if its request future was cancelled.
+        *self.roster.lock() = snapshot;
+        Ok((out, outcome))
+    }
+
+    /// Commit an arbitrary aggregate write-set while the caller holds the
+    /// transition gate. This is the only route from commands to durable files.
+    pub(crate) fn commit_artifacts_under_transition(
+        &self,
+        transaction: repository::ArtifactTransaction,
+    ) -> Result<koi_common::persist::AtomicCommit, CertmeshError> {
+        let repository = Arc::clone(&self.repository);
+        koi_common::blocking::run_to_completion(move || repository.commit(transaction))
+    }
+
+    /// Append one audit record through the same durable repository while the
+    /// caller holds the transition gate.
+    pub(crate) fn commit_audit_under_transition(
+        &self,
+        event: &str,
+        fields: &[(&str, &str)],
+    ) -> Result<(), CertmeshError> {
+        let mut transaction = repository::ArtifactTransaction::new();
+        transaction.append(
+            self.paths.audit_log_path(),
+            audit::render_entry(event, fields),
+            true,
+        )?;
+        let outcome = self.commit_artifacts_under_transition(transaction)?;
+        self.finish_commit_under_transition(outcome)
+    }
+}
+
+fn new_credential_cleanup_path(paths: &CertmeshPaths) -> std::path::PathBuf {
+    use rand::RngCore;
+
+    loop {
+        let mut random = [0u8; 16];
+        rand::rng().fill_bytes(&mut random);
+        let path = paths.credential_cleanup_dir().join(format!(
+            "{}.json",
+            koi_common::encoding::hex_encode(&random)
+        ));
+        if !path.exists() {
+            return path;
+        }
+    }
+}
+
+fn retire_credential_cleanup(
+    paths: &CertmeshPaths,
+    repository: &repository::CertmeshRepository,
+    path: &std::path::Path,
+) -> Result<(), CertmeshError> {
+    // A ledger belongs to a generation that has already been destroyed. Never
+    // replay fixed-label cleanup across a restored or manually-created trust
+    // generation, even if an older binary bypassed the creation fence.
+    if paths.is_ca_initialized() || paths.member_state_path().exists() {
+        return Err(CertmeshError::Conflict(
+            "refusing stale credential cleanup while a Certmesh generation exists".into(),
+        ));
+    }
+    let bytes = std::fs::read(path)?;
+    let ledger: CredentialCleanupLedger = serde_json::from_slice(&bytes).map_err(|error| {
+        CertmeshError::Internal(format!("parse credential cleanup ledger: {error}"))
+    })?;
+    if ledger.version != CREDENTIAL_CLEANUP_LEDGER_VERSION {
+        return Err(CertmeshError::Internal(format!(
+            "unsupported credential cleanup ledger version {}",
+            ledger.version
+        )));
+    }
+    if let Some(slot_table) = ledger.totp_slot_table.as_deref() {
+        koi_crypto::unlock_slots::SlotTable::retire_totp_cleanup_bytes(slot_table)
+            .map_err(|error| CertmeshError::Crypto(error.to_string()))?;
+    }
+    if ledger.delete_auto_unlock_vault {
+        koi_crypto::vault::Vault::delete_persisted_entry(
+            paths.data_dir(),
+            CertmeshCore::VAULT_AUTO_UNLOCK_KEY,
+        )?;
+    }
+    if ledger.delete_ca_tpm {
+        koi_crypto::tpm::delete_key_material("koi-certmesh-ca")
+            .map_err(|error| CertmeshError::Crypto(error.to_string()))?;
+    }
+    let mut transaction = repository::ArtifactTransaction::new();
+    transaction.remove(path.to_path_buf());
+    repository.commit_durable(transaction)?;
+    if let Some(directory) = path.parent() {
+        if let Err(error) = remove_empty_tree(directory) {
+            tracing::debug!(%error, path = %directory.display(), "Could not remove empty credential-cleanup directory");
+        }
+    }
+    Ok(())
+}
+
+fn retry_credential_cleanups(paths: &CertmeshPaths, repository: &repository::CertmeshRepository) {
+    let entries = match std::fs::read_dir(paths.credential_cleanup_dir()) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(error) => {
+            tracing::warn!(%error, "Could not inspect pending Certmesh credential cleanup");
+            return;
+        }
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                tracing::warn!(%error, "Could not inspect a Certmesh credential cleanup ledger");
+                continue;
+            }
+        };
+        match entry.file_type() {
+            Ok(kind) if kind.is_file() => {}
+            Ok(_) => {
+                tracing::warn!(path = %entry.path().display(), "Ignoring unexpected entry in Certmesh credential-cleanup outbox");
+                continue;
+            }
+            Err(error) => {
+                tracing::warn!(%error, path = %entry.path().display(), "Could not inspect Certmesh credential cleanup ledger");
+                continue;
+            }
+        }
+        if let Err(error) = retire_credential_cleanup(paths, repository, &entry.path()) {
+            tracing::warn!(%error, path = %entry.path().display(), "Certmesh credential cleanup remains pending");
+        }
     }
 }
 
 // ── CertmeshCore - domain facade ────────────────────────────────────
+
+fn remove_empty_tree(path: &std::path::Path) -> std::io::Result<()> {
+    let entries = match std::fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    for entry in entries {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            remove_empty_tree(&entry.path())?;
+        }
+    }
+    match std::fs::remove_dir(path) {
+        Ok(()) => Ok(()),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::DirectoryNotEmpty
+            ) =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
 
 /// CertmeshCore - the main domain facade.
 ///
@@ -447,11 +874,13 @@ pub struct CertmeshCore {
 mod core_admin;
 mod core_auth;
 mod core_enroll;
+mod core_failover;
 mod core_identity;
 mod core_lifecycle;
 mod core_member;
 mod core_renewal;
 mod core_setup;
+mod core_status_clock;
 
 /// Shell metacharacters forbidden in reload hook commands.
 ///
@@ -532,33 +961,6 @@ pub enum RenewOutcome {
 /// Parse a leaf certificate PEM and return its `not_after` as a UTC datetime.
 ///
 /// Returns `None` on unparseable PEM/DER or an out-of-range timestamp.
-/// Whether a node rooted at `paths` holds a usable local identity: a CA-signed
-/// leaf (`cert.pem`/`key.pem`) for the local hostname on disk, anchored to a mesh.
-///
-/// "Anchored" is any of:
-/// - the CA is initialized here (this node *is* the CA), or
-/// - a `member.json` records the joined mesh (the mTLS-pull-renewal consumer), or
-/// - the leaf's CA anchor (`ca.pem`) sits alongside it — a leaf installed *with*
-///   the CA it chains to. This recognizes an **embedded consumer that holds a
-///   CA-signed leaf but deliberately does not arm `member.json`** (it drives its
-///   own renewal over a non-mTLS plane, ADR-020/ADR-022): its leaf is a real
-///   identity, not a stray cert. `install_member_cert`/`self_enroll` only write
-///   `ca.pem` beside a deliberately-installed leaf, and `destroy` removes the whole
-///   `certs/` tree, so this does not resurrect an orphaned leaf as secure.
-///
-/// Backs [`CertmeshCore::posture`] and the [`CertmeshCore::require_auth`] gate.
-pub(crate) fn node_has_identity(paths: &CertmeshPaths) -> bool {
-    let Some(hostname) = CertmeshCore::local_hostname() else {
-        return false;
-    };
-    let leaf = paths.certs_dir().join(&hostname);
-    let leaf_present = leaf.join("cert.pem").exists() && leaf.join("key.pem").exists();
-    let anchored = paths.is_ca_initialized()
-        || paths.member_state_path().exists()
-        || leaf.join("ca.pem").exists();
-    leaf_present && anchored
-}
-
 /// The `not_after` (expiry) instant of a leaf certificate PEM, or `None` if it
 /// cannot be parsed. A **stateless** reader for an *arbitrary* leaf (a discovered
 /// peer's cert, an operator-pasted cert) — no trust validation, just the field
@@ -578,24 +980,6 @@ pub fn leaf_not_after_utc(cert_pem: &str) -> Option<chrono::DateTime<chrono::Utc
 pub fn leaf_cn(cert_pem: &str) -> Option<String> {
     let der = pem::parse(cert_pem).ok()?;
     crate::mtls::extract_cn(der.contents())
-}
-
-/// Write `bytes` to `path` atomically (temp file → rename), 0600 on Unix when
-/// `private` is set. Used by the member-pull renewal install so a crash mid-write
-/// can never leave a half-written key or cert in place. The temp name carries the
-/// pid so concurrent writers (different processes) never collide on it.
-fn write_file_atomic(path: &std::path::Path, bytes: &[u8], private: bool) -> std::io::Result<()> {
-    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
-    std::fs::write(&tmp, bytes)?;
-    #[cfg(unix)]
-    if private {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
-    }
-    #[cfg(not(unix))]
-    let _ = private;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
 }
 
 /// Whether the recorded machine binding still matches this host (ADR-017 F11).
@@ -621,42 +1005,21 @@ pub fn machine_binding_ok(paths: &CertmeshPaths) -> bool {
     }
 }
 
-/// Write the machine-binding fingerprint atomically (0600 on Unix), creating the
-/// parent directory if needed (ADR-017 F11). The value is a non-secret hash.
-fn write_machine_binding(path: &std::path::Path, fingerprint: &str) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    write_file_atomic(path, fingerprint.as_bytes(), true)
-}
-
-/// Load the persisted TOTP rate-limiter state, or a fresh one (ADR-017 F7).
+/// Load the persisted TOTP rate-limiter state (ADR-017 F7).
 ///
-/// A missing or unparseable file yields a fresh limiter; the live check still
-/// fails closed, and a real lockout is re-persisted on the next failed attempt.
-fn load_rate_limiter(paths: &CertmeshPaths) -> RateLimiter {
+/// Only a missing file creates a fresh limiter. Corruption or I/O failure is
+/// aggregate damage and must stop bootstrap rather than erase a lockout.
+fn load_rate_limiter(paths: &CertmeshPaths) -> Result<RateLimiter, CertmeshError> {
     match std::fs::read(paths.rate_limiter_path()) {
-        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "Could not parse persisted rate-limiter; starting fresh");
-            RateLimiter::new()
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
+            CertmeshError::Internal(format!(
+                "persisted enrollment rate limiter at '{}' is invalid: {error}",
+                paths.rate_limiter_path().display()
+            ))
         }),
-        Err(_) => RateLimiter::new(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(RateLimiter::new()),
+        Err(error) => Err(CertmeshError::Io(error)),
     }
-}
-
-/// Persist the TOTP rate-limiter state atomically (0600) so a daemon restart can't
-/// reset an active lockout (ADR-017 F7). Best-effort — callers log any error.
-/// `pub(crate)` so the http promote handler can persist after its own check.
-pub(crate) fn persist_rate_limiter(
-    paths: &CertmeshPaths,
-    limiter: &RateLimiter,
-) -> std::io::Result<()> {
-    let path = paths.rate_limiter_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let json = serde_json::to_vec(limiter).map_err(std::io::Error::other)?;
-    write_file_atomic(&path, &json, true)
 }
 
 /// The single source of truth for hostname validation (ADR-017 F15): full
@@ -718,7 +1081,6 @@ async fn request_approval(
     let tx = state
         .approval_tx
         .lock()
-        .await
         .clone()
         .ok_or(CertmeshError::ApprovalUnavailable)?;
 
@@ -757,92 +1119,7 @@ async fn request_approval(
     }
 }
 
-#[async_trait::async_trait]
-impl Capability for CertmeshCore {
-    fn name(&self) -> &str {
-        "certmesh"
-    }
-
-    async fn status(&self) -> CapabilityStatus {
-        // Use try_lock for sync Capability trait - best effort
-        let ca_initialized = self.state.paths.is_ca_initialized();
-        let ca_locked = self
-            .state
-            .ca
-            .try_lock()
-            .map(|guard| guard.is_none())
-            .unwrap_or(true);
-        let member_count = self
-            .state
-            .roster
-            .try_lock()
-            .map(|guard| guard.active_count())
-            .unwrap_or(0);
-
-        let (summary, healthy) = if !ca_initialized && self.is_certmesh_member() {
-            ("authenticated member".to_string(), true)
-        } else if !ca_initialized {
-            ("ready \u{2014} run certmesh create".to_string(), true)
-        } else if ca_locked {
-            ("CA locked".to_string(), false)
-        } else {
-            (
-                format!(
-                    "active ({} member{})",
-                    member_count,
-                    if member_count == 1 { "" } else { "s" }
-                ),
-                true,
-            )
-        };
-
-        CapabilityStatus {
-            name: "certmesh".to_string(),
-            summary,
-            healthy,
-        }
-    }
-}
-
 // ── Shared helpers ──────────────────────────────────────────────────
-
-/// Build a CertmeshStatus from locked guards. Used by both the facade
-/// method and the HTTP handler to avoid duplicating the mapping logic.
-pub(crate) fn build_status(
-    paths: &CertmeshPaths,
-    ca_guard: &Option<ca::CaState>,
-    roster: &Roster,
-    auth_method: Option<&str>,
-) -> protocol::CertmeshStatus {
-    let ca_fingerprint = match ca_guard {
-        Some(ca) => Some(ca::ca_fingerprint(ca)),
-        None => ca::ca_fingerprint_from_disk(paths).ok(),
-    };
-
-    protocol::CertmeshStatus {
-        ca_initialized: paths.is_ca_initialized(),
-        ca_locked: ca_guard.is_none(),
-        ca_fingerprint,
-        enrollment_open: roster.metadata.enrollment_open,
-        requires_approval: roster.metadata.requires_approval,
-        enrollment_state: roster.enrollment_state(),
-        auth_method: auth_method.map(|s| s.to_string()),
-        member_count: roster.active_count(),
-        seq: roster.metadata.seq,
-        policy: roster.metadata.policy.clone(),
-        members: roster
-            .members
-            .iter()
-            .map(|m| protocol::MemberSummary {
-                hostname: m.hostname.clone(),
-                role: format!("{:?}", m.role).to_lowercase(),
-                status: format!("{:?}", m.status).to_lowercase(),
-                cert_fingerprint: m.cert_fingerprint.clone(),
-                cert_expires: m.cert_expires.to_rfc3339(),
-            })
-            .collect(),
-    }
-}
 
 #[cfg(test)]
 mod core_tests;

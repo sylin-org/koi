@@ -20,15 +20,22 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
-use tokio_util::sync::CancellationToken;
+
+use koi_common::integration::{TlsIdentityMaterial, TlsIdentitySnapshot, TlsIdentitySource};
+use koi_common::status::StatusFeed;
 
 use crate::config::ProxyEntry;
-use crate::listener::{spawn_listener, ListenerState, ListenerStatus};
+use crate::listener::{spawn_listener_with_tls, ListenerHandle, ListenerState, ListenerStatus};
+use crate::tls::CertSource;
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-fn init_data_dir() {
-    let _ = koi_common::test::ensure_data_dir("koi-proxy-data-plane-tests");
+fn test_overrides_dir() -> std::path::PathBuf {
+    koi_common::test::ensure_data_dir("koi-proxy-data-plane-tests").join("proxy-certs")
+}
+
+fn spawn_test_listener(entry: ProxyEntry) -> ListenerHandle {
+    spawn_listener_with_tls(entry, test_overrides_dir(), None)
 }
 
 /// Grab an ephemeral port the OS is willing to hand out, then release it.
@@ -46,10 +53,10 @@ fn entry(name: &str, listen_port: u16, backend: String) -> ProxyEntry {
     }
 }
 
-/// Write a fresh self-signed cert+key to `certs/<name>/`; return the cert DER so a
-/// handshake's served cert can be compared against it.
+/// Write a fresh self-signed cert+key to Proxy's `proxy-certs/<name>/` override;
+/// return the cert DER so a handshake's served cert can be compared against it.
 fn write_cert(name: &str, extra_san: &str) -> Vec<u8> {
-    let dir = koi_common::paths::koi_certs_dir().join(name);
+    let dir = test_overrides_dir().join(name);
     std::fs::create_dir_all(&dir).expect("create cert dir");
     let sans = vec![
         "localhost".to_string(),
@@ -63,6 +70,49 @@ fn write_cert(name: &str, extra_san: &str) -> Vec<u8> {
     generated.cert.der().as_ref().to_vec()
 }
 
+#[derive(Clone)]
+struct TestTlsIdentitySource {
+    feed: StatusFeed<TlsIdentitySnapshot>,
+}
+
+impl TestTlsIdentitySource {
+    fn new(initial: TlsIdentitySnapshot) -> Self {
+        Self {
+            feed: StatusFeed::new(initial),
+        }
+    }
+
+    fn publish(&self, snapshot: TlsIdentitySnapshot) {
+        self.feed.publish(snapshot);
+    }
+}
+
+impl TlsIdentitySource for TestTlsIdentitySource {
+    fn tls_identity(&self) -> Arc<TlsIdentitySnapshot> {
+        self.feed.current()
+    }
+
+    fn watch_tls_identity(&self) -> watch::Receiver<Arc<TlsIdentitySnapshot>> {
+        self.feed.subscribe()
+    }
+}
+
+fn generated_identity(hostname: &str) -> (TlsIdentityMaterial, Vec<u8>) {
+    let generated =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_string(), hostname.to_string()])
+            .expect("generate identity");
+    let der = generated.cert.der().as_ref().to_vec();
+    (
+        TlsIdentityMaterial {
+            hostname: hostname.to_string(),
+            certificate_chain_pem: Arc::from(generated.cert.pem()),
+            private_key_pem: Arc::from(generated.key_pair.serialize_pem()),
+            trust_anchor_pem: Arc::from(generated.cert.pem()),
+        },
+        der,
+    )
+}
+
 /// Wait for the listener to report a given state. Returns false if the sender is dropped
 /// first (e.g. the listener task panicked). The budget is generous (30s) because every
 /// data-plane test runs a `multi_thread` runtime, so the full `cargo test --workspace`
@@ -73,6 +123,24 @@ async fn wait_for_state(rx: &mut watch::Receiver<ListenerStatus>, target: Listen
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if rx.borrow_and_update().state == target {
+                return true;
+            }
+            if rx.changed().await.is_err() {
+                return false;
+            }
+        }
+    })
+    .await
+    .unwrap_or(false)
+}
+
+async fn wait_for_cert_source(
+    rx: &mut watch::Receiver<ListenerStatus>,
+    target: CertSource,
+) -> bool {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if rx.borrow_and_update().cert_source == target {
                 return true;
             }
             if rx.changed().await.is_err() {
@@ -230,44 +298,33 @@ async fn spawn_greeting_echo_backend(greeting: &'static str) -> u16 {
 /// passthrough listener must reach `Running` with no panic.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn listener_reaches_running_without_panic() {
-    init_data_dir();
     let port = free_port();
-    let cancel = CancellationToken::new();
-    let mut rx = spawn_listener(
-        entry("p04-running", port, "127.0.0.1:9".to_string()),
-        cancel.clone(),
-    );
+    let listener = spawn_test_listener(entry("p04-running", port, "127.0.0.1:9".to_string()));
+    let mut rx = listener.watch_status();
 
     assert!(
         wait_for_state(&mut rx, ListenerState::Running).await,
         "listener never reached Running (panic or bind failure?)"
     );
 
-    cancel.cancel();
+    listener.shutdown().await;
 }
 
 /// A second entry on an already-bound port must surface a real `Error` state with
 /// detail — not a hardcoded `running: true`, and without taking down the process.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn bind_conflict_reports_error_state() {
-    init_data_dir();
     let port = free_port();
 
-    let cancel_a = CancellationToken::new();
-    let mut rx_a = spawn_listener(
-        entry("p04-conflict-a", port, "127.0.0.1:9".to_string()),
-        cancel_a.clone(),
-    );
+    let listener_a = spawn_test_listener(entry("p04-conflict-a", port, "127.0.0.1:9".to_string()));
+    let mut rx_a = listener_a.watch_status();
     assert!(
         wait_for_state(&mut rx_a, ListenerState::Running).await,
         "first listener should bind"
     );
 
-    let cancel_b = CancellationToken::new();
-    let mut rx_b = spawn_listener(
-        entry("p04-conflict-b", port, "127.0.0.1:9".to_string()),
-        cancel_b.clone(),
-    );
+    let listener_b = spawn_test_listener(entry("p04-conflict-b", port, "127.0.0.1:9".to_string()));
+    let mut rx_b = listener_b.watch_status();
     assert!(
         wait_for_state(&mut rx_b, ListenerState::Error).await,
         "second listener should report Error on the conflicting port"
@@ -283,25 +340,21 @@ async fn bind_conflict_reports_error_state() {
     // The first listener is unaffected.
     assert_eq!(rx_a.borrow().state, ListenerState::Running);
 
-    cancel_a.cancel();
-    cancel_b.cancel();
+    listener_a.shutdown().await;
+    listener_b.shutdown().await;
 }
 
 /// HTTPS request through the proxy reaches the backend and its body returns.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn https_request_round_trips_to_backend() {
-    init_data_dir();
     let backend_port = spawn_http_backend("hello-koi").await;
     let listen_port = free_port();
-    let cancel = CancellationToken::new();
-    let mut rx = spawn_listener(
-        entry(
-            "p04-roundtrip",
-            listen_port,
-            format!("127.0.0.1:{backend_port}"),
-        ),
-        cancel.clone(),
-    );
+    let listener = spawn_test_listener(entry(
+        "p04-roundtrip",
+        listen_port,
+        format!("127.0.0.1:{backend_port}"),
+    ));
+    let mut rx = listener.watch_status();
     assert!(wait_for_state(&mut rx, ListenerState::Running).await);
 
     let mut tls = tls_connect(listen_port).await.expect("tls connect");
@@ -317,25 +370,21 @@ async fn https_request_round_trips_to_backend() {
         "backend body not returned through proxy: {text:?}"
     );
 
-    cancel.cancel();
+    listener.shutdown().await;
 }
 
 /// Server-initiated bytes (greeting) reach the client, then client bytes are echoed
 /// back — full-duplex passthrough, the property a WebSocket needs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn bidirectional_full_duplex_round_trips() {
-    init_data_dir();
     let backend_port = spawn_greeting_echo_backend("HELLO").await;
     let listen_port = free_port();
-    let cancel = CancellationToken::new();
-    let mut rx = spawn_listener(
-        entry(
-            "p04-duplex",
-            listen_port,
-            format!("127.0.0.1:{backend_port}"),
-        ),
-        cancel.clone(),
-    );
+    let listener = spawn_test_listener(entry(
+        "p04-duplex",
+        listen_port,
+        format!("127.0.0.1:{backend_port}"),
+    ));
+    let mut rx = listener.watch_status();
     assert!(wait_for_state(&mut rx, ListenerState::Running).await);
 
     let mut tls = tls_connect(listen_port).await.expect("tls connect");
@@ -351,22 +400,127 @@ async fn bidirectional_full_duplex_round_trips() {
     tls.read_exact(&mut echoed).await.expect("read echo");
     assert_eq!(&echoed, b"PING");
 
-    cancel.cancel();
+    listener.shutdown().await;
+}
+
+/// Listener teardown releases admission and its socket, but a connection that
+/// was already accepted drains naturally instead of being severed by a config
+/// replacement or operator removal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn accepted_connection_drains_after_listener_shutdown() {
+    let backend_port = spawn_greeting_echo_backend("READY").await;
+    let listen_port = free_port();
+    let listener = spawn_test_listener(entry(
+        "p04-drain",
+        listen_port,
+        format!("127.0.0.1:{backend_port}"),
+    ));
+    let mut status = listener.watch_status();
+    assert!(wait_for_state(&mut status, ListenerState::Running).await);
+
+    let mut tls = tls_connect(listen_port).await.expect("tls connect");
+    let mut greeting = [0u8; 5];
+    tls.read_exact(&mut greeting).await.expect("read greeting");
+    assert_eq!(&greeting, b"READY");
+
+    let mut connections = listener.shutdown().await;
+    tls.write_all(b"PING").await.expect("write after shutdown");
+    let mut echoed = [0u8; 4];
+    tls.read_exact(&mut echoed)
+        .await
+        .expect("accepted connection keeps draining");
+    assert_eq!(&echoed, b"PING");
+    drop(tls);
+    connections
+        .shutdown_until(tokio::time::Instant::now() + Duration::from_secs(1))
+        .await;
+}
+
+/// Cancelling the caller cannot detach terminal Proxy shutdown. The retained
+/// domain owner completes connection drain without a cleanup retry.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelled_runtime_shutdown_converges_without_retry() {
+    let backend_port = spawn_greeting_echo_backend("READY").await;
+    let listen_port = free_port();
+    let root = std::env::temp_dir().join(format!(
+        "koi-proxy-cancelled-shutdown-{}",
+        koi_common::id::generate_short_id()
+    ));
+    std::fs::create_dir_all(&root).expect("runtime data dir");
+    let core = Arc::new(
+        crate::ProxyCore::open(root.join("config.toml"), root.join("proxy-certs"))
+            .expect("proxy core"),
+    );
+    let runtime = crate::ProxyRuntime::new(core);
+    let desired = entry(
+        "cancelled-shutdown",
+        listen_port,
+        format!("127.0.0.1:{backend_port}"),
+    );
+    runtime.upsert(desired).await.expect("arm listener");
+    let mut status = runtime.watch_status();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while status.borrow_and_update().proxies[0].state != "running" {
+            status.changed().await.expect("Proxy status remains open");
+        }
+    })
+    .await
+    .expect("listener running");
+
+    let mut tls = tls_connect(listen_port).await.expect("tls connect");
+    let mut greeting = [0_u8; 5];
+    tls.read_exact(&mut greeting).await.expect("read greeting");
+    assert_eq!(&greeting, b"READY");
+
+    let retry = runtime.clone();
+    let shutdown = tokio::spawn(async move { retry.shutdown().await });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if runtime.status().proxies[0].state == "stopped" {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("terminal status published");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    shutdown.abort();
+    let _ = shutdown.await;
+
+    drop(tls);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let lifecycle = runtime.inner.lifecycle.lock().await;
+            if lifecycle.active.is_empty()
+                && lifecycle.retiring.is_empty()
+                && lifecycle.draining.is_empty()
+            {
+                break;
+            }
+            drop(lifecycle);
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("retained shutdown completes without a retry");
+
+    // A later observer joins the already-complete terminal fence.
+    runtime
+        .shutdown()
+        .await
+        .expect("later observer sees completed Proxy shutdown");
 }
 
 /// A cert file change on disk is served on the next handshake without a restart,
 /// and the notify→tokio bridge does not panic (the old watcher's second defect).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cert_change_on_disk_is_served_without_restart() {
-    init_data_dir();
     let name = "p04-hotreload";
     let der_a = write_cert(name, "a.example.test");
     let listen_port = free_port();
-    let cancel = CancellationToken::new();
-    let mut rx = spawn_listener(
-        entry(name, listen_port, "127.0.0.1:9".to_string()),
-        cancel.clone(),
-    );
+    let listener = spawn_test_listener(entry(name, listen_port, "127.0.0.1:9".to_string()));
+    let mut rx = listener.watch_status();
     assert!(wait_for_state(&mut rx, ListenerState::Running).await);
 
     // First handshake serves cert A.
@@ -391,5 +545,79 @@ async fn cert_change_on_disk_is_served_without_restart() {
         "rotated cert B was not hot-reloaded onto the listener"
     );
 
-    cancel.cancel();
+    listener.shutdown().await;
+}
+
+/// The Certmesh adapter is a real latest-value input: rotation replaces the
+/// served key without a listener restart, and withdrawal immediately falls
+/// back instead of retaining revoked material.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn composed_identity_rotates_and_withdraws_without_stale_tls() {
+    let name = format!("tls-port-{}", koi_common::id::generate_short_id());
+    let overrides = std::env::temp_dir().join(format!(
+        "koi-proxy-overrides-{}",
+        koi_common::id::generate_short_id()
+    ));
+    let (material_a, der_a) = generated_identity(&name);
+    let source = Arc::new(TestTlsIdentitySource::new(TlsIdentitySnapshot {
+        revision: 1,
+        material: Some(material_a),
+    }));
+    let identity: Arc<dyn TlsIdentitySource> = source.clone();
+    let listen_port = free_port();
+    let listener = spawn_listener_with_tls(
+        entry(&name, listen_port, "127.0.0.1:9".to_string()),
+        overrides.clone(),
+        Some(identity),
+    );
+    let mut status = listener.watch_status();
+    assert!(wait_for_state(&mut status, ListenerState::Running).await);
+    assert_eq!(status.borrow().cert_source, CertSource::Certmesh);
+    let initial_revision = status.borrow().cert_revision;
+    assert_eq!(
+        served_cert_der(listen_port).await.as_deref(),
+        Some(der_a.as_slice())
+    );
+
+    let (material_b, der_b) = generated_identity(&name);
+    source.publish(TlsIdentitySnapshot {
+        revision: 2,
+        material: Some(material_b),
+    });
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while status.borrow_and_update().cert_revision == initial_revision {
+            status
+                .changed()
+                .await
+                .expect("certificate selection status remains live");
+        }
+    })
+    .await
+    .expect("same-source certificate rotation must advance status");
+    assert_eq!(status.borrow().cert_source, CertSource::Certmesh);
+    let mut rotated = false;
+    for _ in 0..50 {
+        if served_cert_der(listen_port).await.as_deref() == Some(der_b.as_slice()) {
+            rotated = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(rotated, "rotated composed identity was not served");
+
+    source.publish(TlsIdentitySnapshot {
+        revision: 3,
+        material: None,
+    });
+    assert!(
+        wait_for_cert_source(&mut status, CertSource::SelfSigned).await,
+        "withdrawn trust identity must change the listener status"
+    );
+    let fallback = served_cert_der(listen_port)
+        .await
+        .expect("self-signed fallback certificate");
+    assert_ne!(fallback, der_b, "withdrawn identity remained live");
+
+    listener.shutdown().await;
+    let _ = std::fs::remove_dir_all(overrides);
 }

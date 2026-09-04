@@ -43,27 +43,31 @@ pub fn resolve_localhost(endpoint: &str) -> String {
 
     debug!(port, "racing IPv4 vs IPv6 on localhost:{port}");
 
-    // Spawn two threads; first successful connect wins.
-    let (tx, rx) = std::sync::mpsc::channel::<&str>();
+    // Scope the two probes so the losing connect is always reaped before this
+    // synchronous boundary returns. Both connects already carry the same short
+    // deadline, so ownership does not lengthen the operation without bound.
+    let winner = std::thread::scope(|scope| {
+        let (tx, rx) = std::sync::mpsc::channel::<&'static str>();
 
-    let tx4 = tx.clone();
-    std::thread::spawn(move || {
-        trace!(%v4_addr, "probing IPv4");
-        if TcpStream::connect_timeout(&v4_addr, RACE_TIMEOUT).is_ok() {
-            let _ = tx4.send("127.0.0.1");
-        }
+        let tx4 = tx.clone();
+        scope.spawn(move || {
+            trace!(%v4_addr, "probing IPv4");
+            if TcpStream::connect_timeout(&v4_addr, RACE_TIMEOUT).is_ok() {
+                let _ = tx4.send("127.0.0.1");
+            }
+        });
+
+        scope.spawn(move || {
+            trace!(%v6_addr, "probing IPv6");
+            if TcpStream::connect_timeout(&v6_addr, RACE_TIMEOUT).is_ok() {
+                let _ = tx.send("[::1]");
+            }
+        });
+
+        rx.recv_timeout(RACE_TIMEOUT + Duration::from_millis(50))
     });
 
-    let tx6 = tx;
-    std::thread::spawn(move || {
-        trace!(%v6_addr, "probing IPv6");
-        if TcpStream::connect_timeout(&v6_addr, RACE_TIMEOUT).is_ok() {
-            let _ = tx6.send("[::1]");
-        }
-    });
-
-    // Wait for the first winner or timeout.
-    match rx.recv_timeout(RACE_TIMEOUT + Duration::from_millis(50)) {
+    match winner {
         Ok(winner) => {
             let resolved = replace_localhost(endpoint, winner, port);
             debug!(winner, %resolved, "localhost resolved via Happy Eyeballs");

@@ -16,7 +16,7 @@ validation:
 
 > One-screen map of Koi's **never-silent** trust state. Wire contract: [trust-protocol.md](../trust-protocol.md) · full trust model: [trust.md](../../guides/trust.md) · design: [ADR-020](../../adr/020-mode-transparent-trust-primitives.md) §13.
 
-**What it does** — The trust category's defining failure is **silence**: a cert expires, a node is downgraded, or an identity half-writes itself, and nothing tells you until something breaks. Koi's answer is **transparency of trust state** — `koi trust diagnose` runs a structured trust-doctor that emits one finding per facet (posture, identity, identity-integrity, self-revocation, renewal, CA-trust-install, clock), and **every finding carries a distinct state, a cause, and an exact runnable remedy**. The tool **fails loud**: any `RED` check rolls the report up to RED and the process **exits non-zero**; a warning is loud but exits `0`. It never fakes an aggregate "success" over something it cannot verify — OS trust-store membership isn't queryable via `os-truststore`, so that check states the limitation and the fix instead of claiming "installed" (the mkcert-#182 honesty rule). The same `CertmeshCore::diagnose` logic backs the CLI, the daemon's `GET /v1/certmesh/diagnose`, and the dashboard, so all three render identical checks.
+**What it does** — The trust category's defining failure is **silence**: a cert expires, a node is downgraded, or an identity half-writes itself, and nothing tells you until something breaks. Koi's answer is **transparency of trust state** — `koi trust diagnose` composes Certmesh's identity findings with the Trust domain's real OS-store presence and pending-transition status. **Every finding carries a distinct state, a cause, and an exact runnable remedy**. The tool **fails loud**: any `RED` check rolls the report up to RED and the process **exits non-zero**; a warning is loud but exits `0`. Certmesh's live status or observation-only offline projection remains authoritative for certificate-mesh facts; the CLI adds the independently owned OS Trust findings at its composition boundary.
 
 ## The one canonical pattern
 
@@ -37,8 +37,7 @@ Trust diagnosis: HEALTHY
   [+] identity_integrity: on-disk leaf parses and chains to its CA
   [+] self_revocation: not revoked
   [+] renewal: leaf healthy (expires in 62 days)
-  [+] ca_trust_install: install status is not queryable via the OS trust API …
-      → fix: koi trust diagnose --fix
+  [+] ca_trust_presence: the Certmesh CA is present in the OS trust store
   [+] clock: local clock 2026-06-22T…; envelopes accept ±300s skew
 ```
 
@@ -49,14 +48,14 @@ Trust diagnosis: HEALTHY
 | `koi trust diagnose` | Run the trust-doctor; exit non-zero when any check is `RED`. |
 | `koi trust diagnose --fix` | Same, plus install the mesh CA into the OS trust store (best-effort; reported, never fatal). |
 | `koi trust diagnose --json` | Emit the `TrustDiagnosis` (posture + rollup + per-check `{name, status, detail, remedy?}`). |
-| `GET /v1/certmesh/diagnose` | Same report over HTTP. **Token-free for a loopback peer; the `x-koi-token` is required from a remote peer** (fail-closed when the peer is unknown), gated alongside `/v1/dns/{list,zone,entries}`. |
+| `GET /v1/certmesh/diagnose` | Certmesh-owned identity/renewal report over HTTP. OS trust presence remains a local Trust-domain query composed by the CLI. **Token-free for a loopback peer; the `x-koi-token` is required from a remote peer** (fail-closed when the peer is unknown). |
 
 **Posture levels** — `Open` (no identity, plaintext/anonymous) → `Authenticated` (a cryptographic identity, mTLS) → `Confidential` (authenticated + group-key confidentiality, the future rung). The level is the `posture` check's detail and is stamped into mDNS TXT for discoverers. (`koi status` does **not** print the posture level — it shows the confidentiality `Seal:` line, `passthrough`|`groupkey`; read the level from `diagnose`.)
 
 ## Check states & the escape hatch
 
-Each check is `Ok` / `Warn` / `Red` / `NotApplicable`. An **Open node is not an error** — the identity/renewal/revocation checks come back `NotApplicable` (valid by design), and `posture` carries a remedy to gain one (`koi certmesh join <endpoint>`). Renewal: leaf expired → `Red`; renewal overdue, or expiring within 7 days → `Warn`; else `Ok`. Self-revocation and a leaf that doesn't chain to its CA are `Red` with a re-enroll remedy. The CA-trust-install check is **deliberately not a pass/fail** — it states that membership isn't queryable and offers `--fix`, rather than lying.
+Each check is `Ok` / `Warn` / `Red` / `NotApplicable`. An **Open node is not an error** — the identity/renewal/revocation checks come back `NotApplicable` (valid by design), and `posture` carries a remedy to gain one (`koi certmesh join <endpoint>`). Renewal: leaf expired → `Red`; renewal overdue, or expiring within 7 days → `Warn`; else `Ok`. Self-revocation and a leaf that doesn't chain to its CA are `Red` with a re-enroll remedy. CA trust presence is read through the real platform adapter: present is `Ok`, missing or unavailable is `Warn`, and an interrupted durable Trust transition is `Red` until recovery succeeds. Plain diagnosis and listing never replay Trust transitions; `--fix` may do so explicitly. An offline Certmesh read also never recovers its repository or credential-cleanup outbox: if a transaction journal exists, start the daemon so Certmesh can recover it before reporting or exporting that generation.
 
 ## The proof it works
 
-Unit: `koi-common::diagnosis::tests` (worst-check-wins rollup, RED → exit 1, optional-remedy serde) and `koi-certmesh::diagnosis::tests` (`open_node_marks_identity_checks_not_applicable`, `healthy_secure_node_is_healthy`, `expired_leaf_is_red_with_remedy`, `renewal_due_soon_is_a_warning_not_a_failure`, `self_revoked_node_is_red`, `broken_identity_chain_is_red`, `ca_trust_install_is_honest_not_a_fake_success`); the CLI render is guarded by `format::trust_diagnosis_renders_markers_and_remedies`; the remote-gating of `GET /v1/certmesh/diagnose` by the `protected_read_*` tests in `koi-serve`. The diagnose report is part of the **trust primitives wire contract** surface (the STACK-0001 D7 extension) guarded by [trust-protocol.md](../trust-protocol.md), the certless conformance vectors/validator, and the deterministic LAN-trust simulator `crates/koi-certmesh/tests/trust_sim.rs` ([SURFACES.md](../../SURFACES.md)).
+Unit: `koi-common::diagnosis::tests` covers rollup semantics; `koi-certmesh::diagnosis::tests` covers mesh-owned identity facts; Certmesh observation tests prove that offline projection leaves transaction journals, cleanup outboxes, and the credential vault untouched; and `koi-trust` tests cover durable recovery, platform presence, causal status/event ordering, managed replacement, and redaction. The CLI render is guarded by `format::trust_diagnosis_renders_markers_and_remedies`; remote gating of `GET /v1/certmesh/diagnose` remains covered in `koi-serve`.

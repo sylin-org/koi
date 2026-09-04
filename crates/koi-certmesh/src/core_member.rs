@@ -12,31 +12,41 @@ impl CertmeshCore {
     pub async fn open_enrollment(&self) -> Result<(), CertmeshError> {
         // Posture change → single-writer commit so a concurrent enroll can't
         // overwrite it with a stale snapshot (F8). Not bundle content → no bump.
-        self.state
-            .touch_roster(|roster| {
-                roster.open_enrollment();
-                Ok(())
-            })
-            .await?;
+        self.run_blocking_transition(|domain| {
+            let ((), outcome) = domain.commit_roster_under_transition(
+                false,
+                Some(audit::render_entry("enrollment_opened", &[])),
+                |roster| {
+                    roster.open_enrollment();
+                    Ok(())
+                },
+            )?;
+            domain.finish_commit_under_transition(outcome)?;
+            Ok::<(), CertmeshError>(())
+        })
+        .await??;
 
         tracing::info!("Enrollment window opened");
-        let _ =
-            audit::append_entry_to(&self.state.paths.audit_log_path(), "enrollment_opened", &[]);
         Ok(())
     }
 
     /// Close the enrollment window.
     pub async fn close_enrollment(&self) -> Result<(), CertmeshError> {
-        self.state
-            .touch_roster(|roster| {
-                roster.close_enrollment();
-                Ok(())
-            })
-            .await?;
+        self.run_blocking_transition(|domain| {
+            let ((), outcome) = domain.commit_roster_under_transition(
+                false,
+                Some(audit::render_entry("enrollment_closed", &[])),
+                |roster| {
+                    roster.close_enrollment();
+                    Ok(())
+                },
+            )?;
+            domain.finish_commit_under_transition(outcome)?;
+            Ok::<(), CertmeshError>(())
+        })
+        .await??;
 
         tracing::info!("Enrollment window closed");
-        let _ =
-            audit::append_entry_to(&self.state.paths.audit_log_path(), "enrollment_closed", &[]);
         Ok(())
     }
 
@@ -54,46 +64,56 @@ impl CertmeshCore {
         ttl_mins: i64,
         role: Option<&str>,
     ) -> Result<protocol::InviteResponse, CertmeshError> {
-        if !self.state.paths.is_ca_initialized() {
-            return Err(CertmeshError::CaNotInitialized);
-        }
         // Validate the hostname the same way enrollment will (it becomes the
         // single host this token authorizes — and a certificate SAN at join, F15).
         validate_hostname(hostname)?;
-
-        // The CA fingerprint the joiner will pin (ADR-017 F3). `is_ca_initialized`
-        // was checked above, so `ca_fingerprint()` (in-memory or on-disk, never
-        // holding a lock across I/O) yields the public CA fingerprint here.
-        let ca_fingerprint = self
-            .ca_fingerprint()
-            .await
-            .ok_or(CertmeshError::CaNotInitialized)?;
-
-        let minted =
-            invite::mint_with_role(&self.state.paths.invites_path(), hostname, ttl_mins, role)?;
-        let expires_at = minted.expires_at.to_rfc3339();
-        // The operator-facing code carries the pinned CA fingerprint (F3) so the
-        // joiner can preflight + pin before sending its CSR.
-        let code = invite::encode_code(&minted.token, &ca_fingerprint);
-
-        let role_str = role.unwrap_or("any");
-        let _ = audit::append_entry_to(
-            &self.state.paths.audit_log_path(),
-            "invite_minted",
-            &[
-                ("hostname", hostname),
-                ("expires_at", &expires_at),
-                ("role", role_str),
-            ],
-        );
-        tracing::info!(hostname, role = role_str, "Enrollment invite minted");
-
-        Ok(protocol::InviteResponse {
-            token: code,
-            hostname: hostname.to_string(),
-            expires_at,
-            ca_fingerprint,
+        let hostname = hostname.to_string();
+        let role = role.map(str::to_string);
+        self.run_blocking_transition(move |domain| {
+            if !domain.paths.is_ca_initialized() {
+                return Err(CertmeshError::CaNotInitialized);
+            }
+            let ca_fingerprint = domain
+                .status
+                .current()
+                .authority
+                .as_ref()
+                .and_then(|authority| authority.ca_fingerprint.clone())
+                .ok_or(CertmeshError::CaNotInitialized)?;
+            let (minted, invite_bytes) = invite::prepare_mint_with_role(
+                &domain.paths.invites_path(),
+                &hostname,
+                ttl_mins,
+                role.as_deref(),
+            )?;
+            let expires_at = minted.expires_at.to_rfc3339();
+            let code = invite::encode_code(&minted.token, &ca_fingerprint);
+            let role_str = role.as_deref().unwrap_or("any");
+            let mut transaction = repository::ArtifactTransaction::new();
+            transaction.write(domain.paths.invites_path(), invite_bytes, true);
+            transaction.append(
+                domain.paths.audit_log_path(),
+                audit::render_entry(
+                    "invite_minted",
+                    &[
+                        ("hostname", hostname.as_str()),
+                        ("expires_at", expires_at.as_str()),
+                        ("role", role_str),
+                    ],
+                ),
+                true,
+            )?;
+            let outcome = domain.commit_artifacts_under_transition(transaction)?;
+            domain.finish_commit_under_transition(outcome)?;
+            tracing::info!(hostname, role = role_str, "Enrollment invite minted");
+            Ok(protocol::InviteResponse {
+                token: code,
+                hostname,
+                expires_at,
+                ca_fingerprint,
+            })
         })
+        .await?
     }
 
     // ── Member-side key custody (ADR-015 F1) ────────────────────────
@@ -113,23 +133,31 @@ impl CertmeshCore {
     ) -> Result<String, CertmeshError> {
         validate_hostname(hostname)?;
         let authorized_sans = self.state.issuance_names.member_sans(hostname, sans)?;
-        let (key_pem, csr_pem) = csr::generate_keypair_and_csr(hostname, &authorized_sans)?;
-
-        let cert_dir = self.state.paths.certs_dir().join(hostname);
-        let key_path = cert_dir.join("key.pending.pem");
-        tokio::task::spawn_blocking(move || -> Result<(), CertmeshError> {
-            std::fs::create_dir_all(&cert_dir)?;
-            write_file_atomic(&key_path, key_pem.as_bytes(), true)?;
-            Ok(())
+        let hostname = hostname.to_string();
+        self.run_blocking_transition(move |domain| {
+            domain.require_cleanup_complete_under_transition()?;
+            if domain.status.current().role != CertmeshRole::Open {
+                return Err(CertmeshError::Conflict(
+                    "node already belongs to a certificate mesh".to_string(),
+                ));
+            }
+            let (key_pem, csr_pem) = csr::generate_keypair_and_csr(&hostname, &authorized_sans)?;
+            let key_path = domain
+                .paths
+                .certs_dir()
+                .join(&hostname)
+                .join("key.pending.pem");
+            let mut transaction = repository::ArtifactTransaction::new();
+            transaction.write(key_path, key_pem.into_bytes(), true);
+            let outcome = domain.commit_artifacts_under_transition(transaction)?;
+            domain.finish_commit_under_transition(outcome)?;
+            tracing::info!(
+                hostname,
+                "Member keypair generated; CSR prepared (key kept local)"
+            );
+            Ok(csr_pem)
         })
-        .await
-        .map_err(|e| CertmeshError::Internal(format!("write member key task: {e}")))??;
-
-        tracing::info!(
-            hostname,
-            "Member keypair generated; CSR prepared (key kept local)"
-        );
-        Ok(csr_pem)
+        .await?
     }
 
     /// Validate and install a CA-signed leaf with the pending member key from
@@ -138,8 +166,8 @@ impl CertmeshCore {
     /// Before changing the active identity, verifies that the leaf chains to the
     /// supplied CA and corresponds to the pending private key. It then promotes
     /// that key and writes `cert.pem`, `ca.pem`, and `fullchain.pem` into
-    /// `certs/<hostname>/`, and installs the CA root in the OS trust store
-    /// (best-effort). Returns the cert directory path.
+    /// `certs/<hostname>/`. The Trust domain separately reconciles the CA root
+    /// from Certmesh's anchor projection. Returns the cert directory path.
     ///
     /// When `ca_endpoint` + `ca_fingerprint` are supplied (the normal join flow),
     /// it also writes the **member renewal state** (`certmesh/member.json`) so the
@@ -165,96 +193,116 @@ impl CertmeshCore {
                 "CA mTLS port must be greater than zero".into(),
             ));
         }
-
-        // Enforce the pin BEFORE writing anything (ADR-017 F3). When the caller
-        // supplied a pinned fingerprint (the out-of-band-trusted one from the
-        // invite), the CA cert we are about to install + trust MUST match it, or we
-        // refuse — a MITM that intercepted the plain-HTTP join and substituted its
-        // own CA is rejected here, before any file is written or any root is
-        // trusted. Without a pin (TOTP join), this is a documented TOFU install.
-        if let Some(expected_fp) = ca_fingerprint {
-            let der = pem::parse(ca_pem).map_err(|e| {
-                CertmeshError::InvalidPayload(format!("CA cert is not valid PEM: {e}"))
-            })?;
-            let actual_fp = koi_crypto::pinning::fingerprint_sha256(der.contents());
-            if !koi_crypto::pinning::fingerprints_match(&actual_fp, expected_fp) {
-                return Err(CertmeshError::InvalidPayload(format!(
-                    "installed CA cert fingerprint {actual_fp} does not match the pinned \
-                     fingerprint {expected_fp} (possible MITM) — refusing to install"
-                )));
+        let hostname = hostname.to_string();
+        let cert_pem = cert_pem.to_string();
+        let ca_pem = ca_pem.to_string();
+        let ca_endpoint = ca_endpoint.map(str::to_string);
+        let ca_fingerprint = ca_fingerprint.map(str::to_string);
+        self.run_blocking_transition(move |domain| {
+            domain.require_cleanup_complete_under_transition()?;
+            if domain.status.current().role != CertmeshRole::Open {
+                return Err(CertmeshError::Conflict(
+                    "node already belongs to a certificate mesh".to_string(),
+                ));
             }
-        }
 
-        let cert_dir = self.state.paths.certs_dir().join(hostname);
-        let pending_key_path = cert_dir.join("key.pending.pem");
-        let pending_key = std::fs::read_to_string(&pending_key_path).map_err(|error| {
-            CertmeshError::InvalidPayload(format!(
-                "no pending member key for {hostname}; prepare a CSR before installing: {error}"
-            ))
-        })?;
-        if !diagnosis::identity_material_is_usable(cert_pem, &pending_key, ca_pem) {
-            return Err(CertmeshError::InvalidPayload(
-                "signed member certificate does not chain to the supplied CA or match the pending private key"
-                    .into(),
-            ));
-        }
+            if let Some(expected_fp) = ca_fingerprint.as_deref() {
+                let der = pem::parse(&ca_pem).map_err(|error| {
+                    CertmeshError::InvalidPayload(format!("CA cert is not valid PEM: {error}"))
+                })?;
+                let actual_fp = koi_crypto::pinning::fingerprint_sha256(der.contents());
+                if !koi_crypto::pinning::fingerprints_match(&actual_fp, expected_fp) {
+                    return Err(CertmeshError::InvalidPayload(format!(
+                        "installed CA cert fingerprint {actual_fp} does not match the pinned \
+                         fingerprint {expected_fp} (possible MITM) — refusing to install"
+                    )));
+                }
+            }
 
-        let cert_owned = cert_pem.to_string();
-        let ca_owned = ca_pem.to_string();
-        let fullchain = format!("{cert_owned}{ca_owned}");
-        let key_owned = pending_key;
-        let dir = cert_dir.clone();
-        tokio::task::spawn_blocking(move || -> Result<(), CertmeshError> {
-            std::fs::create_dir_all(&dir)?;
-            write_file_atomic(&dir.join("ca.pem"), ca_owned.as_bytes(), false)?;
-            write_file_atomic(&dir.join("fullchain.pem"), fullchain.as_bytes(), false)?;
-            write_file_atomic(&dir.join("key.pem"), key_owned.as_bytes(), true)?;
-            // `cert.pem` is the commit marker: readers require both it and key.pem.
-            write_file_atomic(&dir.join("cert.pem"), cert_owned.as_bytes(), false)?;
-            std::fs::remove_file(dir.join("key.pending.pem"))?;
-            Ok(())
-        })
-        .await
-        .map_err(|e| CertmeshError::Internal(format!("write member cert task: {e}")))??;
+            let cert_dir = domain.paths.certs_dir().join(&hostname);
+            let pending_key_path = cert_dir.join("key.pending.pem");
+            let pending_key = std::fs::read_to_string(&pending_key_path).map_err(|error| {
+                CertmeshError::InvalidPayload(format!(
+                    "no pending member key for {hostname}; prepare a CSR before installing: {error}"
+                ))
+            })?;
+            if !diagnosis::identity_material_is_usable(&cert_pem, &pending_key, &ca_pem) {
+                return Err(CertmeshError::InvalidPayload(
+                    "signed member certificate does not chain to the supplied CA or match the pending private key"
+                        .into(),
+                ));
+            }
 
-        // Trust the CA root so this node can verify the mesh (best-effort).
-        if let Err(e) = os_truststore::Cert::from_pem(ca_pem)
-            .and_then(|cert| os_truststore::install(&cert).map(drop))
-        {
-            tracing::warn!(error = %e, "Could not install CA cert in trust store");
-        }
-
-        // Arm member-pull renewal when the join supplied the CA coordinates. The
-        // pinned fingerprint was already verified against `ca_pem` above, so the
-        // MemberState records a fingerprint we have confirmed matches the installed
-        // CA root.
-        if let (Some(endpoint), Some(fingerprint)) = (ca_endpoint, ca_fingerprint) {
-            let ca_mtls_port = ca_mtls_port.unwrap_or(member::DEFAULT_CA_MTLS_PORT);
-            let state = member::MemberState {
-                hostname: hostname.to_string(),
-                ca_host: member::host_from_endpoint(endpoint),
-                ca_mtls_port,
-                ca_http_port: member::port_from_endpoint(endpoint),
-                ca_fingerprint: fingerprint.to_string(),
-                sans: authorized_sans,
-                policy: policy.unwrap_or_default(),
-                last_bundle_seq: 0,
-                revoked_fingerprints: Vec::new(),
-                self_revoked: false,
-                reload_hook: None,
-            };
-            if let Err(e) = member::save(&self.state.paths.member_state_path(), &state) {
-                tracing::warn!(error = %e, "Could not persist member renewal state");
+            let fullchain = format!("{cert_pem}{ca_pem}");
+            let member_state = if let (Some(endpoint), Some(fingerprint)) =
+                (ca_endpoint.as_deref(), ca_fingerprint.as_deref())
+            {
+                Some(member::MemberState {
+                    hostname: hostname.clone(),
+                    ca_host: member::host_from_endpoint(endpoint),
+                    ca_mtls_port: ca_mtls_port.unwrap_or(member::DEFAULT_CA_MTLS_PORT),
+                    ca_http_port: member::port_from_endpoint(endpoint),
+                    ca_fingerprint: fingerprint.to_string(),
+                    sans: authorized_sans,
+                    policy: policy.unwrap_or_default(),
+                    last_bundle_seq: 0,
+                    last_bundle_digest: None,
+                    revoked_fingerprints: Vec::new(),
+                    self_revoked: false,
+                    reload_hook: None,
+                })
             } else {
+                None
+            };
+            let fingerprint = pem::parse(&cert_pem)
+                .map(|certificate| koi_crypto::pinning::fingerprint_sha256(certificate.contents()))
+                .map_err(|error| CertmeshError::Certificate(error.to_string()))?;
+            let mut transaction = repository::ArtifactTransaction::new();
+            transaction.write(cert_dir.join("ca.pem"), ca_pem.as_bytes().to_vec(), false);
+            transaction.write(
+                cert_dir.join("fullchain.pem"),
+                fullchain.into_bytes(),
+                false,
+            );
+            transaction.write(cert_dir.join("key.pem"), pending_key.into_bytes(), true);
+            transaction.write(
+                cert_dir.join("cert.pem"),
+                cert_pem.as_bytes().to_vec(),
+                false,
+            );
+            transaction.remove(pending_key_path);
+            if let Some(ref state) = member_state {
+                transaction.write(
+                    domain.paths.member_state_path(),
+                    serde_json::to_vec_pretty(state).map_err(|error| {
+                        CertmeshError::Internal(format!("serialize member state: {error}"))
+                    })?,
+                    true,
+                );
+            }
+            transaction.append(
+                domain.paths.audit_log_path(),
+                audit::render_entry(
+                    "member_identity_installed",
+                    &[
+                        ("hostname", hostname.as_str()),
+                        ("fingerprint", fingerprint.as_str()),
+                    ],
+                ),
+                true,
+            )?;
+            let outcome = domain.commit_artifacts_under_transition(transaction)?;
+            domain.finish_commit_under_transition(outcome)?;
+            let _ = domain.event_tx.send(CertmeshEvent::MemberJoined {
+                hostname: hostname.clone(),
+                fingerprint,
+            });
+            tracing::info!(hostname, "Member certificate installed locally");
+            if let Some(state) = member_state {
                 tracing::info!(hostname, ca_host = %state.ca_host, "Member renewal state armed");
             }
-        }
-
-        tracing::info!(hostname, "Member certificate installed locally");
-
-        // Leaf (and possibly member.json) now on disk → Open→Authenticated.
-        self.state.republish_posture();
-
-        Ok(cert_dir.display().to_string())
+            Ok(cert_dir.display().to_string())
+        })
+        .await?
     }
 }

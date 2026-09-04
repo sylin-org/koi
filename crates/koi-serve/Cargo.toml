@@ -1,6 +1,6 @@
 [package]
 name = "koi-serve"
-description = "Serving layer for Koi: the transport adapters (HTTP router, IPC/stdio NDJSON, in-process MCP, mTLS, ACME, Prometheus SD, dashboard wiring) and the trust-plane presence supervisor that expose composed cores over the network"
+description = "Serving layer for Koi: HTTP, authenticated local IPC, in-process MCP, mTLS, ACME, Prometheus SD, dashboard wiring, and the trust-plane presence supervisor"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -27,6 +27,7 @@ koi-certmesh.workspace = true
 koi-config.workspace = true
 koi-dns.workspace = true
 koi-health.workspace = true
+koi-trust.workspace = true
 koi-proxy.workspace = true
 koi-udp.workspace = true
 koi-runtime.workspace = true
@@ -35,8 +36,10 @@ koi-mcp.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
+thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 axum.workspace = true
@@ -47,14 +50,9 @@ subtle.workspace = true
 chrono.workspace = true
 hickory-proto.workspace = true
 if-addrs.workspace = true
-hostname.workspace = true
 rustls.workspace = true
 tokio-rustls.workspace = true
 hyper-util.workspace = true
-# Filesystem watcher for hot-reloading the mTLS/ACME server leaf when it is renewed
-# on disk (same crate koi-proxy uses for its data-plane cert hot-reload).
-notify.workspace = true
-
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 

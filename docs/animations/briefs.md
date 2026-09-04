@@ -42,11 +42,11 @@ depending only on how you run it.
 4. **Serve** — that certificate fronts the service over HTTPS.
 5. Label a container and all four happen end-to-end, untouched.
 
-**The four run modes (you never pick one — Koi detects it):**
+**The four access shapes:**
 
-- Run it with no command → it's a full **daemon** (the whole toolbox).
-- Run a command with no daemon running → it does the work directly and **exits**.
-- Run the same command while a daemon is running → it **talks to the daemon**.
+- Run it with `--daemon` or install it → one full **daemon** owns the toolbox.
+- Run a command normally → it **talks to the healthy local daemon** (or `--endpoint`).
+- Add explicit `--standalone` with the service stopped → one local composition runs and **exits**.
 - Link it into a Rust app → it runs **inside your app**.
 
 ---

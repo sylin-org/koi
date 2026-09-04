@@ -2023,14 +2023,12 @@ dependencies = [
 
 [[package]]
 name = "koi-certmesh"
-version = "1.0.0-rc.2"
+version = "1.0.0-dev.0"
 dependencies = [
- "async-trait",
  "axum",
  "base64",
  "chrono",
  "crossterm",
- "hostname",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -2038,7 +2036,6 @@ dependencies = [
  "instant-acme",
  "koi-common",
  "koi-crypto",
- "os-truststore",
  "p256",
  "pem",
  "proptest",
@@ -2064,7 +2061,7 @@ dependencies = [
 
 [[package]]
 name = "koi-client"
-version = "1.0.0-rc.2"
+version = "1.0.0-dev.0"
 dependencies = [
  "hickory-proto",
  "koi-common",
@@ -2077,7 +2074,7 @@ dependencies = [
 
 [[package]]
 name = "koi-common"
-version = "1.0.0-rc.2"
+version = "1.0.0-dev.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -2085,9 +2082,9 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.20",
  "tokio",
- "tokio-util",
  "tracing",
  "utoipa",
  "uuid",
@@ -2096,9 +2093,11 @@ dependencies = [
 
 [[package]]
 name = "koi-compose"
-version = "1.0.0-rc.2"
+version = "1.0.0-dev.0"
 dependencies = [
+ "async-trait",
  "chrono",
+ "futures-util",
  "hickory-proto",
  "hostname",
  "koi-certmesh",
@@ -2111,7 +2110,10 @@ dependencies = [
  "koi-mdns",
  "koi-proxy",
  "koi-runtime",
+ "koi-trust",
  "koi-udp",
+ "os-truststore",
+ "rcgen 0.13.2",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -2124,7 +2126,7 @@ dependencies = [
 
 [[package]]
 name = "koi-config"
-version = "1.0.0-rc.2"
+version = "1.0.0-dev.0"
 dependencies = [
  "koi-common",
  "serde",
@@ -2136,14 +2138,13 @@ dependencies = [
 
 [[package]]
 name = "koi-crypto"
-version = "1.0.0-rc.2"
+version = "1.0.0-dev.0"
 dependencies = [
  "aes-gcm",
  "argon2",
  "base64",
  "hkdf",
  "hmac",
- "hostname",
  "image",
  "keyring",
  "koi-common",
@@ -2167,12 +2168,11 @@ dependencies = [
 
 [[package]]
 name = "koi-dashboard"
-version = "1.0.0-rc.2"
+version = "1.0.0-dev.0"
 dependencies = [
  "async-stream",
  "axum",
  "chrono",
- "hostname",
  "koi-certmesh",
  "koi-common",
  "koi-dns",
@@ -2180,6 +2180,8 @@ dependencies = [
  "koi-mdns",
  "koi-proxy",
  "koi-runtime",
+ "koi-trust",
+ "koi-udp",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -2193,10 +2195,11 @@ dependencies = [
 
 [[package]]
 name = "koi-dns"
-version = "1.0.0-rc.2"
+version = "1.0.0-dev.0"
 dependencies = [
  "async-trait",
  "axum",
+ "futures-util",
  "hickory-proto",
  "hickory-resolver",
  "hickory-server",
@@ -2214,14 +2217,14 @@ dependencies = [
 
 [[package]]
 name = "koi-embedded"
-version = "1.0.0-rc.2"
+version = "1.0.0-dev.0"
 dependencies = [
+ "async-trait",
  "axum",
  "base64",
  "chrono",
  "futures-util",
  "hickory-proto",
- "hostname",
  "koi-certmesh",
  "koi-client",
  "koi-common",
@@ -2235,6 +2238,7 @@ dependencies = [
  "koi-proxy",
  "koi-runtime",
  "koi-serve",
+ "koi-trust",
  "koi-udp",
  "reqwest 0.12.28",
  "serde",
@@ -2248,11 +2252,11 @@ dependencies = [
 
 [[package]]
 name = "koi-health"
-version = "1.0.0-rc.2"
+version = "1.0.0-dev.0"
 dependencies = [
- "async-trait",
  "axum",
  "chrono",
+ "futures-util",
  "koi-common",
  "reqwest 0.12.28",
  "serde",
@@ -2266,7 +2270,7 @@ dependencies = [
 
 [[package]]
 name = "koi-lab"
-version = "1.0.0-rc.2"
+version = "1.0.0-dev.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2289,7 +2293,7 @@ dependencies = [
 
 [[package]]
 name = "koi-mcp"
-version = "1.0.0-rc.2"
+version = "1.0.0-dev.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2308,7 +2312,7 @@ dependencies = [
 
 [[package]]
 name = "koi-mdns"
-version = "1.0.0-rc.2"
+version = "1.0.0-dev.0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -2334,7 +2338,7 @@ dependencies = [
 
 [[package]]
 name = "koi-net"
-version = "1.0.0-rc.2"
+version = "1.0.0-dev.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2346,7 +2350,6 @@ dependencies = [
  "console 0.15.11",
  "crossterm",
  "hickory-proto",
- "hostname",
  "hyper-util",
  "if-addrs",
  "is-terminal",
@@ -2364,10 +2367,10 @@ dependencies = [
  "koi-proxy",
  "koi-runtime",
  "koi-serve",
+ "koi-trust",
  "koi-udp",
  "libc",
  "open",
- "os-truststore",
  "rand 0.9.5",
  "rcgen 0.13.2",
  "reqwest 0.12.28",
@@ -2399,11 +2402,9 @@ dependencies = [
 
 [[package]]
 name = "koi-proxy"
-version = "1.0.0-rc.2"
+version = "1.0.0-dev.0"
 dependencies = [
- "async-trait",
  "axum",
- "hostname",
  "koi-common",
  "koi-config",
  "notify",
@@ -2411,6 +2412,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.20",
  "tokio",
  "tokio-rustls",
@@ -2423,7 +2425,7 @@ dependencies = [
 
 [[package]]
 name = "koi-runtime"
-version = "1.0.0-rc.2"
+version = "1.0.0-dev.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -2444,7 +2446,7 @@ dependencies = [
 
 [[package]]
 name = "koi-serve"
-version = "1.0.0-rc.2"
+version = "1.0.0-dev.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2452,7 +2454,6 @@ dependencies = [
  "base64",
  "chrono",
  "hickory-proto",
- "hostname",
  "hyper-util",
  "if-addrs",
  "koi-certmesh",
@@ -2466,15 +2467,17 @@ dependencies = [
  "koi-mdns",
  "koi-proxy",
  "koi-runtime",
+ "koi-trust",
  "koi-udp",
  "libc",
- "notify",
  "rcgen 0.13.2",
  "rmcp",
  "rustls",
  "serde",
  "serde_json",
+ "sha2",
  "subtle",
+ "thiserror 2.0.20",
  "tokio",
  "tokio-rustls",
  "tokio-util",
@@ -2487,11 +2490,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "koi-trust"
+version = "1.0.0-dev.0"
+dependencies = [
+ "axum",
+ "chrono",
+ "koi-common",
+ "os-truststore",
+ "rcgen 0.13.2",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "tower",
+ "tracing",
+ "utoipa",
+]
+
+[[package]]
 name = "koi-udp"
-version = "1.0.0-rc.2"
+version = "1.0.0-dev.0"
 dependencies = [
  "async-stream",
- "async-trait",
  "axum",
  "base64",
  "chrono",

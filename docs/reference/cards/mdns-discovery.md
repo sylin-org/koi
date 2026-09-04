@@ -16,11 +16,11 @@ validation:
 
 > One-screen map of zero-config LAN service discovery. Full flow: [mdns.md](../../guides/mdns.md) · wire shapes (NDJSON / service records / SSE): [wire-protocol.md](../wire-protocol.md).
 
-**What it does** — Koi speaks **mDNS / DNS-SD** (the `_name._proto.local.` protocol behind Bonjour/Avahi), so any host on the LAN can **announce** a service and any other host can **discover** it with **no daemon, no config, and no central registry**. `koi mdns discover` browses for live services, `koi mdns announce` publishes one, `koi mdns resolve` looks up a single instance's address/port/TXT, and `koi mdns subscribe` streams found/resolved/removed lifecycle events. It runs three ways transparently: **standalone** (a one-shot local browse, no daemon needed), **client** (the same command talks to a running daemon over HTTP and keeps the registration alive with heartbeats), and **piped** (NDJSON in/out for scripting). The daemon keeps one stable `MdnsControlPlane` that routes non-overlapping operations to the best live provider sessions; native Koi is always the lowest-priority complete provider. One shared browse per service type fans out to every subscriber.
+**What it does** — Koi speaks **mDNS / DNS-SD** (the `_name._proto.local.` protocol behind Bonjour/Avahi), so any host on the LAN can **announce** a service and any other host can **discover** it without a central registry. `koi mdns discover` browses for live services, `koi mdns announce` publishes one, `koi mdns resolve` looks up a single instance's address/port/TXT, and `koi mdns subscribe` streams found/resolved/removed lifecycle events. Commands are clients of the healthy installed service by default; `--endpoint` selects another service, while explicit `--standalone` creates a one-shot local composition only when no local service is alive. There is no implicit piped responder. The daemon keeps one stable `MdnsControlPlane` that routes non-overlapping operations to the best live provider sessions; native Koi is always the lowest-priority complete provider. One shared browse per service type fans out to every subscriber.
 
 ## The one canonical pattern
 
-Announce a service on one box; discover it from another. No setup on either side.
+Announce a service on one installed Koi; discover it from another.
 
 ```bash
 # On the service host — publish (runs until Ctrl+C; the record is withdrawn on exit):
@@ -52,7 +52,7 @@ koi mdns subscribe _http._tcp
 
 ## Leases & the escape hatch
 
-How long a record lives depends on **who registered it**: the standalone/CLI `announce` registers **permanent** (lives until Ctrl+C unregisters it); an IPC/pipe registration is **session-scoped** (dropped when the connection closes, after a grace); an HTTP registration uses a **heartbeat lease** (90s lease / 30s grace — the daemon-backed `koi mdns announce` auto-sends `PUT /v1/mdns/heartbeat/{id}` at half the lease). Discovery needs **no daemon** — it just works on the LAN; but if a daemon is running, the same command becomes a client of it (force a fresh local browse with `--standalone`). mDNS is LAN-scoped by design: it does **not** cross subnets/VLANs without an mDNS reflector. To carry these names off the `.local.` link, pair discovery with the DNS resolver ([dns.md](../../guides/dns.md)).
+How long a record lives depends on **who registered it**: an explicit standalone `announce` registers **permanent** (lives until Ctrl+C unregisters it); an IPC/pipe registration is **session-scoped** (dropped when the connection closes, after a grace); an HTTP registration uses a **heartbeat lease** (90s lease / 30s grace — daemon-backed `koi mdns announce` auto-sends `PUT /v1/mdns/heartbeat/{id}` at half the lease). By default the CLI uses the installed responder. Use `--standalone` only for an intentional one-shot composition after stopping that service. mDNS is LAN-scoped by design: it does **not** cross subnets/VLANs without an mDNS reflector. To carry these names off the `.local.` link, pair discovery with the DNS resolver ([dns.md](../../guides/dns.md)).
 
 ## The proof it works
 

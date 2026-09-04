@@ -83,11 +83,16 @@ and the brief corrected.
 
 ## Current epic
 
-[`fleet/epics/001-productization-hardening.md`](epics/001-productization-hardening.md)
-is the single current objective, dependency map, OS assignment, and exit contract.
-It freezes feature expansion while durable lifecycle, recovery, security boundaries,
-installed whole-story behavior, and a mixed-OS soak are completed. Evidence remains
-in the existing hat journals; there is no separate status service or per-lane ledger.
+[`fleet/epics/002-observable-domain-boundaries.md`](epics/002-observable-domain-boundaries.md)
+is the single current objective and dispatch. The workspace has returned to development for
+ADR-043; the former frozen release candidate and Epic 001 PH-5 soak are no longer active.
+All hats are on the new epic's read-only wait instruction until repository validation closes
+and an explicit native-validation dispatch lands.
+
+[`fleet/epics/001-productization-hardening.md`](epics/001-productization-hardening.md) and the
+hat journals remain the immutable evidence record for the exact artifacts and gates they
+accepted. Do not rewrite or reinterpret those historical results as validation of current
+`dev`.
 
 ## Mechanics (hardened by the canary — v1's traps are protocol now)
 

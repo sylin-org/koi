@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -15,6 +16,7 @@ use mdns_sd::{
 };
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::sync::{mpsc, oneshot, watch};
+use tokio_util::sync::CancellationToken;
 
 use crate::adapter::{
     MdnsAdapter, MdnsCapabilities, MdnsProviderReport, ProbeFact, ProviderApi,
@@ -23,7 +25,7 @@ use crate::adapter::{
 use crate::error::{MdnsError, ProviderFailure, ProviderOperation};
 use crate::provider::{
     provider_error, Announcement, BrowseLease, ProviderAddress, ProviderBrowse, ProviderEvent,
-    ProviderService, ProviderSession, PublicationLease,
+    ProviderService, ProviderSession, ProviderTask, PublicationLease,
 };
 use crate::Result;
 
@@ -34,6 +36,8 @@ const STARTUP_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 const PUBLICATION_TIMEOUT: Duration = Duration::from_secs(4);
 const BROWSE_START_TIMEOUT: Duration = Duration::from_secs(2);
 const RESOURCE_RELEASE_TIMEOUT: Duration = Duration::from_secs(3);
+const BROWSE_RELAY_TIMEOUT: Duration = Duration::from_secs(1);
+const WORKER_POLL: Duration = Duration::from_millis(100);
 
 const DESCRIPTOR: ProviderDescriptor = ProviderDescriptor::new(
     "native",
@@ -119,8 +123,11 @@ impl MdnsAdapter for NativeMdnsAdapter {
     }
 
     async fn assess(&self) -> MdnsProviderReport {
-        match CooperativeBind::mdns() {
-            Ok(probe) => MdnsProviderReport {
+        match (
+            CooperativeBind::mdns(),
+            local_publication_host(ProviderOperation::Inspect),
+        ) {
+            (Ok(probe), Ok(publication_host)) => MdnsProviderReport {
                 name: DESCRIPTOR.name.to_string(),
                 priority: DESCRIPTOR.priority,
                 api: DESCRIPTOR.api,
@@ -130,9 +137,12 @@ impl MdnsAdapter for NativeMdnsAdapter {
                 running: ProbeFact::NotApplicable,
                 capabilities: DESCRIPTOR.capabilities,
                 session: None,
-                detail: format!("built-in engine; {}", probe.detail),
+                detail: format!(
+                    "built-in engine; {}; publication host {publication_host}",
+                    probe.detail
+                ),
             },
-            Err(error) => MdnsProviderReport {
+            (Err(error), _) | (_, Err(error)) => MdnsProviderReport {
                 name: DESCRIPTOR.name.to_string(),
                 priority: DESCRIPTOR.priority,
                 api: DESCRIPTOR.api,
@@ -193,11 +203,14 @@ pub struct NativeSession {
     command_tx: Mutex<std::sync::mpsc::SyncSender<NativeCommand>>,
     state_rx: watch::Receiver<ProviderSessionState>,
     worker: Mutex<Option<std::thread::JoinHandle<()>>>,
+    closing: Arc<AtomicBool>,
+    publication_host: String,
 }
 
 impl NativeSession {
     fn new() -> Result<Self> {
         let cooperative = CooperativeBind::mdns()?;
+        let publication_host = local_publication_host(ProviderOperation::Open)?;
         let daemon = ServiceDaemon::new().map_err(|error| {
             provider_error(
                 DESCRIPTOR.name,
@@ -233,9 +246,13 @@ impl NativeSession {
 
         let (command_tx, command_rx) = std::sync::mpsc::sync_channel(COMMAND_CAPACITY);
         let (state_tx, state_rx) = watch::channel(ProviderSessionState::Ready);
+        let closing = Arc::new(AtomicBool::new(false));
+        let worker_closing = Arc::clone(&closing);
         let worker = std::thread::Builder::new()
             .name("koi-mdns-native".to_string())
-            .spawn(move || native_worker(daemon, monitor, command_rx, state_tx))
+            .spawn(move || {
+                native_worker(daemon, monitor, command_rx, state_tx, worker_closing);
+            })
             .map_err(|error| {
                 provider_error(
                     DESCRIPTOR.name,
@@ -248,6 +265,8 @@ impl NativeSession {
             command_tx: Mutex::new(command_tx),
             state_rx,
             worker: Mutex::new(Some(worker)),
+            closing,
+            publication_host,
         })
     }
 
@@ -290,14 +309,7 @@ impl ProviderSession for NativeSession {
     async fn publish(&self, announcement: &Announcement) -> Result<Box<dyn PublicationLease>> {
         let host = match announcement.address {
             Some(_) => explicit_publication_host(&announcement.id),
-            None => {
-                let hostname = hostname::get()
-                    .unwrap_or_else(|_| "localhost".into())
-                    .to_string_lossy()
-                    .to_string();
-                let hostname = hostname.trim_end_matches('.').trim_end_matches(".local");
-                format!("{}.local.", dns_label(hostname))
-            }
+            None => self.publication_host.clone(),
         };
         let properties = announcement
             .txt
@@ -358,15 +370,25 @@ impl ProviderSession for NativeSession {
             .await
             .map_err(|_| native_lost(ProviderOperation::Browse, "worker dropped reply"))??;
         let (event_tx, event_rx) = mpsc::channel(BROWSE_CHANNEL_CAPACITY);
-        tokio::spawn(async move {
-            if let Some(first) = raw.first {
+        let relay_cancel = CancellationToken::new();
+        let task_cancel = relay_cancel.clone();
+        let relay = ProviderTask::new(tokio::spawn(async move {
+            let NativeRawBrowse { events, first } = raw;
+            if let Some(first) = first {
                 if let NativeEvent::Emit(event) = translate(first, is_meta) {
                     if event_tx.send(event).await.is_err() {
                         return;
                     }
                 }
             }
-            while let Ok(event) = raw.events.recv_async().await {
+            loop {
+                let event = tokio::select! {
+                    _ = task_cancel.cancelled() => break,
+                    event = events.recv_async() => match event {
+                        Ok(event) => event,
+                        Err(_) => break,
+                    },
+                };
                 match translate(event, is_meta) {
                     NativeEvent::Emit(event) => {
                         if event_tx.send(event).await.is_err() {
@@ -377,7 +399,7 @@ impl ProviderSession for NativeSession {
                     NativeEvent::Stop => break,
                 }
             }
-        });
+        }));
         Ok(ProviderBrowse::new(
             event_rx,
             Box::new(NativeBrowseLease {
@@ -387,39 +409,68 @@ impl ProviderSession for NativeSession {
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .clone(),
+                relay_cancel,
+                relay,
                 closed: false,
             }),
         ))
     }
 
     async fn shutdown(&self) -> Result<()> {
-        let Some(worker) = self
+        if self
             .worker
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take()
-        else {
+            .is_none()
+        {
             return Ok(());
-        };
+        }
         let (reply_tx, reply_rx) = oneshot::channel();
         if let Err(error) = self.send(
             NativeCommand::Shutdown { reply: reply_tx },
             ProviderOperation::Shutdown,
         ) {
-            join_native_worker(worker).await?;
-            return Err(error);
+            if matches!(
+                &error,
+                MdnsError::Provider {
+                    failure: ProviderFailure::ResourceBusy,
+                    ..
+                }
+            ) {
+                return Err(error);
+            }
+            if let Some(worker) = self
+                .worker
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take()
+            {
+                join_native_worker(worker)?;
+            }
+            return Ok(());
         }
         match reply_rx.await {
-            Ok(Ok(())) => join_native_worker(worker).await,
-            Ok(Err(error)) => {
-                self.worker
+            Ok(Ok(())) => {
+                if let Some(worker) = self
+                    .worker
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .replace(worker);
-                Err(error)
+                    .take()
+                {
+                    join_native_worker(worker)?;
+                }
+                Ok(())
             }
+            Ok(Err(error)) => Err(error),
             Err(_) => {
-                join_native_worker(worker).await?;
+                if let Some(worker) = self
+                    .worker
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .take()
+                {
+                    join_native_worker(worker)?;
+                }
                 Err(native_lost(
                     ProviderOperation::Shutdown,
                     "worker dropped shutdown reply",
@@ -429,16 +480,34 @@ impl ProviderSession for NativeSession {
     }
 }
 
-async fn join_native_worker(worker: std::thread::JoinHandle<()>) -> Result<()> {
-    tokio::task::spawn_blocking(move || worker.join())
-        .await
-        .map_err(|error| {
-            native_lost(
-                ProviderOperation::Shutdown,
-                format!("worker join task failed: {error}"),
-            )
-        })?
+fn join_native_worker(worker: std::thread::JoinHandle<()>) -> Result<()> {
+    worker
+        .join()
         .map_err(|_| native_lost(ProviderOperation::Shutdown, "native worker panicked"))
+}
+
+impl Drop for NativeSession {
+    fn drop(&mut self) {
+        if self
+            .worker
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_some()
+        {
+            // A Rust thread cannot be force-aborted. The worker retains sole
+            // ownership of ServiceDaemon, observes this fence after its current
+            // bounded command (or within WORKER_POLL while idle), performs the
+            // native shutdown barrier, and only then exits; dropping the join
+            // handle is an explicit bounded quarantine, not an unowned daemon.
+            self.closing.store(true, Ordering::Release);
+            let (reply, _) = oneshot::channel();
+            let _ = self
+                .command_tx
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .try_send(NativeCommand::Shutdown { reply });
+        }
+    }
 }
 
 struct NativePublicationLease {
@@ -487,9 +556,24 @@ impl PublicationLease for NativePublicationLease {
     }
 }
 
+impl Drop for NativePublicationLease {
+    fn drop(&mut self) {
+        if self.withdrawn {
+            return;
+        }
+        let (reply, _) = oneshot::channel();
+        let _ = self.command_tx.try_send(NativeCommand::Withdraw {
+            fullname: self.fullname.clone(),
+            reply,
+        });
+    }
+}
+
 struct NativeBrowseLease {
     service_type: String,
     command_tx: std::sync::mpsc::SyncSender<NativeCommand>,
+    relay_cancel: CancellationToken,
+    relay: ProviderTask,
     closed: bool,
 }
 
@@ -503,28 +587,47 @@ impl BrowseLease for NativeBrowseLease {
         if self.closed {
             return Ok(());
         }
+        self.relay_cancel.cancel();
         let (reply_tx, reply_rx) = oneshot::channel();
-        match self.command_tx.try_send(NativeCommand::CloseBrowse {
+        let release = match self.command_tx.try_send(NativeCommand::CloseBrowse {
             service_type: self.service_type.clone(),
             reply: reply_tx,
         }) {
-            Ok(()) => {
-                reply_rx.await.map_err(|_| {
-                    native_lost(ProviderOperation::Browse, "worker dropped close reply")
-                })??;
-            }
-            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {}
-            Err(std::sync::mpsc::TrySendError::Full(_)) => {
-                return Err(provider_error(
-                    DESCRIPTOR.name,
-                    ProviderOperation::Browse,
-                    ProviderFailure::ResourceBusy,
-                    "native command queue is full",
-                ));
-            }
-        }
+            Ok(()) => reply_rx.await.map_err(|_| {
+                native_lost(ProviderOperation::Browse, "worker dropped close reply")
+            })?,
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => Ok(()),
+            Err(std::sync::mpsc::TrySendError::Full(_)) => Err(provider_error(
+                DESCRIPTOR.name,
+                ProviderOperation::Browse,
+                ProviderFailure::ResourceBusy,
+                "native command queue is full",
+            )),
+        };
+        let relay = self
+            .relay
+            .join(BROWSE_RELAY_TIMEOUT)
+            .await
+            .map_err(|detail| native_lost(ProviderOperation::Browse, detail));
+        release?;
+        relay?;
         self.closed = true;
         Ok(())
+    }
+}
+
+impl Drop for NativeBrowseLease {
+    fn drop(&mut self) {
+        if self.closed {
+            return;
+        }
+        self.relay_cancel.cancel();
+        self.relay.abort();
+        let (reply, _) = oneshot::channel();
+        let _ = self.command_tx.try_send(NativeCommand::CloseBrowse {
+            service_type: self.service_type.clone(),
+            reply,
+        });
     }
 }
 
@@ -533,9 +636,22 @@ fn native_worker(
     monitor: mdns_sd::Receiver<DaemonEvent>,
     command_rx: std::sync::mpsc::Receiver<NativeCommand>,
     state_tx: watch::Sender<ProviderSessionState>,
+    closing: Arc<AtomicBool>,
 ) {
     tracing::debug!(provider = DESCRIPTOR.name, "native provider worker started");
-    while let Ok(command) = command_rx.recv() {
+    loop {
+        if closing.load(Ordering::Acquire) {
+            let _ = shutdown_native(&daemon);
+            break;
+        }
+        let command = match command_rx.recv_timeout(WORKER_POLL) {
+            Ok(command) => command,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = shutdown_native(&daemon);
+                break;
+            }
+        };
         match command {
             NativeCommand::Publish { info, reply } => {
                 let result = publish_native(&daemon, &monitor, *info);
@@ -864,17 +980,51 @@ fn resolved_to_service(resolved: &ResolvedService) -> ProviderService {
     }
 }
 
-fn dns_label(id: &str) -> String {
+fn dns_label(id: &str) -> Option<String> {
     let label = id
         .chars()
         .filter(|character| character.is_ascii_alphanumeric() || *character == '-')
         .collect::<String>();
-    let label = if label.is_empty() {
-        "service".to_string()
-    } else {
-        label
-    };
-    label.chars().take(63).collect()
+    (!label.is_empty()).then(|| label.chars().take(63).collect())
+}
+
+fn local_publication_host(operation: ProviderOperation) -> Result<String> {
+    let hostname = hostname::get().map_err(|error| {
+        provider_error(
+            DESCRIPTOR.name,
+            operation,
+            ProviderFailure::Unavailable,
+            format!("machine hostname observation failed: {error}"),
+        )
+    })?;
+    let hostname = hostname.to_str().ok_or_else(|| {
+        provider_error(
+            DESCRIPTOR.name,
+            operation,
+            ProviderFailure::Unavailable,
+            "machine hostname is not valid UTF-8",
+        )
+    })?;
+    publication_host_from_observation(hostname, operation)
+}
+
+fn publication_host_from_observation(
+    hostname: &str,
+    operation: ProviderOperation,
+) -> Result<String> {
+    let hostname = hostname
+        .trim()
+        .trim_end_matches('.')
+        .trim_end_matches(".local");
+    let label = dns_label(hostname).ok_or_else(|| {
+        provider_error(
+            DESCRIPTOR.name,
+            operation,
+            ProviderFailure::Unavailable,
+            "machine hostname contains no usable DNS-label characters",
+        )
+    })?;
+    Ok(format!("{label}.local."))
 }
 
 fn explicit_publication_host(id: &str) -> String {
@@ -929,7 +1079,7 @@ mod tests {
 
     #[test]
     fn explicit_publication_host_is_stable_and_isolated() {
-        assert_eq!(dns_label("ab_cd-12"), "abcd-12");
+        assert_eq!(dns_label("ab_cd-12").as_deref(), Some("abcd-12"));
         assert_eq!(
             explicit_publication_host("one"),
             explicit_publication_host("one")
@@ -938,6 +1088,18 @@ mod tests {
             explicit_publication_host("one"),
             explicit_publication_host("two")
         );
+    }
+
+    #[test]
+    fn publication_hostname_requires_an_observed_dns_label() {
+        assert_eq!(
+            publication_host_from_observation("koi-node.local.", ProviderOperation::Inspect)
+                .unwrap(),
+            "koi-node.local."
+        );
+        let error = publication_host_from_observation("___", ProviderOperation::Inspect)
+            .expect_err("an unusable observation is not a generic service identity");
+        assert!(error.to_string().contains("no usable DNS-label"));
     }
 
     #[test]
@@ -955,6 +1117,53 @@ mod tests {
         assert!(
             offenders.is_empty(),
             "mdns_sd must only be referenced in native.rs; offenders: {offenders:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dropping_native_browse_lease_retires_command_and_relay() {
+        struct RelayDrop(std::sync::Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for RelayDrop {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::Release);
+            }
+        }
+
+        let (command_tx, command_rx) = std::sync::mpsc::sync_channel(1);
+        let relay_dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let task_dropped = std::sync::Arc::clone(&relay_dropped);
+        let relay = ProviderTask::new(tokio::spawn(async move {
+            let _marker = RelayDrop(task_dropped);
+            std::future::pending::<()>().await;
+        }));
+        tokio::task::yield_now().await;
+
+        drop(NativeBrowseLease {
+            service_type: "_drop-test._tcp.local.".to_string(),
+            command_tx,
+            relay_cancel: CancellationToken::new(),
+            relay,
+            closed: false,
+        });
+
+        match command_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("drop enqueues native browse retirement")
+        {
+            NativeCommand::CloseBrowse { service_type, .. } => {
+                assert_eq!(service_type, "_drop-test._tcp.local.");
+            }
+            _ => panic!("unexpected native command"),
+        }
+        for _ in 0..16 {
+            if relay_dropped.load(std::sync::atomic::Ordering::Acquire) {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            relay_dropped.load(std::sync::atomic::Ordering::Acquire),
+            "browse relay was detached instead of aborted"
         );
     }
 

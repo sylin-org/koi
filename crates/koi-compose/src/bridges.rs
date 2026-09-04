@@ -6,14 +6,16 @@
 //! the binary's `integrations.rs` (P07) so the daemon, the Windows service, and
 //! koi-embedded share one copy instead of three.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
+use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use koi_common::integration;
-use koi_common::types::{ServiceRecord, META_QUERY};
+use koi_common::types::META_QUERY;
 
 // ── CertmeshBridge ─────────────────────────────────────────────────
 
@@ -28,99 +30,100 @@ impl CertmeshBridge {
 }
 
 impl integration::CertmeshSnapshot for CertmeshBridge {
-    fn active_members(&self) -> Vec<integration::MemberSummary> {
-        let roster_path = self.core.paths().roster_path();
-        let Ok(roster) = koi_certmesh::roster::load_roster(&roster_path) else {
-            return Vec::new();
-        };
-        roster
-            .members
-            .into_iter()
-            .filter(|m| m.status == koi_certmesh::roster::MemberStatus::Active)
-            .map(|m| integration::MemberSummary {
-                hostname: m.hostname,
-                sans: m.cert_sans,
-                cert_expires: Some(m.cert_expires),
-                last_seen: m.last_seen,
-                status: "active".to_string(),
-                proxy_entries: m
-                    .proxy_entries
-                    .into_iter()
-                    .map(|p| integration::ProxyConfigSummary {
-                        name: p.name,
-                        listen_port: p.listen_port,
-                        backend: p.backend,
-                        allow_remote: p.allow_remote,
-                    })
-                    .collect(),
-            })
-            .collect()
+    fn snapshot(&self) -> Arc<integration::CertmeshRosterSnapshot> {
+        self.core.roster_snapshot()
+    }
+
+    fn watch_snapshot(
+        &self,
+    ) -> tokio::sync::watch::Receiver<Arc<integration::CertmeshRosterSnapshot>> {
+        self.core.watch_roster_snapshot()
+    }
+}
+
+/// Sensitive local TLS-material port. Keeping this separate from
+/// `CertmeshSnapshot` prevents a roster/status consumer from gaining private-key
+/// access merely because it needs public membership facts.
+pub struct CertmeshTlsIdentityBridge {
+    core: Arc<koi_certmesh::CertmeshCore>,
+}
+
+impl CertmeshTlsIdentityBridge {
+    pub fn new(core: Arc<koi_certmesh::CertmeshCore>) -> Arc<Self> {
+        Arc::new(Self { core })
+    }
+}
+
+impl integration::TlsIdentitySource for CertmeshTlsIdentityBridge {
+    fn tls_identity(&self) -> Arc<integration::TlsIdentitySnapshot> {
+        self.core.tls_identity()
+    }
+
+    fn watch_tls_identity(
+        &self,
+    ) -> tokio::sync::watch::Receiver<Arc<integration::TlsIdentitySnapshot>> {
+        self.core.watch_tls_identity()
     }
 }
 
 // ── MdnsBridge ─────────────────────────────────────────────────────
 
-/// Maintains a polled cache of mDNS service records and exposes them
-/// through the `MdnsSnapshot` trait.
+/// Keeps the domain-owned meta/type browses warm and projects the mDNS
+/// discovery status through the narrow integration port. It owns no cache.
 pub struct MdnsBridge {
-    records: Arc<RwLock<HashMap<String, HashMap<String, ServiceRecord>>>>,
+    core: Arc<koi_mdns::MdnsCore>,
     cancel: CancellationToken,
+    worker: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl MdnsBridge {
     /// Spawn a background browse task that keeps the cache warm.
     pub async fn spawn(core: Arc<koi_mdns::MdnsCore>) -> Arc<Self> {
-        let records = Arc::new(RwLock::new(HashMap::new()));
         let cancel = CancellationToken::new();
-
-        let meta_core = Arc::clone(&core);
-        let meta_records = Arc::clone(&records);
-        let meta_cancel = cancel.clone();
-        tokio::spawn(async move {
-            if let Ok(handle) = meta_core.subscribe_type(META_QUERY).await {
-                run_meta_browse(meta_core, handle, meta_records, meta_cancel).await;
-            }
-        });
-
-        Arc::new(Self { records, cancel })
+        let worker = tokio::spawn(keep_discovery_warm(Arc::clone(&core), cancel.clone()));
+        Arc::new(Self {
+            core,
+            cancel,
+            worker: Mutex::new(Some(worker)),
+        })
     }
 
-    fn snapshot_records(&self) -> Vec<ServiceRecord> {
-        let guard = self.records.read().unwrap_or_else(|e| e.into_inner());
-        guard
-            .values()
-            .flat_map(|map| map.values().cloned())
-            .collect()
+    /// Stop and reap the composition-owned warm-cache projection.
+    ///
+    /// This is intentionally crate-private: the retained composition release
+    /// transaction is the lifecycle boundary that guarantees this waiter is
+    /// driven through completion.
+    pub(crate) async fn shutdown(&self) {
+        self.cancel.cancel();
+        // Borrow in place so cancelling this shutdown does not detach the task.
+        let mut worker = self.worker.lock().await;
+        if let Some(task) = worker.as_mut() {
+            let _ = task.await;
+        }
+        worker.take();
     }
 }
 
 impl Drop for MdnsBridge {
     fn drop(&mut self) {
         self.cancel.cancel();
+        if let Ok(mut worker) = self.worker.try_lock() {
+            if let Some(task) = worker.take() {
+                task.abort();
+            }
+        }
     }
 }
 
 impl integration::MdnsSnapshot for MdnsBridge {
-    fn host_ips(&self) -> HashMap<String, IpAddr> {
-        let records = self.snapshot_records();
-        let mut map = HashMap::new();
-        for record in &records {
-            let Some(host) = record.host.as_deref() else {
-                continue;
-            };
-            let Some(ip) = record.ip.as_deref().and_then(|ip| ip.parse().ok()) else {
-                continue;
-            };
-            let hostname = host.trim_end_matches('.').trim_end_matches(".local");
-            if !hostname.is_empty() {
-                map.insert(hostname.to_string(), ip);
-            }
-        }
-        map
+    fn snapshot(&self) -> Arc<integration::MdnsDiscoverySnapshot> {
+        self.core.discovery_snapshot()
     }
 
-    fn cached_records(&self) -> Vec<ServiceRecord> {
-        self.snapshot_records()
+    fn watch_snapshot(
+        &self,
+    ) -> tokio::sync::watch::Receiver<Arc<integration::MdnsDiscoverySnapshot>> {
+        self.core.watch_discovery()
     }
 }
 
@@ -139,10 +142,10 @@ impl DnsBridge {
 impl integration::DnsProbe for DnsBridge {
     fn resolve_local(&self, name: &str) -> Option<Vec<IpAddr>> {
         use hickory_proto::rr::RecordType;
-        let core = self.runtime.core();
-        let result = core
+        let result = self
+            .runtime
             .resolve_local(name, RecordType::A)
-            .or_else(|| core.resolve_local(name, RecordType::AAAA));
+            .or_else(|| self.runtime.resolve_local(name, RecordType::AAAA));
         result.map(|r| r.ips)
     }
 }
@@ -164,36 +167,31 @@ impl AcmeDnsBridge {
 
 impl integration::AcmeDnsResolver for AcmeDnsBridge {
     fn get_txt(&self, name: &str) -> Vec<String> {
-        self.runtime.core().get_txt(name)
+        self.runtime.get_txt(name)
     }
 }
 
 // ── ProxyBridge ────────────────────────────────────────────────────
 
 pub struct ProxyBridge {
-    _core: Arc<koi_proxy::ProxyCore>,
+    runtime: Arc<koi_proxy::ProxyRuntime>,
 }
 
 impl ProxyBridge {
-    pub fn new(core: Arc<koi_proxy::ProxyCore>) -> Arc<Self> {
-        Arc::new(Self { _core: core })
+    pub fn new(runtime: Arc<koi_proxy::ProxyRuntime>) -> Arc<Self> {
+        Arc::new(Self { runtime })
     }
 }
 
 impl integration::ProxySnapshot for ProxyBridge {
-    fn entries(&self) -> Vec<integration::ProxyEntrySummary> {
-        // Use the config module to load entries (sync operation is fine here).
-        let Ok(entries) = koi_proxy::config::load_entries() else {
-            return Vec::new();
-        };
-        entries
-            .into_iter()
-            .map(|e| integration::ProxyEntrySummary {
-                name: e.name,
-                listen_port: e.listen_port,
-                backend: e.backend,
-            })
-            .collect()
+    fn snapshot(&self) -> Arc<integration::ProxyEntriesSnapshot> {
+        self.runtime.entries_snapshot()
+    }
+
+    fn watch_snapshot(
+        &self,
+    ) -> tokio::sync::watch::Receiver<Arc<integration::ProxyEntriesSnapshot>> {
+        self.runtime.watch_entries()
     }
 }
 
@@ -209,84 +207,69 @@ impl AliasFeedbackBridge {
     }
 }
 
+#[async_trait::async_trait]
 impl integration::AliasFeedback for AliasFeedbackBridge {
-    fn record_alias(&self, hostname: &str, alias: &str) {
-        let core = Arc::clone(&self.core);
-        let hostname = hostname.to_string();
-        let alias = alias.to_string();
-        // Fire and forget — alias feedback is best-effort.
-        tokio::spawn(async move {
-            let _ = core.add_alias_sans(&hostname, &[alias]).await;
-        });
+    async fn record_alias(
+        &self,
+        hostname: &str,
+        alias: &str,
+    ) -> Result<(), integration::AliasFeedbackError> {
+        self.core
+            .add_alias_sans(hostname, &[alias.to_string()])
+            .await
+            .map(|_| ())
+            .map_err(|error| integration::AliasFeedbackError(error.to_string()))
     }
 }
 
-// ── mDNS browse helpers (ported from koi-dns resolver.rs) ──────────
+// ── mDNS browse warmth ─────────────────────────────────────────────
 
-async fn run_meta_browse(
-    core: Arc<koi_mdns::MdnsCore>,
-    handle: koi_mdns::BrowseSubscription,
-    records: Arc<RwLock<HashMap<String, HashMap<String, ServiceRecord>>>>,
-    cancel: CancellationToken,
-) {
-    // Dedup: browse each discovered service type once. This is plain
-    // bookkeeping now, not the old "never respawn" workaround — concurrent
-    // subscriptions share one real browse and survive resolve/subscriber churn.
-    let mut seen = HashSet::<String>::new();
+async fn keep_discovery_warm(core: Arc<koi_mdns::MdnsCore>, cancel: CancellationToken) {
+    let meta = match core.subscribe_type(META_QUERY).await {
+        Ok(meta) => meta,
+        Err(error) => {
+            tracing::warn!(%error, "could not arm the mDNS meta-browse");
+            return;
+        }
+    };
+    let mut status = core.watch_discovery();
+    let mut type_browses = HashMap::<String, koi_mdns::BrowseSubscription>::new();
+    let mut retry = tokio::time::interval(std::time::Duration::from_secs(5));
+    retry.tick().await;
+
     loop {
-        tokio::select! {
-            _ = cancel.cancelled() => break,
-            event = handle.recv() => {
-                let Some(event) = event else { break; };
-                if let koi_mdns::events::MdnsEvent::Found(record) = event {
-                    let service_type = record.name;
-                    if seen.insert(service_type.clone()) {
-                        let c = Arc::clone(&core);
-                        let r = Arc::clone(&records);
-                        let t = service_type.clone();
-                        let cancel_child = cancel.clone();
-                        tokio::spawn(async move {
-                            if let Ok(handle) = c.subscribe_type(&t).await {
-                                run_type_browse(handle, r, cancel_child).await;
-                            }
-                        });
-                    }
+        let desired = status
+            .borrow_and_update()
+            .service_types
+            .iter()
+            .cloned()
+            .collect::<std::collections::HashSet<_>>();
+        type_browses.retain(|service_type, _| desired.contains(service_type));
+        for service_type in desired {
+            if type_browses.contains_key(&service_type) {
+                continue;
+            }
+            match core.subscribe_type(&service_type).await {
+                Ok(handle) => {
+                    type_browses.insert(service_type, handle);
+                }
+                Err(error) => {
+                    tracing::debug!(%service_type, %error, "mDNS type browse will retry");
                 }
             }
         }
-    }
-}
 
-async fn run_type_browse(
-    handle: koi_mdns::BrowseSubscription,
-    records: Arc<RwLock<HashMap<String, HashMap<String, ServiceRecord>>>>,
-    cancel: CancellationToken,
-) {
-    loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
-            event = handle.recv() => {
-                let Some(event) = event else { break; };
-                match event {
-                    koi_mdns::events::MdnsEvent::Resolved(record) => {
-                        let mut guard = records.write().unwrap_or_else(|e| e.into_inner());
-                        let entry = guard.entry(record.service_type.clone()).or_default();
-                        entry.insert(record.name.clone(), record);
-                    }
-                    // Removed events now carry the instance name and service type
-                    // parsed at the mDNS boundary — no string re-parsing here.
-                    koi_mdns::events::MdnsEvent::Removed { name, service_type } => {
-                        if service_type.is_empty() {
-                            continue;
-                        }
-                        let mut guard = records.write().unwrap_or_else(|e| e.into_inner());
-                        if let Some(map) = guard.get_mut(&service_type) {
-                            map.remove(&name);
-                        }
-                    }
-                    _ => {}
+            changed = status.changed() => {
+                if changed.is_err() {
+                    break;
                 }
             }
+            _ = retry.tick() => {}
         }
     }
+
+    drop(type_browses);
+    drop(meta);
 }

@@ -214,9 +214,9 @@ DNS is enabled. dns-01 only, EC/ES256 only, in-zone names only.
 
 ---
 
-## Pipe / CLI Protocol (NDJSON)
+## Authenticated local IPC protocol (NDJSON)
 
-Used over Named Pipe (Windows), Unix Domain Socket, and piped stdin/stdout.
+Used over Named Pipe (Windows) and Unix Domain Socket.
 
 ### Request Format (one JSON object per line)
 ```json

@@ -19,6 +19,7 @@ categories = ["network-programming"]
 koi-common.workspace = true
 koi-mdns.workspace = true
 koi-certmesh.workspace = true
+koi-trust.workspace = true
 koi-crypto.workspace = true
 koi-config.workspace = true
 koi-dns.workspace = true
@@ -31,6 +32,8 @@ hickory-proto.workspace = true
 
 tokio.workspace = true
 tokio-util.workspace = true
+async-trait.workspace = true
+futures-util.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 serde.workspace = true
@@ -44,3 +47,6 @@ ureq = { version = "2", features = ["json"] }
 # Orchestrator tests construct a runtime `Instance` (its `discovered_at` is a
 # `chrono::DateTime<Utc>`).
 chrono.workspace = true
+koi-trust = { workspace = true, features = ["test-util"] }
+os-truststore.workspace = true
+rcgen.workspace = true

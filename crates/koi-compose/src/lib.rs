@@ -17,6 +17,10 @@
 /// embedded so the stamp is present by construction on every boot path.
 pub mod announce;
 
+/// Immutable machine identity captured once and injected into every adapter
+/// that renders or publishes it.
+pub mod host;
+
 /// Platform mDNS catalog: the domain supervisor probes real adapters and owns
 /// capability-aware runtime selection and transitions.
 pub mod mdns;
@@ -33,6 +37,10 @@ pub mod bridges;
 /// binary's `main.rs`). Shared so Windows-service and embedded daemons reach parity.
 pub mod certmesh;
 
+/// Reactive desired-state bridge from Certmesh's authoritative CA anchor to
+/// the independently owned OS Trust domain.
+pub mod trust;
+
 /// The container-runtime orchestrator: translates runtime lifecycle events into
 /// mDNS/DNS/health/proxy operations (moved from the binary's `orchestrator.rs`). Shared so
 /// Windows-service and embedded daemons can spawn it too.
@@ -46,12 +54,12 @@ pub mod cores;
 /// stream to operator-declared sinks. Composition-layer adapter, not a domain.
 pub mod webhook;
 
-/// Unified capability-status assembly (`assemble_capabilities`) — the single capability
-/// ladder shared by `/v1/status`, the dashboard snapshot, and the embedded snapshot.
+/// Observable product status (`KoiStatus`) — the single capability ladder shared by
+/// `/v1/status`, the dashboard snapshot, MCP, and the embedded facade.
 pub mod status;
 
 /// The rich dashboard snapshot (`build_dashboard_snapshot`) — the one detail projection of
-/// the live cores shared by the daemon's dashboard adapter and the embedded snapshot.
+/// an already-captured `KoiStatus` shared by the daemon and embedded dashboard adapters.
 pub mod snapshot;
 
 #[cfg(test)]
@@ -72,7 +80,11 @@ mod parity_tests {
     fn test_certmesh() -> Arc<koi_certmesh::CertmeshCore> {
         let dir = std::env::temp_dir().join(format!("koi-compose-parity-{}", std::process::id()));
         let paths = koi_certmesh::CertmeshPaths::with_data_dir(dir);
-        Arc::new(koi_certmesh::CertmeshCore::uninitialized_with_paths(paths))
+        Arc::new(
+            koi_certmesh::CertmeshCore::uninitialized_with_paths(paths)
+                .with_local_hostname("compose-parity-host")
+                .expect("configure test host identity"),
+        )
     }
 
     fn test_runtime() -> Arc<koi_runtime::RuntimeCore> {
@@ -84,19 +96,38 @@ mod parity_tests {
     }
 
     #[tokio::test]
-    async fn certmesh_role_loops_spawn_one_task() {
-        // ADR-017 F6: a single member-pull renewal loop. CA failover is manual
+    async fn certmesh_role_loops_spawn_owned_renewal_and_status_clocks() {
+        // ADR-017 F6: one member-pull renewal loop. CA failover is manual
         // (`koi certmesh promote`) and the old broken health-heartbeat loop was
-        // removed, so there is exactly one background loop, needing no mDNS.
+        // removed. ADR-043 adds Certmesh's own deadline-aware status clock.
         let certmesh = test_certmesh();
         let cancel = CancellationToken::new();
         let mut tasks: Vec<JoinHandle<()>> = Vec::new();
 
-        crate::certmesh::spawn_certmesh_background_tasks(&certmesh, &cancel, &mut tasks);
+        crate::certmesh::spawn_certmesh_background_tasks(&certmesh, &cancel, &mut tasks, true);
+        assert_eq!(
+            tasks.len(),
+            2,
+            "expected renewal and deadline-aware status loops"
+        );
+
+        cancel.cancel();
+        for task in tasks {
+            let _ = task.await;
+        }
+    }
+
+    #[tokio::test]
+    async fn self_managed_certmesh_still_runs_its_authoritative_status_clock() {
+        let certmesh = test_certmesh();
+        let cancel = CancellationToken::new();
+        let mut tasks: Vec<JoinHandle<()>> = Vec::new();
+
+        crate::certmesh::spawn_certmesh_background_tasks(&certmesh, &cancel, &mut tasks, false);
         assert_eq!(
             tasks.len(),
             1,
-            "expected the single member-pull renewal loop"
+            "manual renewal must disable maintenance, not deadline observation"
         );
 
         cancel.cancel();
@@ -108,20 +139,21 @@ mod parity_tests {
     #[tokio::test]
     async fn windows_parity_full_task_inventory() {
         // Mirror the exact spawn sequence windows.rs run_service now uses with certmesh +
-        // runtime enabled: 1 approval pump + 1 certmesh renewal loop + 1 orchestrator = 3.
+        // runtime enabled: 1 approval pump + 2 certmesh loops + 1 orchestrator = 4.
         let certmesh = test_certmesh();
         let runtime = test_runtime();
         let cancel = CancellationToken::new();
+        let owner = crate::cores::RunningCores::default();
         let mut tasks: Vec<JoinHandle<()>> = Vec::new();
 
         crate::certmesh::spawn_enrollment_approval(
             &certmesh,
             crate::certmesh::deny_and_log_decider(),
             &cancel,
-            &mut tasks,
+            &owner,
         )
         .await;
-        crate::certmesh::spawn_certmesh_background_tasks(&certmesh, &cancel, &mut tasks);
+        crate::certmesh::spawn_certmesh_background_tasks(&certmesh, &cancel, &mut tasks, true);
         tasks.push(crate::orchestrator::spawn_orchestrator(
             &runtime,
             crate::orchestrator::OrchestrationTargets {
@@ -133,16 +165,20 @@ mod parity_tests {
             None,
             cancel.clone(),
         ));
+        owner.own_tasks(tasks);
 
         assert_eq!(
-            tasks.len(),
-            3,
-            "Windows parity: 1 approval + 1 certmesh renewal loop + 1 orchestrator"
+            owner.owned_task_count(),
+            4,
+            "Windows parity: 1 approval + 2 certmesh loops + 1 orchestrator"
         );
 
-        cancel.cancel();
-        for task in tasks {
-            let _ = task.await;
-        }
+        crate::cores::ordered_shutdown(
+            &cancel,
+            &owner,
+            std::time::Duration::from_secs(2),
+            std::time::Duration::ZERO,
+        )
+        .await;
     }
 }

@@ -38,7 +38,7 @@ const SERVICE_LOG_FILENAME: &str = "koi.log";
 
 // ── Transactional install state (ADR-036 discipline, SCM recipe) ──────
 
-const TRANSACTION_VERSION: u16 = 2;
+const TRANSACTION_VERSION: u16 = 3;
 const TRANSACTION_FILENAME: &str = "scm-install-transaction.json";
 const BACKUP_SUFFIX: &str = ".koi-install-backup";
 // Reuse shutdown constants from crate root (defined once in main.rs).
@@ -100,6 +100,7 @@ pub fn install(
         );
     }
     ensure_elevated("install")?;
+    let _install_lock = crate::platform::install_lock::InstallLock::acquire_system()?;
     let exe_path = std::env::current_exe()?;
     let bin_path = install_bin_path();
     println!("Installing Koi service (SCM)...");
@@ -119,7 +120,7 @@ pub fn install(
     // the final port run before mutation without probing Koi's own listener.
     let service_snapshot = ServiceSnapshot::capture()?;
     let config_path = crate::platform::recipes::windows_config_path();
-    let existing = crate::platform::recipes::honor_existing_config(&config_path);
+    let existing = crate::platform::recipes::honor_existing_config(&config_path)?;
     let disposition = if service_snapshot.existed {
         crate::platform::recipes::InstallDisposition::ReplacingOwned
     } else {
@@ -214,7 +215,7 @@ pub fn install(
         // Firewall rules. The transaction snapshots the exact prior Koi-owned
         // set, so a later rollback recreates what was replaced and removes
         // what was new.
-        let config = crate::cli::Config::from_service_launch();
+        let config = crate::cli::Config::from_service_launch().map_err(anyhow::Error::msg)?;
         let ports = firewall_ports_for_config(&config);
         windows_firewall::remove(FIREWALL_RULE_MDNS_LEGACY)?;
         windows_firewall::remove(FIREWALL_RULE_HTTP_LEGACY)?;
@@ -307,6 +308,7 @@ pub fn install(
 /// remaining valid after an interrupted replacement.
 pub(crate) fn recover_install_before_config(data_dir: &std::path::Path) -> anyhow::Result<()> {
     ensure_elevated("install")?;
+    let _install_lock = crate::platform::install_lock::InstallLock::acquire_system()?;
     recover_interrupted(&transaction_path(data_dir))
 }
 
@@ -324,7 +326,8 @@ fn record_windows_operator(
     let policy = koi_config::local_access::LocalAccessPolicy::new(
         koi_config::local_access::LocalOperator::WindowsSid { sid: sid.clone() },
     );
-    koi_config::local_access::save(data_dir, &policy)?;
+    let outcome = koi_config::local_access::save_commit(data_dir, &policy)?;
+    koi_common::persist::require_durable(outcome, "persisting the local operator policy")?;
     println!("  Local operator SID: {sid}");
     Ok(())
 }
@@ -399,7 +402,7 @@ fn apply_service_policy(service: &windows_service::service::Service) -> anyhow::
     // Also trigger recovery on non-crash failures (e.g. non-zero exit)
     service.set_failure_actions_on_non_crash_failures(true)?;
     let log_dir = service_log_dir();
-    std::fs::create_dir_all(&log_dir)?;
+    koi_common::persist::create_dir_all_durable(&log_dir)?;
     println!("  Log directory: {}", log_dir.display());
     Ok(())
 }
@@ -422,6 +425,7 @@ fn transaction_path(data_dir: &std::path::Path) -> PathBuf {
 enum TransactionPhase {
     Preparing,
     Armed,
+    Settled,
 }
 
 /// The prior SCM registration, captured before the first mutation.
@@ -603,65 +607,138 @@ struct FileSnapshot {
     path: PathBuf,
     backup: PathBuf,
     existed: bool,
+    /// Secret-bearing targets must have their replacement stage hardened
+    /// before any restored bytes are copied into it.
+    #[serde(default)]
+    private: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    integrity: Option<koi_common::persist::FileIntegrity>,
 }
 
 impl FileSnapshot {
-    fn inspect(path: PathBuf) -> Self {
+    fn inspect(path: PathBuf, private: bool) -> anyhow::Result<Self> {
         let backup = backup_path(&path);
-        let existed = path.is_file();
-        Self {
+        if backup.try_exists()? {
+            let outcome = koi_common::persist::remove_file_durable(&backup)?;
+            koi_common::persist::require_durable(outcome, "removing a stale SCM installer backup")?;
+        }
+        let existed = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_file() => true,
+            Ok(_) => anyhow::bail!(
+                "refusing to replace non-regular installation target {}",
+                path.display()
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error.into()),
+        };
+        Ok(Self {
             path,
             backup,
             existed,
-        }
+            private,
+            integrity: None,
+        })
     }
 
     /// Park the prior bytes. A stale backup can only be debris after a
     /// committed transaction; the manifest is the rollback authority.
-    fn prepare(&self) -> anyhow::Result<()> {
+    fn prepare(&mut self) -> anyhow::Result<()> {
         if !self.existed {
             return Ok(());
         }
-        if let Some(parent) = self.backup.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::copy(&self.path, &self.backup)?;
+        let (outcome, integrity) =
+            koi_common::persist::copy_file_atomic_new_with_options_and_prepare_stage(
+                &self.path,
+                &self.backup,
+                koi_common::persist::AtomicWriteOptions::new(),
+                koi_common::persist::restrict_windows_local_secret_acl,
+            )?;
+        koi_common::persist::require_durable(outcome, "checkpointing an SCM installer backup")?;
+        self.integrity = Some(integrity);
         Ok(())
     }
 
-    fn validate_backup(&self) -> anyhow::Result<()> {
-        if self.existed && !self.backup.is_file() {
+    fn validate_backup(&self, require_integrity: bool) -> anyhow::Result<()> {
+        if !self.existed {
+            return Ok(());
+        }
+        if !std::fs::symlink_metadata(&self.backup)
+            .is_ok_and(|metadata| metadata.file_type().is_file())
+        {
             anyhow::bail!(
                 "installer recovery is incomplete: expected backup {} for {}",
                 self.backup.display(),
                 self.path.display()
             );
         }
+        match &self.integrity {
+            Some(expected) => {
+                let actual = koi_common::persist::file_integrity(&self.backup)?;
+                if &actual != expected {
+                    anyhow::bail!(
+                        "installer recovery is unsafe: backup {} for {} changed (expected {} bytes / {}, found {} bytes / {})",
+                        self.backup.display(),
+                        self.path.display(),
+                        expected.len,
+                        expected.sha256,
+                        actual.len,
+                        actual.sha256
+                    );
+                }
+            }
+            None if require_integrity => anyhow::bail!(
+                "installer recovery is unsafe: backup {} for {} has no recorded integrity",
+                self.backup.display(),
+                self.path.display()
+            ),
+            None => {}
+        }
         Ok(())
     }
 
     fn restore(&self) -> anyhow::Result<()> {
         if !self.existed {
-            match std::fs::remove_file(&self.path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
+            let outcome = koi_common::persist::remove_file_durable(&self.path)?;
+            koi_common::persist::require_durable(
+                outcome,
+                "removing a newly installed file during SCM rollback",
+            )?;
             return Ok(());
         }
-        let staged = staged_path(&self.path);
-        std::fs::copy(&self.backup, &staged)?;
-        koi_common::persist::replace_file(&staged, &self.path)?;
+        let options = koi_common::persist::AtomicWriteOptions::new();
+        let outcome = if let Some(expected) = &self.integrity {
+            koi_common::persist::copy_file_atomic_verified_with_options_and_prepare_stage(
+                &self.backup,
+                &self.path,
+                expected,
+                options,
+                |stage| self.prepare_restore_stage(stage),
+            )?
+        } else {
+            koi_common::persist::copy_file_atomic_with_options_and_prepare_stage(
+                &self.backup,
+                &self.path,
+                options,
+                |stage| self.prepare_restore_stage(stage),
+            )?
+            .0
+        };
+        koi_common::persist::require_durable(outcome, "restoring an SCM installer backup")?;
         Ok(())
+    }
+
+    fn prepare_restore_stage(&self, stage: &std::path::Path) -> std::io::Result<()> {
+        if self.private {
+            koi_common::persist::restrict_windows_local_secret_acl(stage)
+        } else {
+            Ok(())
+        }
     }
 
     fn cleanup(&self) -> anyhow::Result<()> {
         for path in [&self.backup, &staged_path(&self.path)] {
-            match std::fs::remove_file(path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
+            let outcome = koi_common::persist::remove_file_durable(path)?;
+            koi_common::persist::require_durable(outcome, "removing SCM installer debris")?;
         }
         Ok(())
     }
@@ -702,13 +779,13 @@ impl ScmInstallTransaction {
         let path = transaction_path(data_dir);
         let firewall = windows_firewall::snapshot_managed()?;
         let files = [
-            bin_path.to_path_buf(),
-            config_path.to_path_buf(),
-            policy_path.to_path_buf(),
+            (bin_path.to_path_buf(), false),
+            (config_path.to_path_buf(), false),
+            (policy_path.to_path_buf(), true),
         ]
         .into_iter()
-        .map(FileSnapshot::inspect)
-        .collect::<Vec<_>>();
+        .map(|(path, private)| FileSnapshot::inspect(path, private))
+        .collect::<anyhow::Result<Vec<_>>>()?;
         let mut manifest = InstallManifest {
             version: TRANSACTION_VERSION,
             phase: TransactionPhase::Preparing,
@@ -721,17 +798,26 @@ impl ScmInstallTransaction {
             temporary_paths: Vec::new(),
         };
         write_manifest(&path, &manifest)?;
-        for file in &manifest.files {
+        for file in &mut manifest.files {
             if let Err(error) = file.prepare() {
-                for prepared in &manifest.files {
-                    let _ = prepared.cleanup();
+                let cleanup = settle_and_cleanup(&path, &manifest);
+                if let Err(cleanup_error) = cleanup {
+                    return Err(error.context(format!(
+                        "preparation cleanup is incomplete ({cleanup_error}); re-run `koi install` to retry"
+                    )));
                 }
-                let _ = std::fs::remove_file(&path);
                 return Err(error);
             }
         }
         manifest.phase = TransactionPhase::Armed;
-        write_manifest(&path, &manifest)?;
+        if let Err(error) = write_manifest(&path, &manifest) {
+            if let Err(cleanup_error) = settle_and_cleanup(&path, &manifest) {
+                return Err(error.context(format!(
+                    "could not disarm the failed SCM checkpoint ({cleanup_error}); re-run `koi install` to retry recovery"
+                )));
+            }
+            return Err(error);
+        }
         Ok(Self { path, manifest })
     }
 
@@ -763,32 +849,26 @@ impl ScmInstallTransaction {
         Ok(())
     }
 
-    /// Removing the manifest commits the new state. Leftover backups are
-    /// harmless debris removed by this or the next install.
-    fn commit(&self) -> anyhow::Result<()> {
-        std::fs::remove_file(&self.path)?;
-        for file in &self.manifest.files {
-            if let Err(error) = file.cleanup() {
-                eprintln!(
-                    "  Warning: could not remove committed installer backup {}: {error}",
-                    file.backup.display()
-                );
-            }
-        }
-        cleanup_temporary_paths(&self.manifest.temporary_paths);
-        Ok(())
+    fn commit(&mut self) -> anyhow::Result<()> {
+        self.persist_transition(|manifest| manifest.phase = TransactionPhase::Settled)?;
+        cleanup_settled(&self.path, &self.manifest)
     }
 
-    fn rollback(self) -> anyhow::Result<()> {
+    fn rollback(mut self) -> anyhow::Result<()> {
+        self.persist_transition(|manifest| manifest.phase = TransactionPhase::Armed)?;
         restore_manifest(&self.path, &self.manifest)
     }
 }
 
 fn write_manifest(path: &std::path::Path, manifest: &InstallManifest) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    koi_common::persist::write_json_pretty(path, manifest)?;
+    let json = serde_json::to_vec_pretty(manifest)?;
+    let outcome = koi_common::persist::write_bytes_atomic_with_options_and_prepare_stage(
+        path,
+        &json,
+        koi_common::persist::AtomicWriteOptions::new(),
+        koi_common::persist::restrict_windows_local_secret_acl,
+    )?;
+    koi_common::persist::require_durable(outcome, "persisting the SCM install manifest")?;
     Ok(())
 }
 
@@ -816,9 +896,9 @@ fn recover_interrupted(path: &std::path::Path) -> anyhow::Result<()> {
             )
         }
     };
-    if !matches!(manifest.version, 1 | TRANSACTION_VERSION) {
+    if !matches!(manifest.version, 1 | 2 | TRANSACTION_VERSION) {
         anyhow::bail!(
-            "cannot recover interrupted installation: {} has version {}, expected 1 or {}",
+            "cannot recover interrupted installation: {} has version {}, expected 1, 2, or {}",
             path.display(),
             manifest.version,
             TRANSACTION_VERSION
@@ -830,14 +910,11 @@ fn recover_interrupted(path: &std::path::Path) -> anyhow::Result<()> {
                 "  Cleaning an interrupted pre-mutation checkpoint at {}...",
                 path.display()
             );
-            for file in &manifest.files {
-                file.cleanup()?;
-            }
-            cleanup_temporary_paths(&manifest.temporary_paths);
-            std::fs::remove_file(path)?;
+            settle_and_cleanup(path, &manifest)?;
             println!(" done.");
             Ok(())
         }
+        TransactionPhase::Settled => cleanup_settled(path, &manifest),
         TransactionPhase::Armed => {
             println!(
                 "  Recovering an interrupted SCM installation from {}...",
@@ -882,7 +959,7 @@ fn validate_recovery_boundary(
 fn restore_manifest(path: &std::path::Path, manifest: &InstallManifest) -> anyhow::Result<()> {
     validate_recovery_boundary(path, manifest)?;
     for file in &manifest.files {
-        file.validate_backup()?;
+        file.validate_backup(manifest.version >= 3)?;
     }
     let manager = ServiceManager::local_computer(
         None::<&str>,
@@ -1028,15 +1105,7 @@ fn restore_manifest(path: &std::path::Path, manifest: &InstallManifest) -> anyho
         }
     }
 
-    // Restoration proven: remove the manifest to commit, then drop backups.
-    // Orphaned backup copies are cleanup-only and cannot trigger a later
-    // rollback.
-    std::fs::remove_file(path)?;
-    for file in &manifest.files {
-        file.cleanup()?;
-    }
-    cleanup_temporary_paths(&manifest.temporary_paths);
-    Ok(())
+    settle_and_cleanup(path, manifest)
 }
 
 /// The complete SCM descriptor for the prior registration, rebuilt from the
@@ -1122,14 +1191,52 @@ fn restored_descriptor(snapshot: &ServiceSnapshot) -> anyhow::Result<ServiceDesc
     })
 }
 
-fn cleanup_temporary_paths(paths: &[PathBuf]) {
-    for path in paths {
-        match std::fs::remove_file(path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => {}
+fn settle_and_cleanup(path: &std::path::Path, manifest: &InstallManifest) -> anyhow::Result<()> {
+    let mut settled = manifest.clone();
+    settled.version = TRANSACTION_VERSION;
+    settled.phase = TransactionPhase::Settled;
+    write_manifest(path, &settled)?;
+    cleanup_settled(path, &settled)
+}
+
+fn cleanup_settled(path: &std::path::Path, manifest: &InstallManifest) -> anyhow::Result<()> {
+    debug_assert!(matches!(manifest.phase, TransactionPhase::Settled));
+    for file in &manifest.files {
+        if let Err(error) = file.cleanup() {
+            eprintln!(
+                "  Warning: committed SCM installer backup {} remains for cleanup: {error}",
+                file.backup.display()
+            );
+            return Ok(());
         }
     }
+    if let Err(error) = cleanup_temporary_paths(&manifest.temporary_paths) {
+        eprintln!("  Warning: committed SCM installer staging remains for cleanup: {error}");
+        return Ok(());
+    }
+    match koi_common::persist::remove_file_durable(path) {
+        Ok(outcome) => {
+            if let Err(error) = koi_common::persist::require_durable(
+                outcome,
+                "removing the settled SCM install manifest",
+            ) {
+                eprintln!("  Warning: settled SCM manifest cleanup is uncertain: {error}");
+            }
+        }
+        Err(error) => eprintln!(
+            "  Warning: settled SCM manifest {} remains for cleanup: {error}",
+            path.display()
+        ),
+    }
+    Ok(())
+}
+
+fn cleanup_temporary_paths(paths: &[PathBuf]) -> anyhow::Result<()> {
+    for path in paths {
+        let outcome = koi_common::persist::remove_file_durable(path)?;
+        koi_common::persist::require_durable(outcome, "removing SCM installer staging debris")?;
+    }
+    Ok(())
 }
 
 /// Stage the installer's binary into the product path. Returns false when
@@ -1144,18 +1251,18 @@ fn stage_binary(exe: &std::path::Path, bin: &std::path::Path) -> anyhow::Result<
     if same {
         return Ok(false);
     }
-    if let Some(parent) = bin.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let staged = staged_path(bin);
-    std::fs::copy(exe, &staged)?;
-    if let Err(error) = koi_common::persist::replace_file(&staged, bin) {
-        let _ = std::fs::remove_file(&staged);
-        anyhow::bail!(
+    let (outcome, _) = koi_common::persist::copy_file_atomic_with_options(
+        exe,
+        bin,
+        koi_common::persist::AtomicWriteOptions::new(),
+    )
+    .map_err(|error| {
+        anyhow::anyhow!(
             "could not stage {} (a running process may hold it — stop the koi service first): {error}",
             bin.display()
-        );
-    }
+        )
+    })?;
+    koi_common::persist::require_durable(outcome, "installing the Koi executable")?;
     Ok(true)
 }
 
@@ -1202,7 +1309,7 @@ pub fn uninstall() -> anyhow::Result<()> {
     }
 
     // Best-effort graceful shutdown via HTTP (before SCM stop)
-    if let Some(bc) = koi_config::breadcrumb::read_breadcrumb() {
+    if let Some(bc) = koi_config::breadcrumb::read_breadcrumb()? {
         let client = crate::client::KoiClient::with_token(&bc.endpoint, &bc.token);
         if client.shutdown().is_ok() {
             // Give the service a moment to begin shutting down
@@ -1239,7 +1346,7 @@ pub fn uninstall() -> anyhow::Result<()> {
     }
 
     // Daemon discovery file
-    koi_config::breadcrumb::delete_breadcrumb();
+    koi_config::breadcrumb::delete_breadcrumb()?;
 
     // Product-owned binary from the transactional installer. Older installs
     // registered a path elsewhere; those binaries stay where they are.
@@ -1267,7 +1374,7 @@ pub fn uninstall() -> anyhow::Result<()> {
             for file in &record.files {
                 let _ = file.cleanup();
             }
-            cleanup_temporary_paths(&record.temporary_paths);
+            let _ = cleanup_temporary_paths(&record.temporary_paths);
         }
         let _ = std::fs::remove_file(&manifest);
     }
@@ -1301,6 +1408,10 @@ pub fn try_run_as_service() -> bool {
 fn service_main(arguments: Vec<OsString>) {
     if let Err(e) = run_service(arguments) {
         tracing::error!(error = %e, "Service failed");
+        // The SCM owns this process. Returning normally from a failed service
+        // entry point would publish a successful process exit after startup
+        // failed, defeating recovery policy and operator diagnostics.
+        std::process::exit(1);
     }
 }
 
@@ -1311,14 +1422,19 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
         std::env::var("KOI_LOG").unwrap_or_else(|_| "info".to_string()),
     )
     .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    let _log_guards =
-        crate::infra::init_logging(env_filter, Some(&log_path)).unwrap_or_else(|_| vec![]); // Fall back to no logging rather than crashing
+    let _log_guards = crate::infra::init_logging(env_filter, Some(&log_path))
+        .context("initializing the Windows service log boundary")?;
 
     // Service mode resolves the SAME precedence as the foreground daemon
     // (CLI > env > file > default) by parsing the SCM launch line through the
-    // normal Cli. from_env alone ignored config.toml entirely — a configured
-    // http_bind silently bound loopback while the file said otherwise.
-    let config = crate::cli::Config::from_service_launch();
+    // normal Cli. The retired environment-only path ignored config.toml and
+    // silently bound defaults; this one strict path fails startup on bad input.
+    let config = crate::cli::Config::from_service_launch().map_err(anyhow::Error::msg)?;
+    let webhook_sinks = config.webhook_sinks()?;
+    koi_config::dirs::prepare_data_root(&config.data_dir)
+        .context("preparing the configured Windows service data root")?;
+    let host = koi_compose::host::HostIdentity::observe()
+        .context("observing the machine identity for this Koi composition")?;
     // Resolve the install-time authorization policy while `run_service` can
     // still report startup failure to the SCM. A malformed policy must not
     // silently broaden local-control access inside the async serving loop.
@@ -1356,9 +1472,8 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
     })?;
 
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async {
+    let runtime_result: anyhow::Result<()> = rt.block_on(async {
         let cancel = tokio_util::sync::CancellationToken::new();
-        let mut tasks = Vec::new();
         // Start the uptime clock before build_cores (as daemon_mode does), so `/v1/status`
         // uptime matches the foreground daemon — build_cores can take seconds (the certmesh
         // CA Argon2 auto-unlock), which would otherwise be silently undercounted.
@@ -1368,7 +1483,6 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
         // Shared with daemon_mode via koi-compose, so `koi install` constructs the identical
         // daemon (P07) — the fix for the verified parity defect. (An mDNS init failure is now
         // non-fatal, matching the foreground daemon, rather than stopping the service.)
-        let mut capability_notes = Vec::new();
         let cores = koi_compose::cores::build_cores(
             &koi_compose::cores::CoreSpec {
                 no_mdns: config.no_mdns,
@@ -1385,37 +1499,26 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
                 runtime_scope: std::env::var("KOI_SCOPE").ok().filter(|s| !s.is_empty()),
                 ..koi_compose::cores::CoreSpec::daemon_defaults()
             },
+            &host,
             &cancel,
-            &mut tasks,
-            &mut capability_notes,
         )
         .await
-        // fail_fast = false (daemon default) → always Ok; default is a panic-free guard.
-        .unwrap_or_default();
-        koi_common::capability::record_notes(capability_notes);
+        .context("constructing Koi domain graph")?;
 
         // Generate a Daemon Access Token (DAT) for authenticating mutation requests
         let dat_token = crate::infra::mint_dat();
 
-        // Ensure data directory exists
-        koi_config::dirs::ensure_data_dir();
-
-        // Resolve the HTTP bind address. The service can't surface errors to a
-        // console, so an invalid bind safe-fails to loopback rather than aborting.
+        // Resolve the HTTP bind address through the same strict startup boundary
+        // as the foreground daemon. Binding somewhere other than configured is
+        // not a safe recovery; SCM receives a failed startup instead.
         let http_bind_ip = if config.no_http {
             None
         } else {
-            match crate::infra::resolve_http_bind_ip(&config.http_bind) {
-                Ok(ip) => Some(ip),
-                Err(e) => {
-                    tracing::error!(error = %e, "Invalid KOI_HTTP_BIND; falling back to loopback");
-                    Some(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
-                }
-            }
+            Some(crate::infra::resolve_http_bind_ip(&config.http_bind)?)
         };
 
         // Startup diagnostics (logged to file)
-        crate::infra::startup_diagnostics(&config, http_bind_ip);
+        crate::infra::startup_diagnostics(&config, http_bind_ip, &host);
 
         // ── Enrollment-approval pump ──
         // The certmesh role loops + orchestrator are spawned by build_cores (shared with
@@ -1426,7 +1529,7 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
                 certmesh,
                 koi_compose::certmesh::deny_and_log_decider(),
                 &cancel,
-                &mut tasks,
+                &cores,
             )
             .await;
         }
@@ -1436,10 +1539,11 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
         // two boot paths cannot drift — fixing prior parity defects where the service
         // started mTLS but silently omitted ACME and announced the CA only at boot. The
         // service always serves the dashboard.
-        koi_serve::serve(
+        let serving = match koi_serve::serve(
             &cores,
             started_at,
             koi_serve::ServeConfig {
+                host: host.clone(),
                 bind_ip: http_bind_ip
                     .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
                 http_port: config.http_port,
@@ -1448,8 +1552,6 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
                 no_mcp_http: config.no_mcp_http,
                 pipe_path: config.pipe_path.clone(),
                 local_operator: local_operator.clone(),
-                local_endpoint: (!config.no_http)
-                    .then(|| crate::infra::breadcrumb_endpoint(http_bind_ip, config.http_port)),
                 data_root: config.data_dir.clone(),
                 config_path: config.config_path.clone(),
                 mtls_port: config.mtls_port,
@@ -1460,22 +1562,43 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
                 dashboard: true,
                 mode: "daemon",
                 dat_token: dat_token.clone(),
-                webhooks: config.webhook_sinks(),
+                webhooks: webhook_sinks,
                 no_mgmt_mcp: config.no_mgmt_mcp,
                 ui_dir: Some(config.data_dir.join("ui")),
             },
             &cancel,
-            &mut tasks,
-        );
+        )
+        .await
+        {
+            Ok(ready) => ready,
+            Err(error) => {
+                koi_compose::cores::ordered_shutdown(
+                    &cancel,
+                    &cores,
+                    SHUTDOWN_TIMEOUT,
+                    SHUTDOWN_DRAIN,
+                )
+                .await;
+                return Err(error.context("starting Koi serving stack"));
+            }
+        };
 
-        // Write breadcrumb for client discovery
-        if !config.no_http {
-            let endpoint = crate::infra::breadcrumb_endpoint(http_bind_ip, config.http_port);
-            koi_config::breadcrumb::write_breadcrumb(&endpoint, &dat_token);
+        // Publish only the endpoint whose listener crossed the startup fence.
+        if let Some(endpoint) = &serving.local_endpoint {
+            if let Err(error) = koi_config::breadcrumb::write_breadcrumb(endpoint, &dat_token) {
+                koi_compose::cores::ordered_shutdown(
+                    &cancel,
+                    &cores,
+                    SHUTDOWN_TIMEOUT,
+                    SHUTDOWN_DRAIN,
+                )
+                .await;
+                return Err(error).context("publishing the local daemon ownership breadcrumb");
+            }
         }
 
         // Report Running to SCM
-        let _ = status_handle.set_service_status(ServiceStatus {
+        if let Err(error) = status_handle.set_service_status(ServiceStatus {
             service_type: ServiceType::OWN_PROCESS,
             current_state: ServiceState::Running,
             controls_accepted: ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
@@ -1483,37 +1606,60 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             checkpoint: 0,
             wait_hint: Duration::default(),
             process_id: None,
-        });
+        }) {
+            koi_compose::cores::ordered_shutdown(&cancel, &cores, SHUTDOWN_TIMEOUT, SHUTDOWN_DRAIN)
+                .await;
+            let _ = koi_config::breadcrumb::delete_breadcrumb();
+            return Err(error).context("publishing Windows service readiness to the SCM");
+        }
 
         tracing::info!("Ready.");
 
-        // Wait for SCM stop signal
-        let _ = shutdown_rx.await;
+        // Wait for SCM/admin stop or an owned serving adapter's terminal failure.
+        tokio::select! {
+            _ = shutdown_rx => {}
+            _ = cancel.cancelled() => {}
+        }
         tracing::info!("Shutting down...");
 
-        // Report StopPending
-        let _ = status_handle.set_service_status(ServiceStatus {
-            service_type: ServiceType::OWN_PROCESS,
-            current_state: ServiceState::StopPending,
-            controls_accepted: ServiceControlAccept::empty(),
-            exit_code: ServiceExitCode::Win32(0),
-            checkpoint: 1,
-            wait_hint: SHUTDOWN_TIMEOUT,
-            process_id: None,
-        });
+        // Record the lifecycle publication failure, but never let it skip the
+        // actual resource teardown.
+        let stop_pending_error = status_handle
+            .set_service_status(ServiceStatus {
+                service_type: ServiceType::OWN_PROCESS,
+                current_state: ServiceState::StopPending,
+                controls_accepted: ServiceControlAccept::empty(),
+                exit_code: ServiceExitCode::Win32(0),
+                checkpoint: 1,
+                wait_hint: SHUTDOWN_TIMEOUT,
+                process_id: None,
+            })
+            .err();
 
         // Ordered shutdown (shared with daemon_mode via koi-compose).
-        koi_compose::cores::ordered_shutdown(
-            &cancel,
-            tasks,
-            &cores,
-            SHUTDOWN_TIMEOUT,
-            SHUTDOWN_DRAIN,
-        )
-        .await;
+        koi_compose::cores::ordered_shutdown(&cancel, &cores, SHUTDOWN_TIMEOUT, SHUTDOWN_DRAIN)
+            .await;
 
-        koi_config::breadcrumb::delete_breadcrumb();
+        koi_config::breadcrumb::delete_breadcrumb()
+            .context("removing the local daemon ownership breadcrumb")?;
+        if let Some(error) = stop_pending_error {
+            return Err(error).context("publishing Windows service shutdown to the SCM");
+        }
+        Ok(())
     });
+
+    if let Err(error) = runtime_result {
+        let _ = status_handle.set_service_status(ServiceStatus {
+            service_type: ServiceType::OWN_PROCESS,
+            current_state: ServiceState::Stopped,
+            controls_accepted: ServiceControlAccept::empty(),
+            exit_code: ServiceExitCode::Win32(1),
+            checkpoint: 0,
+            wait_hint: Duration::default(),
+            process_id: None,
+        });
+        return Err(error);
+    }
 
     status_handle.set_service_status(ServiceStatus {
         service_type: ServiceType::OWN_PROCESS,
@@ -2233,7 +2379,8 @@ mod tests {
         ));
         let path = dir.join("state").join(TRANSACTION_FILENAME);
         let mut manifest = test_manifest(PathBuf::from(r"F:\repo\koi.exe"));
-        manifest.files = vec![FileSnapshot::inspect(dir.join("bin").join("koi.exe"))];
+        manifest.files =
+            vec![FileSnapshot::inspect(dir.join("bin").join("koi.exe"), false).unwrap()];
         manifest.firewall = vec![FirewallRuleSnapshot {
             name: "Koi mDNS (UDP 5353)".to_string(),
             enabled: true,
@@ -2260,6 +2407,58 @@ mod tests {
         assert!(!loaded.files[0].existed);
         assert_eq!(loaded.firewall[0].local_port, "5353");
         assert_eq!(loaded.added_rules, vec!["Koi Pond (TCP 5644)".to_string()]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn scm_backup_integrity_rejects_changed_bytes() {
+        let dir = std::env::temp_dir().join(format!(
+            "koi-scm-integrity-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("koi.exe");
+        std::fs::write(&target, b"prior binary").unwrap();
+        let mut snapshot = FileSnapshot::inspect(target, false).unwrap();
+        snapshot.prepare().unwrap();
+        std::fs::write(&snapshot.backup, b"changed backup").unwrap();
+
+        let error = snapshot.validate_backup(true).unwrap_err().to_string();
+        assert!(error.contains("backup"));
+        assert!(error.contains("changed"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn settled_scm_recovery_never_restores_old_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "koi-scm-settled-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("koi.exe");
+        let manifest_path = dir.join(TRANSACTION_FILENAME);
+        std::fs::write(&target, b"prior binary").unwrap();
+        let mut snapshot = FileSnapshot::inspect(target.clone(), false).unwrap();
+        snapshot.prepare().unwrap();
+        std::fs::write(&target, b"committed binary").unwrap();
+        let mut manifest = test_manifest(target.clone());
+        manifest.phase = TransactionPhase::Settled;
+        manifest.files = vec![snapshot.clone()];
+        write_manifest(&manifest_path, &manifest).unwrap();
+
+        recover_interrupted(&manifest_path).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"committed binary");
+        assert!(!snapshot.backup.exists());
+        assert!(!manifest_path.exists());
         let _ = std::fs::remove_dir_all(dir);
     }
 

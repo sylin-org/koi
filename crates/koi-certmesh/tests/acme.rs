@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 
 use base64::Engine;
 use koi_certmesh::acme::{AcmeState, AcmeStateConfig};
-use koi_certmesh::{ca, roster::Roster, CertmeshCore, CertmeshPaths};
+use koi_certmesh::{protocol, CertmeshCore, CertmeshPaths};
 use koi_common::integration::AcmeDnsResolver;
 use p256::ecdsa::signature::Signer;
 use p256::ecdsa::{Signature, SigningKey};
@@ -81,16 +81,30 @@ struct CaFixture {
 }
 
 /// Create a CertmeshCore with a freshly-created, unlocked CA in OPEN enrollment.
-fn build_ca() -> CaFixture {
+async fn build_ca() -> CaFixture {
     let tmp = tempfile::tempdir().unwrap();
     let paths = CertmeshPaths::with_data_dir(tmp.path().to_path_buf());
     std::mem::forget(tmp); // keep the data dir alive for the test
 
-    let entropy = vec![9u8; 32];
-    let (ca_state, _master) = ca::create_ca("acme-test-pass", &entropy, &paths).unwrap();
-    let ca_pem = ca_state.cert_pem.clone();
-    let roster = Roster::new(/* open */ true, /* approval */ false, None);
-    let core = CertmeshCore::new_with_paths(ca_state, roster, None, paths);
+    let core = CertmeshCore::uninitialized_with_paths(paths)
+        .with_local_hostname("acme-test-host")
+        .expect("configure test host identity");
+    core.create(protocol::CreateCaRequest {
+        passphrase: "acme-test-pass".into(),
+        entropy_hex: koi_common::encoding::hex_encode(&[9_u8; 32]),
+        operator: None,
+        enrollment_open: true,
+        requires_approval: false,
+        auto_unlock: false,
+        totp_secret_hex: None,
+    })
+    .await
+    .expect("create managed test CA");
+    let ca_pem = core
+        .ca_certificate_pem()
+        .await
+        .expect("managed CA anchor remains observable")
+        .expect("managed CA publishes its anchor");
     CaFixture { core, ca_pem }
 }
 
@@ -278,7 +292,7 @@ fn make_csr_der(sans: &[&str]) -> Vec<u8> {
 
 #[tokio::test]
 async fn raw_out_of_zone_identifier_is_rejected() {
-    let ca = build_ca();
+    let ca = build_ca().await;
     let (base, _solver) = spawn_http(&ca, "lan").await;
     let client = reqwest::Client::new();
     let key = ClientKey::new();
@@ -307,7 +321,7 @@ async fn raw_out_of_zone_identifier_is_rejected() {
 
 #[tokio::test]
 async fn raw_wildcard_in_zone_order_succeeds() {
-    let ca = build_ca();
+    let ca = build_ca().await;
     let (base, _solver) = spawn_http(&ca, "lan").await;
     let client = reqwest::Client::new();
     let key = ClientKey::new();
@@ -333,7 +347,7 @@ async fn raw_wildcard_in_zone_order_succeeds() {
 
 #[tokio::test]
 async fn raw_wrong_key_jws_is_rejected() {
-    let ca = build_ca();
+    let ca = build_ca().await;
     let (base, _solver) = spawn_http(&ca, "lan").await;
     let client = reqwest::Client::new();
     let key = ClientKey::new();
@@ -360,7 +374,7 @@ async fn raw_wrong_key_jws_is_rejected() {
 
 #[tokio::test]
 async fn raw_nonce_replay_is_bad_nonce() {
-    let ca = build_ca();
+    let ca = build_ca().await;
     let (base, _solver) = spawn_http(&ca, "lan").await;
     let client = reqwest::Client::new();
     let key = ClientKey::new();
@@ -394,7 +408,7 @@ async fn raw_nonce_replay_is_bad_nonce() {
 
 #[tokio::test]
 async fn raw_finalize_with_unauthorized_san_is_rejected() {
-    let ca = build_ca();
+    let ca = build_ca().await;
     let (base, solver) = spawn_http(&ca, "lan").await;
     let client = reqwest::Client::new();
     let key = ClientKey::new();
@@ -483,7 +497,7 @@ async fn raw_finalize_with_unauthorized_san_is_rejected() {
 
 #[tokio::test]
 async fn raw_full_issuance_chains_to_ca() {
-    let ca = build_ca();
+    let ca = build_ca().await;
     let (base, solver) = spawn_http(&ca, "lan").await;
     let client = reqwest::Client::new();
     let key = ClientKey::new();
@@ -580,7 +594,7 @@ async fn conformance_issues_cert_via_dns01() {
     // Install the default crypto provider for rustls (idempotent).
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    let ca = build_ca();
+    let ca = build_ca().await;
 
     // Daemon leaf for the TLS server (SAN covers localhost + 127.0.0.1).
     let enrollment = ca

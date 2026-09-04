@@ -18,6 +18,7 @@ Rendering is done with DOM construction (`createElement` + `textContent`/`datase
 never HTML-string concatenation of dynamic values, and launch links are restricted to an
 `http`/`https` scheme allowlist — closing the LAN-attacker XSS class structurally.
 
-The LAN-wide meta-browse that populates the browser cache is **lazy**: it starts on the
-first browser request and idles out after inactivity (`koi status` reports whether it is
-active).
+The browser cache is a revision-aware presentation projection of mDNS's authoritative
+discovery snapshot; best-effort events never reconstruct membership. The LAN-wide
+meta-browse that feeds that domain snapshot is **lazy**: it starts on the first browser
+request and idles out after inactivity (`koi status` reports whether it is active).

@@ -12,7 +12,8 @@ use chrono::Utc;
 /// Format: `2026-02-11T10:30:00Z | ca_initialized | operator=Maria | profile=just_me`.
 /// The path comes from the injected `CertmeshPaths::audit_log_path()` — there
 /// is no ambient default.
-pub fn append_entry_to(
+#[cfg(test)]
+pub(crate) fn append_entry_to(
     path: &Path,
     event: &str,
     fields: &[(&str, &str)],
@@ -21,27 +22,34 @@ pub fn append_entry_to(
         std::fs::create_dir_all(parent)?;
     }
 
-    let timestamp = Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
-    let mut line = format!("{timestamp} | {event}");
-
-    for (key, value) in fields {
-        line.push_str(&format!(" | {key}={value}"));
-    }
-    line.push('\n');
+    let line = render_entry(event, fields);
 
     use std::io::Write;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)?;
-    file.write_all(line.as_bytes())?;
+    file.write_all(&line)?;
 
     tracing::debug!(event, "Audit log entry written");
     Ok(())
 }
 
+/// Render one audit record without writing it. Domain commands use this to put
+/// their success audit record in the same repository transaction as the state
+/// it describes, so a failed commit can never leave a lying success trail.
+pub(crate) fn render_entry(event: &str, fields: &[(&str, &str)]) -> Vec<u8> {
+    let timestamp = Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
+    let mut line = format!("{timestamp} | {event}");
+    for (key, value) in fields {
+        line.push_str(&format!(" | {key}={value}"));
+    }
+    line.push('\n');
+    line.into_bytes()
+}
+
 /// Read all audit log entries from an explicit path.
-pub fn read_log_from(path: &Path) -> Result<String, std::io::Error> {
+pub(crate) fn read_log_from(path: &Path) -> Result<String, std::io::Error> {
     if path.exists() {
         std::fs::read_to_string(path)
     } else {

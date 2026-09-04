@@ -20,7 +20,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, head, post};
 use axum::{Json, Router};
 use base64::Engine;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::acme::account::Account;
@@ -116,7 +116,7 @@ struct VerifiedRequest {
 /// deep stack — so boxing it would only add an allocation + a deref at every call
 /// site for no benefit.
 #[allow(clippy::result_large_err)]
-fn verify_request(
+async fn verify_request(
     state: &AcmeState,
     body: &Bytes,
     expected_url: &str,
@@ -138,7 +138,7 @@ fn verify_request(
         KeyId::Kid(kid) => {
             // The kid is the account URL; the account id is its last path segment.
             let acct_id = kid.rsplit('/').next().unwrap_or("");
-            let Some(acct) = state.accounts().get(acct_id) else {
+            let Some(acct) = state.account(acct_id).await else {
                 return Err(problem(
                     state,
                     AcmeErrorType::AccountDoesNotExist,
@@ -266,9 +266,15 @@ struct AccountResponse {
     orders: String,
 }
 
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+struct NewAccountPayload {
+    #[serde(default)]
+    contact: Vec<String>,
+}
+
 async fn new_account(State(state): State<Arc<AcmeState>>, body: Bytes) -> Response {
     let expected = state.url("/acme/new-account");
-    let req = match verify_request(&state, &body, &expected) {
+    let req = match verify_request(&state, &body, &expected).await {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -297,20 +303,30 @@ async fn new_account(State(state): State<Arc<AcmeState>>, body: Bytes) -> Respon
         );
     }
 
-    // Parse contacts (optional).
-    let payload: Value = serde_json::from_slice(&req.jws.payload).unwrap_or(Value::Null);
-    let contacts: Vec<String> = payload
-        .get("contact")
-        .and_then(|c| c.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
+    // Contact is optional, but malformed payloads are not empty contact lists:
+    // accepting that substitution would turn a decode failure into a real
+    // account mutation.
+    let payload: NewAccountPayload = match serde_json::from_slice(&req.jws.payload) {
+        Ok(payload) => payload,
+        Err(error) => {
+            return problem(
+                &state,
+                AcmeErrorType::Malformed,
+                format!("newAccount payload is malformed: {error}"),
+            )
+        }
+    };
+    let contacts = payload.contact;
 
-    let (account, created) = match state.accounts().register(jwk, contacts.clone()) {
+    let (account, created) = match state.register_account(jwk, contacts.clone()).await {
         Ok(v) => v,
+        Err(crate::error::CertmeshError::EnrollmentClosed) => {
+            return problem(
+                &state,
+                AcmeErrorType::ExternalAccountRequired,
+                "this mesh stopped accepting new ACME accounts",
+            )
+        }
         Err(e) => return problem(&state, AcmeErrorType::ServerInternal, e.to_string()),
     };
 
@@ -332,6 +348,40 @@ async fn new_account(State(state): State<Arc<AcmeState>>, body: Bytes) -> Respon
     resp
 }
 
+#[cfg(test)]
+mod new_account_payload_tests {
+    use super::NewAccountPayload;
+
+    #[test]
+    fn optional_contacts_decode_without_inventing_values() {
+        assert_eq!(
+            serde_json::from_slice::<NewAccountPayload>(br#"{}"#).unwrap(),
+            NewAccountPayload { contact: vec![] }
+        );
+        assert_eq!(
+            serde_json::from_slice::<NewAccountPayload>(
+                br#"{"contact":["mailto:operator@example.test"]}"#,
+            )
+            .unwrap(),
+            NewAccountPayload {
+                contact: vec!["mailto:operator@example.test".to_string()]
+            }
+        );
+    }
+
+    #[test]
+    fn malformed_contacts_and_payloads_are_rejected() {
+        for payload in [
+            br#"null"#.as_slice(),
+            br#"{"contact":"mailto:operator@example.test"}"#.as_slice(),
+            br#"{"contact":["mailto:operator@example.test",7]}"#.as_slice(),
+            br#"{"contact":["unterminated]"#.as_slice(),
+        ] {
+            assert!(serde_json::from_slice::<NewAccountPayload>(payload).is_err());
+        }
+    }
+}
+
 async fn account(
     State(state): State<Arc<AcmeState>>,
     Path(id): Path<String>,
@@ -339,11 +389,15 @@ async fn account(
 ) -> Response {
     // POST-as-GET / update on an existing account: just echo status.
     let expected = state.url(&format!("/acme/acct/{id}"));
-    let req = match verify_request(&state, &body, &expected) {
+    let req = match verify_request(&state, &body, &expected).await {
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    let Some(account) = req.account.or_else(|| state.accounts().get(&id)) else {
+    let account = match req.account {
+        Some(account) => Some(account),
+        None => state.account(&id).await,
+    };
+    let Some(account) = account else {
         return problem(
             &state,
             AcmeErrorType::AccountDoesNotExist,
@@ -382,7 +436,7 @@ struct Identifier {
 
 async fn new_order(State(state): State<Arc<AcmeState>>, body: Bytes) -> Response {
     let expected = state.url("/acme/new-order");
-    let req = match verify_request(&state, &body, &expected) {
+    let req = match verify_request(&state, &body, &expected).await {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -502,7 +556,7 @@ async fn authz(
     body: Bytes,
 ) -> Response {
     let expected = state.url(&format!("/acme/authz/{id}"));
-    if let Err(resp) = verify_request(&state, &body, &expected) {
+    if let Err(resp) = verify_request(&state, &body, &expected).await {
         return resp;
     }
     let Some(authz) = state.orders().get_authz(&id) else {
@@ -536,7 +590,7 @@ async fn challenge(
     body: Bytes,
 ) -> Response {
     let expected = state.url(&format!("/acme/chall/{id}"));
-    let req = match verify_request(&state, &body, &expected) {
+    let req = match verify_request(&state, &body, &expected).await {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -601,7 +655,7 @@ async fn get_order(
     body: Bytes,
 ) -> Response {
     let expected = state.url(&format!("/acme/order/{id}"));
-    if let Err(resp) = verify_request(&state, &body, &expected) {
+    if let Err(resp) = verify_request(&state, &body, &expected).await {
         return resp;
     }
     let Some(order) = state.orders().get_order(&id) else {
@@ -618,7 +672,7 @@ async fn finalize(
     body: Bytes,
 ) -> Response {
     let expected = state.url(&format!("/acme/order/{id}/finalize"));
-    let req = match verify_request(&state, &body, &expected) {
+    let req = match verify_request(&state, &body, &expected).await {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -665,13 +719,11 @@ async fn finalize(
     };
 
     // Sign — enforcing the SAN-authorization gate against the order's names.
-    let authorized = order.authorized_names().to_vec();
     match state
-        .sign_finalize_csr(&account.id, &authorized, &csr_der)
+        .finalize_order_certificate(&order.id, &account.id, &csr_der)
         .await
     {
-        Ok(chain_pem) => {
-            let cert_id = state.orders().record_certificate(&order.id, chain_pem);
+        Ok(cert_id) => {
             let updated = state.orders().get_order(&order.id).unwrap_or(order);
             let mut body = order_to_response(&state, &updated);
             body.certificate = Some(state.url(&format!("/acme/cert/{cert_id}")));
@@ -698,7 +750,7 @@ async fn get_cert(
     body: Bytes,
 ) -> Response {
     let expected = state.url(&format!("/acme/cert/{id}"));
-    if let Err(resp) = verify_request(&state, &body, &expected) {
+    if let Err(resp) = verify_request(&state, &body, &expected).await {
         return resp;
     }
     let Some(cert) = state.orders().get_certificate(&id) else {
@@ -720,7 +772,7 @@ async fn get_cert(
 
 async fn revoke_cert(State(state): State<Arc<AcmeState>>, body: Bytes) -> Response {
     let expected = state.url("/acme/revoke-cert");
-    let req = match verify_request(&state, &body, &expected) {
+    let req = match verify_request(&state, &body, &expected).await {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -743,7 +795,16 @@ async fn revoke_cert(State(state): State<Arc<AcmeState>>, body: Bytes) -> Respon
         }
     };
     let fingerprint = koi_crypto::pinning::fingerprint_sha256(&der);
-    let revoked = state.revoke_by_fingerprint(&fingerprint).await;
+    let revoked = match state.revoke_by_fingerprint(&fingerprint).await {
+        Ok(revoked) => revoked,
+        Err(error) => {
+            return problem(
+                &state,
+                AcmeErrorType::ServerInternal,
+                format!("could not persist revocation: {error}"),
+            )
+        }
+    };
     if !revoked {
         return problem(
             &state,

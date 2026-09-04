@@ -7,7 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Observable domain boundaries (ADR-043).** Every domain now owns a cheap immutable,
+  revisioned status snapshot, a coalescing status subscription, and a separate typed semantic
+  event stream. `koi-compose` retains those exact snapshots in one reactive `KoiStatus`
+  aggregate for HTTP, CLI, dashboard, MCP, embedded, and Pond consumers; late or lagged
+  consumers reread current truth instead of reconstructing it from events.
+- **A dedicated OS Trust domain.** `koi-trust` is the sole owner of Koi-managed roots,
+  platform-store presence, durable replay intent, status, and events. Certmesh supplies a
+  typed CA-anchor projection, while composition drives idempotent Trust convergence without
+  exposing PEM through public status.
+
 ### Changed
+- **Composition now owns process topology rather than domain state.** Explicit persistence
+  paths, provider ports, readiness fences, and retained lifecycle handles make each domain
+  the sole authority for its durable state, status, events, workers, and acquired resources.
+  Startup is transactional: a capability is not advertised, published through local IPC, or
+  reported healthy until its real listener and background work are ready.
+- **The CLI has one execution owner.** Commands either target the selected daemon or run in
+  explicit `--standalone` mode; they never silently arm a second local responder. The former
+  implicit piped-stdin mDNS adapter was removed, while `koi mcp serve` remains an explicit,
+  daemon-backed stdio protocol boundary.
+- **Boundary failures remain failures.** Remote command responses and host observations are
+  decoded into their domain contracts instead of manufacturing empty collections, `unknown`
+  identities, or successful defaults. A selected live daemon failing a request is no longer
+  rewritten as an offline result.
+- **Embedded adaptive serving has one readiness contract.** `KoiHandle::serve` is now async
+  and returns the actual bound address after its real listener exists. `participate` publishes
+  only that listener's OS-selected port, requires its initial mDNS registration before success,
+  and owns listener plus registration as one cancellable generation. Bind/publication failures
+  or a dropped readiness waiter roll back without a ghost record or socket, and host observation
+  never invents `unknown`.
 - **Runtime mDNS provider orchestration (ADR-038).** Platform adapters now own
   detection, capability evidence, native operations, and shutdown. A stable
   supervisor assigns non-overlapping publish/browse/resolve routes, reconciles
@@ -15,8 +45,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the lowest-priority complete provider. Linux can use Avahi alone or compose
   systemd-resolved's real D-Bus publication/direct-resolution operations with
   native Koi's browse and explicit-address support without restarting Koi.
+- **Lifecycle and mutation ownership is explicit.** Admitted durable/native work survives a
+  dropped requester through commit, model acceptance, specialized projections, status, and
+  event publication. Startup is transactional, `RunningCores` is the non-cloneable lifecycle
+  owner, and terminal shutdown retains domain release fences through real completion.
+- **Runtime-derived DNS, Health, and Proxy configuration is transient desired state.** Each
+  receiving domain atomically replaces its complete scoped projection, keeps operator
+  configuration authoritative on collisions, and never persists a composition-owned shadow
+  inventory.
+- **Certmesh preflight is deliberately smaller.** Full `/v1/certmesh/status` is protected for
+  remote or unknown peers; public enrollment discovery uses the allowlisted
+  `/v1/certmesh/bootstrap` projection.
 
 ### Fixed
+- Dashboard and webhook forwarding now arm every domain subscription before returning to
+  composition, closing the first-event race without introducing a replay queue or second
+  state store.
+- Unified and domain-specific status surfaces no longer infer or cache competing lifecycle,
+  membership, discovery, trust, or listener truth. Offline `koi status` reports the canonical
+  ten-rung shape as unobserved instead of guessing from configuration or persistence.
+- Cancelled startup, stop, shutdown, provider transition, and persisted mutation waiters can
+  no longer detach accepted work or leave sockets, workers, status, and durable state in
+  contradictory generations.
 - A quiet DNS-SD browse no longer turns the mDNS capability red after 90 seconds.
   Browse APIs emit changes rather than keepalives, so event age is now truthful
   activity telemetry; adapter-owned probes determine health, and explicit peer
@@ -26,6 +76,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Expected browse retries during a provider transition no longer emit one warning
   per active service type; adapter/supervisor health remains authoritative while
   route-level retry detail stays available at debug level.
+
+### Removed
+- **The parallel embedded serving entry points.** `KoiHandle::try_serve` and the public
+  `serve_adaptive` re-export were removed; both were weaker, easily-misread alternatives to
+  the now readiness-fenced `KoiHandle::serve` contract.
 
 ## [1.0.0-rc.2] - 2026-08-24
 

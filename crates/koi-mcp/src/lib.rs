@@ -30,6 +30,7 @@ use rmcp::{transport::stdio, ServiceExt};
 pub use client::build_client;
 pub use server::Server;
 pub use source::{ClientSource, KoiSource, ResourceChange, SourceError};
+pub use tools::inventory_includes;
 
 /// The stdio server type: a [`Server`] backed by the blocking [`ClientSource`].
 pub type StdioServer = Server<ClientSource>;

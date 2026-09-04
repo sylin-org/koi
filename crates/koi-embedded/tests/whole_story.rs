@@ -41,7 +41,8 @@ use tokio_util::sync::CancellationToken;
 use koi_certmesh::protocol::{CreateCaRequest, JoinRequest, JoinResponse, RenewRequest};
 use koi_certmesh::roster::CertPolicy;
 use koi_certmesh::{
-    invite, member, mtls, BundleOutcome, CertmeshCore, CertmeshError, CertmeshPaths, RenewOutcome,
+    invite, member, mtls, BundleOutcome, CertmeshAuthorityStatus, CertmeshBootstrapStatus,
+    CertmeshCore, CertmeshError, CertmeshPaths, CertmeshRole, RenewOutcome,
 };
 use koi_crypto::pinning::fingerprints_match;
 
@@ -67,10 +68,27 @@ fn temp_data_dir() -> PathBuf {
     dir
 }
 
+fn save_member_fixture(path: &Path, state: &member::MemberState) {
+    let bytes = serde_json::to_vec_pretty(state).expect("serialize member fixture");
+    let _outcome = koi_common::persist::write_bytes_atomic_with_options(
+        path,
+        &bytes,
+        koi_common::persist::AtomicWriteOptions::new().with_unix_mode(0o600),
+    )
+    .expect("save member fixture");
+}
+
 /// Grab a free loopback TCP port (bind to :0, read it back, drop the listener).
 fn free_port() -> u16 {
     let l = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral");
     l.local_addr().expect("local_addr").port()
+}
+
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("build bounded integration client")
 }
 
 /// Start an embedded Koi daemon with only certmesh + the HTTP adapter enabled. mDNS and
@@ -127,11 +145,17 @@ async fn create_ca(a_core: &CertmeshCore) {
         .expect("create CA");
 }
 
-/// A member's recorded fingerprint in A's roster (empty string if absent).
-async fn roster_fingerprint(a_core: &CertmeshCore, hostname: &str) -> String {
-    a_core
-        .certmesh_status()
-        .await
+fn authority_status(core: &CertmeshCore) -> CertmeshAuthorityStatus {
+    core.status()
+        .authority
+        .as_ref()
+        .expect("test CA must expose authority status")
+        .clone()
+}
+
+/// A member's recorded fingerprint in A's authoritative status (empty if absent).
+fn roster_fingerprint(a_core: &CertmeshCore, hostname: &str) -> String {
+    authority_status(a_core)
         .members
         .into_iter()
         .find(|m| m.hostname == hostname)
@@ -145,7 +169,7 @@ async fn roster_fingerprint(a_core: &CertmeshCore, hostname: &str) -> String {
 async fn whole_story_join_renew_revoke_over_http_and_mtls() {
     let host = "web-01";
     let sans = vec![host.to_string()];
-    let client = reqwest::Client::new();
+    let client = http_client();
 
     // ── A: the CA daemon ──
     let a_dir = temp_data_dir();
@@ -167,12 +191,18 @@ async fn whole_story_join_renew_revoke_over_http_and_mtls() {
         "create must record machine.bind"
     );
     assert!(
-        a_core.read_audit_log().unwrap().contains("ca_initialized"),
+        a_core
+            .read_audit_log()
+            .await
+            .unwrap()
+            .contains("ca_initialized"),
         "create must audit ca_initialized"
     );
-    let status = a_core.certmesh_status().await;
-    assert!(status.ca_initialized && !status.ca_locked);
-    assert_eq!(status.member_count, 1, "CA self-enrolls as Primary");
+    let status = a_core.status();
+    assert_eq!(status.role, CertmeshRole::Authority);
+    let authority = status.authority.as_ref().expect("authority state");
+    assert!(!authority.locked);
+    assert_eq!(authority.member_count, 1, "CA self-enrolls as Primary");
 
     // Step 2: mint a host-bound invite (`<secret>.<ca_fp>`).
     let invite_code = a_core
@@ -216,17 +246,19 @@ async fn whole_story_join_renew_revoke_over_http_and_mtls() {
     //
     // Preflight: read A's advertised fingerprint and confirm it matches the pin baked
     // into the invite *before* sending anything.
-    let preflight: serde_json::Value = client
-        .get(format!("{a_base}/v1/certmesh/status"))
+    let preflight: CertmeshBootstrapStatus = client
+        .get(format!("{a_base}/v1/certmesh/bootstrap"))
         .send()
         .await
-        .expect("preflight status")
+        .expect("preflight bootstrap")
         .json()
         .await
-        .expect("status json");
-    let advertised = preflight["ca_fingerprint"]
-        .as_str()
-        .expect("status advertises ca_fingerprint");
+        .expect("bootstrap json");
+    assert!(preflight.authority_available);
+    let advertised = preflight
+        .ca_fingerprint
+        .as_deref()
+        .expect("bootstrap advertises ca_fingerprint");
     assert!(
         fingerprints_match(advertised, &pinned_fp),
         "preflight: advertised CA fingerprint must match the pinned invite fingerprint"
@@ -307,7 +339,7 @@ async fn whole_story_join_renew_revoke_over_http_and_mtls() {
         .await
         .expect("install member cert");
     assert_eq!(
-        a_core.certmesh_status().await.member_count,
+        authority_status(&a_core).member_count,
         2,
         "B is now enrolled in A's roster"
     );
@@ -317,7 +349,9 @@ async fn whole_story_join_renew_revoke_over_http_and_mtls() {
     // `install_member_cert` cannot record a non-default mTLS port, so we rewrite it here —
     // the supported way to target an ephemeral test port.
     let member_path = b_paths.member_state_path();
-    let mut st = member::load(&member_path).expect("renewal armed");
+    let mut st = member::load(&member_path)
+        .expect("read renewal state")
+        .expect("renewal armed");
     assert_eq!(st.ca_host, "127.0.0.1");
     assert_eq!(
         st.ca_http_port, a_http,
@@ -329,12 +363,12 @@ async fn whole_story_join_renew_revoke_over_http_and_mtls() {
         renew_threshold_days: 365,
         grace_days: 14,
     };
-    member::save(&member_path, &st).expect("save member state");
+    save_member_fixture(&member_path, &st);
 
     // Step 5: B pulls a rotate-key renewal over real mTLS. The key ROTATES locally and A
     // records the new fingerprint.
     let old_key = std::fs::read_to_string(cert_dir.join("key.pem")).unwrap();
-    let fp_before = roster_fingerprint(&a_core, host).await;
+    let fp_before = roster_fingerprint(&a_core, host);
     assert!(!fp_before.is_empty(), "A recorded B's enrolled fingerprint");
 
     let outcome = b_core.renew_self_if_due().await.expect("renew over mTLS");
@@ -356,7 +390,7 @@ async fn whole_story_join_renew_revoke_over_http_and_mtls() {
             .mode();
         assert_eq!(mode & 0o777, 0o600, "rotated key must stay 0600");
     }
-    let fp_after = roster_fingerprint(&a_core, host).await;
+    let fp_after = roster_fingerprint(&a_core, host);
     assert_ne!(
         fp_before, fp_after,
         "A's roster must record the rotated leaf fingerprint"
@@ -368,9 +402,11 @@ async fn whole_story_join_renew_revoke_over_http_and_mtls() {
     // ephemeral test port. The post-revoke probe at step 8 dials `mtls_port` directly and
     // does not depend on this, but a future renewal driven through `renew_self_if_due`
     // would, so keep member.json honest.
-    let mut st = member::load(&member_path).expect("load member state after renew");
+    let mut st = member::load(&member_path)
+        .expect("read member state after renew")
+        .expect("load member state after renew");
     st.ca_mtls_port = mtls_port;
-    member::save(&member_path, &st).expect("re-pin mTLS port in member state");
+    save_member_fixture(&member_path, &st);
 
     // Step 6: B pulls + verifies the signed trust bundle (ES256 + anti-rollback). A
     // second pull with no roster change is idempotent. Capture the seq to prove the
@@ -481,7 +517,7 @@ async fn whole_story_join_renew_revoke_over_http_and_mtls() {
 async fn wrong_fingerprint_invite_aborts_at_preflight() {
     let host = "f3-host";
     let sans = vec![host.to_string()];
-    let client = reqwest::Client::new();
+    let client = http_client();
 
     let a_dir = temp_data_dir();
     let a_http = free_port();
@@ -499,15 +535,16 @@ async fn wrong_fingerprint_invite_aborts_at_preflight() {
 
     // (a) Preflight: a joiner pinning the forged fingerprint compares it against what the
     // live CA advertises and aborts BEFORE generating or sending any CSR.
-    let preflight: serde_json::Value = client
-        .get(format!("{a_base}/v1/certmesh/status"))
+    let preflight: CertmeshBootstrapStatus = client
+        .get(format!("{a_base}/v1/certmesh/bootstrap"))
         .send()
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
-    let advertised = preflight["ca_fingerprint"].as_str().unwrap();
+    assert!(preflight.authority_available);
+    let advertised = preflight.ca_fingerprint.as_deref().unwrap();
     assert!(
         fingerprints_match(advertised, &real_fp),
         "sanity: the genuine invite pin matches the live CA"
@@ -524,7 +561,9 @@ async fn wrong_fingerprint_invite_aborts_at_preflight() {
     // CLI code; this is the library-level enforcement reachable from the embedded API).
     let b_dir = temp_data_dir();
     let b_core =
-        CertmeshCore::uninitialized_with_paths(CertmeshPaths::with_data_dir(b_dir.clone()));
+        CertmeshCore::uninitialized_with_paths(CertmeshPaths::with_data_dir(b_dir.clone()))
+            .with_local_hostname(host)
+            .expect("configure embedded member host identity");
     let csr = b_core.prepare_member_csr(host, &sans).await.unwrap();
     let join: JoinResponse = client
         .post(format!("{a_base}/v1/certmesh/join"))
@@ -608,7 +647,7 @@ async fn bad_totp_join(client: &reqwest::Client, base: &str, hostname: &str) -> 
 #[tokio::test]
 async fn totp_lockout_persists_across_ca_restart() {
     let host = "f7-host";
-    let client = reqwest::Client::new();
+    let client = http_client();
 
     let a_dir = temp_data_dir();
     let a_http = free_port();
@@ -647,7 +686,7 @@ async fn totp_lockout_persists_across_ca_restart() {
     // from a locked CA (which would also be a non-200 but for the wrong reason).
     let a_core2 = a_handle.certmesh().unwrap().core().unwrap();
     assert!(
-        !a_core2.certmesh_status().await.ca_locked,
+        !authority_status(&a_core2).locked,
         "the rebuilt CA must auto-unlock so the 429 is rate-limiting, not ca_locked"
     );
 
@@ -667,7 +706,7 @@ async fn totp_lockout_persists_across_ca_restart() {
 
 #[tokio::test]
 async fn tampered_machine_binding_boots_ca_locked() {
-    let client = reqwest::Client::new();
+    let client = http_client();
 
     let a_dir = temp_data_dir();
     let a_http = free_port();
@@ -680,7 +719,7 @@ async fn tampered_machine_binding_boots_ca_locked() {
     // lock-on-tamper assertion meaningful.
     create_ca(&a_core).await;
     assert!(
-        !a_core.certmesh_status().await.ca_locked,
+        !authority_status(&a_core).locked,
         "a freshly created CA with auto-unlock is unlocked"
     );
 
@@ -698,12 +737,13 @@ async fn tampered_machine_binding_boots_ca_locked() {
     let a_core = a_handle.certmesh().unwrap().core().unwrap();
 
     assert!(
-        a_core.certmesh_status().await.ca_locked,
+        authority_status(&a_core).locked,
         "F11: a tampered machine.bind must boot the CA LOCKED (auto-unlock refused)"
     );
     assert!(
         a_core
             .read_audit_log()
+            .await
             .unwrap()
             .contains("auto_unlock_refused_machine_changed"),
         "F11: the refusal must be audited"

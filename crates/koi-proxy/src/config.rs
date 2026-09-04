@@ -1,7 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-use koi_common::paths;
-
 use crate::ProxyError;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
@@ -21,27 +19,7 @@ pub struct ProxyConfig {
     pub entries: Vec<ProxyEntry>,
 }
 
-// Phase 2: migrate onto an injected data root like certmesh did.
-#[allow(clippy::disallowed_methods)]
-pub fn config_path() -> std::path::PathBuf {
-    paths::koi_data_dir().join("config.toml")
-}
-
-pub fn config_path_with_override(data_dir: Option<&std::path::Path>) -> std::path::PathBuf {
-    paths::koi_data_dir_with_override(data_dir).join("config.toml")
-}
-
-pub fn load_entries() -> Result<Vec<ProxyEntry>, ProxyError> {
-    load_entries_from(&config_path())
-}
-
-pub fn load_entries_with_data_dir(
-    data_dir: Option<&std::path::Path>,
-) -> Result<Vec<ProxyEntry>, ProxyError> {
-    load_entries_from(&config_path_with_override(data_dir))
-}
-
-fn load_entries_from(path: &std::path::Path) -> Result<Vec<ProxyEntry>, ProxyError> {
+pub(crate) fn load_entries(path: &std::path::Path) -> Result<Vec<ProxyEntry>, ProxyError> {
     if !path.exists() {
         return Ok(Vec::new());
     }
@@ -59,19 +37,22 @@ fn load_entries_from(path: &std::path::Path) -> Result<Vec<ProxyEntry>, ProxyErr
     Ok(proxy.entries)
 }
 
-pub fn save_entries(entries: &[ProxyEntry]) -> Result<(), ProxyError> {
-    save_entries_to(entries, &config_path())
+pub(crate) fn save_entries(
+    entries: &[ProxyEntry],
+    path: &std::path::Path,
+) -> Result<(), ProxyError> {
+    save_entries_to_with(entries, path, koi_common::persist::write_bytes_atomic)
 }
 
-fn save_entries_to(entries: &[ProxyEntry], path: &std::path::Path) -> Result<(), ProxyError> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| ProxyError::Io(e.to_string()))?;
-    }
-
+fn save_entries_to_with(
+    entries: &[ProxyEntry],
+    path: &std::path::Path,
+    write: impl FnOnce(&std::path::Path, &[u8]) -> std::io::Result<koi_common::persist::AtomicCommit>,
+) -> Result<(), ProxyError> {
     let mut root = if path.exists() {
         let raw = std::fs::read_to_string(path).map_err(|e| ProxyError::Io(e.to_string()))?;
         raw.parse::<toml::Value>()
-            .unwrap_or_else(|_| toml::Value::Table(toml::map::Map::new()))
+            .map_err(|e| ProxyError::Config(format!("Invalid config.toml: {e}")))?
     } else {
         toml::Value::Table(toml::map::Map::new())
     };
@@ -88,59 +69,27 @@ fn save_entries_to(entries: &[ProxyEntry], path: &std::path::Path) -> Result<(),
 
     let raw = toml::to_string_pretty(&root)
         .map_err(|e| ProxyError::Config(format!("Config serialize error: {e}")))?;
-    std::fs::write(path, raw).map_err(|e| ProxyError::Io(e.to_string()))?;
+
+    match write(path, raw.as_bytes()).map_err(|error| ProxyError::Io(error.to_string()))? {
+        koi_common::persist::AtomicCommit::Durable => {}
+        koi_common::persist::AtomicCommit::DurabilityUncertain(error) => {
+            // Replacement is already visible. Returning an error would leave
+            // Proxy's accepted model/status behind the config this process and
+            // an ordinary restart now read, so accept it and make the weaker
+            // crash-survival guarantee operationally loud.
+            tracing::error!(
+                path = %path.display(),
+                %error,
+                "Proxy config is visible, but its crash durability could not be confirmed"
+            );
+        }
+    }
     Ok(())
-}
-
-pub fn upsert_entry(entry: ProxyEntry) -> Result<Vec<ProxyEntry>, ProxyError> {
-    upsert_entry_with_data_dir(entry, None)
-}
-
-pub fn upsert_entry_with_data_dir(
-    entry: ProxyEntry,
-    data_dir: Option<&std::path::Path>,
-) -> Result<Vec<ProxyEntry>, ProxyError> {
-    let path = config_path_with_override(data_dir);
-    let mut entries = load_entries_from(&path)?;
-    if let Some(existing) = entries.iter_mut().find(|e| e.name == entry.name) {
-        *existing = entry;
-    } else {
-        entries.push(entry);
-    }
-    entries.sort_by(|a, b| a.name.cmp(&b.name));
-    save_entries_to(&entries, &path)?;
-    Ok(entries)
-}
-
-pub fn remove_entry(name: &str) -> Result<Vec<ProxyEntry>, ProxyError> {
-    remove_entry_with_data_dir(name, None)
-}
-
-pub fn remove_entry_with_data_dir(
-    name: &str,
-    data_dir: Option<&std::path::Path>,
-) -> Result<Vec<ProxyEntry>, ProxyError> {
-    let path = config_path_with_override(data_dir);
-    let mut entries = load_entries_from(&path)?;
-    let before = entries.len();
-    entries.retain(|e| e.name != name);
-    if entries.len() == before {
-        return Err(ProxyError::NotFound(name.to_string()));
-    }
-    save_entries_to(&entries, &path)?;
-    Ok(entries)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn config_path_is_under_data_dir() {
-        let _ = koi_common::test::ensure_data_dir("koi-proxy-config-tests");
-        let path = config_path();
-        assert!(path.ends_with("config.toml"));
-    }
 
     #[test]
     fn proxy_entry_round_trip() {
@@ -156,5 +105,130 @@ mod tests {
         let value = toml::Value::try_from(proxy).unwrap();
         let decoded: ProxyConfig = value.try_into().unwrap();
         assert_eq!(decoded.entries[0], entry);
+    }
+
+    #[test]
+    fn save_refuses_to_replace_a_malformed_shared_config() {
+        let dir = std::env::temp_dir().join(format!(
+            "koi-proxy-config-corrupt-{}",
+            koi_common::id::generate_short_id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let malformed = "[unclosed\nvalue = true";
+        std::fs::write(&path, malformed).unwrap();
+
+        let result = save_entries(&[], &path);
+        assert!(matches!(result, Err(ProxyError::Config(_))));
+        assert_eq!(std::fs::read_to_string(path).unwrap(), malformed);
+    }
+
+    #[test]
+    fn save_replaces_only_the_proxy_section() {
+        let dir = std::env::temp_dir().join(format!(
+            "koi-proxy-config-preserve-{}",
+            koi_common::id::generate_short_id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let original = r#"
+version = 1
+dns_port = 5354
+
+[unrelated]
+owner = "operator"
+enabled = true
+
+[proxy]
+entries = [
+  { name = "old", listen_port = 7443, backend = "http://127.0.0.1:7000" },
+]
+"#;
+        std::fs::write(&path, original).unwrap();
+        let before = original.parse::<toml::Value>().unwrap();
+        let replacement = ProxyEntry {
+            name: "new".to_string(),
+            listen_port: 8443,
+            backend: "http://127.0.0.1:8000".to_string(),
+            allow_remote: false,
+        };
+
+        save_entries(std::slice::from_ref(&replacement), &path).unwrap();
+
+        let after = std::fs::read_to_string(&path)
+            .unwrap()
+            .parse::<toml::Value>()
+            .unwrap();
+        assert_eq!(after.get("version"), before.get("version"));
+        assert_eq!(after.get("dns_port"), before.get("dns_port"));
+        assert_eq!(after.get("unrelated"), before.get("unrelated"));
+        assert_eq!(load_entries(&path).unwrap(), [replacement]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn pre_replace_write_failure_preserves_the_previous_config() {
+        let dir = std::env::temp_dir().join(format!(
+            "koi-proxy-config-failure-{}",
+            koi_common::id::generate_short_id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let original = "version = 1\n[proxy]\nentries = []\n";
+        std::fs::write(&path, original).unwrap();
+        let replacement = ProxyEntry {
+            name: "rejected".to_string(),
+            listen_port: 8443,
+            backend: "http://127.0.0.1:8000".to_string(),
+            allow_remote: false,
+        };
+
+        let result = save_entries_to_with(std::slice::from_ref(&replacement), &path, |_, _| {
+            Err(std::io::Error::other("injected pre-replace failure"))
+        });
+
+        assert!(matches!(result, Err(ProxyError::Io(message)) if message.contains("injected")));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        assert!(load_entries(&path).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn visible_uncertain_commit_is_accepted_and_reload_observes_the_new_entries() {
+        let dir = std::env::temp_dir().join(format!(
+            "koi-proxy-config-uncertain-{}",
+            koi_common::id::generate_short_id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "version = 1\n[proxy]\nentries = []\n").unwrap();
+        let replacement = ProxyEntry {
+            name: "accepted".to_string(),
+            listen_port: 8443,
+            backend: "http://127.0.0.1:8000".to_string(),
+            allow_remote: false,
+        };
+
+        save_entries_to_with(
+            std::slice::from_ref(&replacement),
+            &path,
+            |target, bytes| {
+                let outcome = koi_common::persist::write_bytes_atomic(target, bytes)?;
+                Ok(match outcome {
+                    koi_common::persist::AtomicCommit::Durable => {
+                        koi_common::persist::AtomicCommit::DurabilityUncertain(
+                            std::io::Error::other("injected post-replace sync failure"),
+                        )
+                    }
+                    uncertain @ koi_common::persist::AtomicCommit::DurabilityUncertain(_) => {
+                        uncertain
+                    }
+                })
+            },
+        )
+        .expect("visible uncertain replacement is an accepted commit");
+
+        assert_eq!(load_entries(&path).unwrap(), [replacement]);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

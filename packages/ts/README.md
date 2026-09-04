@@ -1,12 +1,12 @@
 # @sylin-org/koi-client (beta)
 
-JavaScript/TypeScript client for [Koi](https://github.com/sylin-org/koi)'s frozen
+JavaScript/TypeScript client for [Koi](https://github.com/sylin-org/koi)'s versioned
 HTTP API. Zero runtime dependencies — Node 18+ built-ins only.
 
-**Scope**: status, health, certmesh status/posture, the Agent-Door discovery
+**Scope**: status, health, certmesh status/bootstrap/posture, the Agent-Door discovery
 card, the `/v1/events` SSE stream, and enrollment — `generateKeyPairAndCsr()`
 keeps the private key in your process (ADR-015 F1) while `join()` / 
-`enrollWithLocalDaemon()` drive the frozen wire contract. A `"client"` role
+`enrollWithLocalDaemon()` drive the versioned wire contract. A `"client"` role
 enrolls a non-serving principal (ADR-026).
 
 Shapes are pinned by the repository's conformance vectors
@@ -23,10 +23,16 @@ import { KoiClient, generateKeyPairAndCsr } from "@sylin-org/koi-client";
 const koi = new KoiClient("http://127.0.0.1:5641", { token: process.env.KOI_TOKEN });
 const card = await koi.serverCard();   // Agent-Door discovery (no token needed)
 const posture = await koi.posture();   // { signed, encrypted, level }
+const status = await koi.certmeshStatus(); // role/posture/identity + optional authority
+
+// A remote joiner uses the deliberately minimal public preflight (without a DAT):
+const remoteCa = new KoiClient(process.env.KOI_CA_ENDPOINT);
+const bootstrap = await remoteCa.certmeshBootstrap();
+if (!bootstrap.authority_available) throw new Error("selected Koi daemon is not an authority");
 
 // Raw-custody enrollment against a remote CA:
 const keys = generateKeyPairAndCsr("agent-7");     // key stays with you
-const joined = await koi.join({                    // client points at the CA
+const joined = await remoteCa.join({                // client points at the CA
   hostname: "agent-7", csr: keys.csrPem,
   inviteToken: process.env.KOI_INVITE, role: "client",
 });

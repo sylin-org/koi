@@ -11,6 +11,12 @@ use crate::protocol::{
 };
 use crate::provider::Announcement;
 
+/// Default lifetime of a registration whose caller must prove liveness.
+const DEFAULT_HEARTBEAT_LEASE: Duration = Duration::from_secs(90);
+
+/// Grace after a missed heartbeat before provider presence is withdrawn.
+const DEFAULT_HEARTBEAT_GRACE: Duration = Duration::from_secs(30);
+
 // ── Types ─────────────────────────────────────────────────────────────
 
 /// How a registration proves it's alive.
@@ -22,6 +28,27 @@ pub enum LeasePolicy {
     Heartbeat { lease: Duration, grace: Duration },
     /// Lives forever. Only explicit removal or shutdown.
     Permanent,
+}
+
+/// Derive the domain's heartbeat-registration policy from the public command.
+///
+/// This rule is shared by every adapter offering heartbeat registrations. It
+/// lives beside the registry that enforces it so HTTP and embedded callers
+/// cannot assign different meanings to the same `lease_secs` value.
+pub(crate) fn heartbeat_policy(lease_secs: Option<u64>) -> Result<LeasePolicy> {
+    match lease_secs {
+        Some(0) => Err(MdnsError::InvalidPayload(
+            "lease_secs=0 is not allowed for a heartbeat registration".into(),
+        )),
+        Some(secs) => Ok(LeasePolicy::Heartbeat {
+            lease: Duration::from_secs(secs),
+            grace: DEFAULT_HEARTBEAT_GRACE,
+        }),
+        None => Ok(LeasePolicy::Heartbeat {
+            lease: DEFAULT_HEARTBEAT_LEASE,
+            grace: DEFAULT_HEARTBEAT_GRACE,
+        }),
+    }
 }
 
 /// Current lifecycle state.

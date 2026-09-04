@@ -2,11 +2,17 @@
 
 **Status:** Accepted  
 **Date:** 2025-01-15  
+**Amended by:** ADR-043
 > Retrospectively documented 2026-02-15; decision date approximate.
+>
+> The original implicit stdin/stdout mDNS adapter was retired in 2026-09. It
+> could silently construct a second local control plane beside the installed
+> service. The verb-oriented contract remains the shared HTTP/IPC vocabulary;
+> explicit MCP stdio is a separate client protocol.
 
 ## Context
 
-Koi exposes three transport adapters - HTTP, IPC (Named Pipe / Unix Domain Socket), and stdin/stdout - that all need a shared protocol. The protocol must be self-describing, parseable at a glance, and composable with tools like `jq`. Common patterns include envelope-based designs (`{"action": "browse", "params": {...}}`) and verb-oriented designs where the top-level key _is_ the intent.
+Koi originally exposed three transport adapters - HTTP, IPC (Named Pipe / Unix Domain Socket), and stdin/stdout - that needed a shared protocol. The protocol must be self-describing, parseable at a glance, and composable with tools like `jq`. Common patterns include envelope-based designs (`{"action": "browse", "params": {...}}`) and verb-oriented designs where the top-level key _is_ the intent.
 
 ## Decision
 
@@ -21,7 +27,7 @@ Request and response types are identified by their top-level JSON key. The key i
 
 No envelope wrapper, no `action` field, no `type` discriminator. The JSON _is_ the intent. Pipeline properties (`status`, `warning`) attach alongside the verb as flat sibling keys via `#[serde(flatten)]`, not as a nested wrapper. Their absence is the happy path - clean responses have no extra keys.
 
-All three adapters deserialize into a single `Request` enum and serialize from a single `Response` enum. Zero per-adapter model types.
+Every adapter deserializes into a single `Request` enum and serializes from a single `Response` enum. Zero per-adapter model types.
 
 ## Consequences
 

@@ -14,7 +14,6 @@ categories = ["network-programming"]
 
 [dependencies]
 koi-common.workspace = true
-async-trait.workspace = true
 utoipa.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
@@ -23,5 +22,6 @@ serde_json.workspace = true
 chrono.workspace = true
 thiserror.workspace = true
 reqwest.workspace = true
+futures-util.workspace = true
 axum.workspace = true
 tracing.workspace = true

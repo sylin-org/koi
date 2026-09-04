@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "sylin-koi-client"
 version = "0.1.0b1"
-description = "Python client for Koi's frozen HTTP API: status, health, certmesh posture, events, and Agent-Door MCP discovery"
+description = "Python client for Koi's versioned HTTP API: status, health, certmesh bootstrap/posture, events, and Agent-Door MCP discovery"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }

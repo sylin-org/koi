@@ -46,8 +46,10 @@ There are **two independent axes** for trimming Koi, and they do different thing
   *dependencies* are *compiled at all*. Use these to shrink build time and the dependency
   closure for a deployment that will never use a given backend.
 
-Three dependencies are gated behind **default-on** features, so a default
-`koi-embedded = "1.0.0-rc.2"` is identical to before — you only opt *out*:
+Three dependencies are gated behind **default-on** features. The dependency snippets below
+use `1.0.0-rc.2`, the last published prerelease. Current repository source is
+`1.0.0-dev.0`; use a workspace/path dependency when validating that development line. In
+both cases the default build includes all three and you only opt *out*:
 
 | Feature | Default | Compiles in | With it **off** |
 | --- | --- | --- | --- |
@@ -138,11 +140,11 @@ let _registration = mdns.register(koi_mdns::protocol::RegisterPayload {
     ip: Some("127.0.0.1".to_string()),
     lease_secs: Some(30),
     txt: Default::default(),
-})?;
+}).await?;
 
 // DNS
 let dns = handle.dns()?;
-let _ = dns.add_entry(koi_config::state::DnsEntry {
+let _ = dns.add_entry(koi_embedded::DnsEntry {
     name: "my-service.internal".to_string(),
     ip: "127.0.0.1".to_string(),
     ttl: None,
@@ -185,6 +187,28 @@ let _bytes_sent = udp.send(&binding.id, koi_udp::UdpSendRequest {
 }).await?;
 udp.unbind(&binding.id).await?;
 ```
+
+The handle itself exposes the composition-owned latest value:
+
+```rust
+let current = handle.status()?;            // cheap Arc clone; no I/O or await
+let mut changes = handle.watch_status()?;  // current value + coalesced future changes
+
+while changes.changed().await.is_ok() {
+    let latest = changes.borrow_and_update().clone();
+    // Reconcile your view from `latest`; do not reconstruct it from events.
+}
+```
+
+Commands, state, and events are deliberately separate. `handle.events()?` carries
+best-effort semantic facts for reactions and activity displays. A lagged receiver, or a
+`KoiEvent::StatusInvalidated`, means “reread `handle.status()`”; it is never permission to
+guess missed state. `KoiEvent::CertmeshStatusChanged { revision, posture }` is explicitly a
+latest-value notification from a coalescing watch, not transition history; revisions can skip.
+Likewise, `mdns.browse(type).recv().await?` yields either `Some(KoiBrowseItem::Event)`, a
+complete `Some(KoiBrowseItem::Snapshot)` replacement after lag, or `None` on clean EOF.
+Remote connection, read, JSON, and protocol failures remain typed errors rather than looking
+like an empty result or clean EOF.
 
 ---
 
@@ -263,21 +287,27 @@ let handle = koi.start().await?;
 
 let router = axum::Router::new()
     .route("/ping", axum::routing::get(|| async { "pong" }));
-let addr = "0.0.0.0:8443".parse()?;
+let requested = "0.0.0.0:0".parse()?;
 let cancel = tokio_util::sync::CancellationToken::new();
 
 // Identity + posture-stamped mDNS announce + same-port serve in one call:
-let _server = handle.participate(router, addr, "_my-svc._tcp", cancel).await?;
+let addr = handle
+    .participate(router, requested, "_my-svc._tcp", cancel)
+    .await?;
+println!("trusted service ready on {addr}");
 ```
 
 - `participate(router, addr, service_type, cancel)` acquires/maintains this node's identity
-  (best-effort), announces `service_type` with the posture stamped into the TXT and kept
-  current across flips, and serves with the same-port dial.
-- `serve(router, addr, cancel)` is the serve step alone (no announce) if you do not want
-  mDNS advertisement.
-- The lower-level `serve_adaptive(core, router, addr, cancel)` is re-exported for direct use.
+  (best-effort), binds the real listener, establishes `service_type` on that listener's
+  actual port with the posture stamped into TXT, and only then returns its bound address.
+  The announcement stays current across posture flips. A bind or initial publication failure
+  rolls the whole generation back.
+- `serve(router, addr, cancel).await` is the same readiness-fenced serve step without mDNS.
+  It returns the actual bound address, including the OS-selected port when you request port 0.
+- The listener and any announcement remain owned by the `KoiHandle`; caller cancellation or
+  `handle.shutdown().await` tears both down together.
 - Both are **embedded only** — a remote handle has no local identity to serve mTLS with and
-  returns `KoiError::DisabledCapability`.
+  returns `KoiError::RemoteUnsupported`.
 
 Certificate *renewal* (and trust-bundle pull / revocation honoring / self-stand-down) is
 handled by Koi's certmesh self-management, which is **on by default** once this node is a
@@ -354,7 +384,7 @@ let koi = Builder::new()
     .build()?;
 
 let handle = koi.start().await?;
-let mut stream = handle.events();
+let mut stream = handle.events()?;
 while let Some(Ok(event)) = stream.next().await {
     println!("stream: {event:?}");
 }
@@ -424,7 +454,7 @@ Certmesh create/destroy touches the trust store and may require elevated permiss
 - `KoiConfig`, `ServiceMode`, `DnsConfigBuilder` from `koi-config`
 - `KoiEvent` from `koi-embedded::events`
 - `KoiHandle`, `MdnsHandle`, `DnsHandle`, `HealthHandle`, `CertmeshHandle`, `ProxyHandle`
-- Trust primitives (ADR-020): `Peer`, `Posture`, `PostureLevel`, `PeerClient`, `Sealed`/`Opened`/`Confidentiality`, `TrustDiagnosis`, and `serve_adaptive`
+- Trust primitives (ADR-020): `Peer`, `Posture`, `PostureLevel`, `PeerClient`, `Sealed`/`Opened`/`Confidentiality`, and `TrustDiagnosis`; `KoiHandle::serve` owns the adaptive serving boundary
 - `Vault`, `VaultError` from `koi-crypto` (for `handle.vault()`)
 
 ---

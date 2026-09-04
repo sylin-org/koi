@@ -27,6 +27,7 @@ use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
 use rustls::{DigitallySignedStruct, SignatureScheme};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::task::JoinSet;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 use tokio_util::sync::CancellationToken;
 use x509_parser::prelude::*;
@@ -160,7 +161,7 @@ pub fn build_server_config(
 /// This closes the "restart is the reload point" limitation noted in `self_enroll`.
 #[derive(Debug)]
 pub struct ReloadableServerCert {
-    current: RwLock<Arc<CertifiedKey>>,
+    current: RwLock<Option<Arc<CertifiedKey>>>,
 }
 
 impl ReloadableServerCert {
@@ -168,7 +169,7 @@ impl ReloadableServerCert {
     pub fn from_pem(cert_pem: &str, key_pem: &str) -> Result<Arc<Self>, CertmeshError> {
         let certified = build_certified_key(cert_pem, key_pem)?;
         Ok(Arc::new(Self {
-            current: RwLock::new(certified),
+            current: RwLock::new(Some(certified)),
         }))
     }
 
@@ -177,16 +178,31 @@ impl ReloadableServerCert {
     /// listener to a broken cert.
     pub fn reload(&self, cert_pem: &str, key_pem: &str) -> Result<(), CertmeshError> {
         let certified = build_certified_key(cert_pem, key_pem)?;
-        if let Ok(mut guard) = self.current.write() {
-            *guard = certified;
-        }
+        *self
+            .current
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = Some(certified);
         Ok(())
+    }
+
+    /// Withdraw the current identity. New handshakes receive no certificate;
+    /// an identity that Certmesh has revoked, expired, or removed can therefore
+    /// never remain usable while the owning listener drains.
+    pub fn withdraw(&self) {
+        *self
+            .current
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = None;
     }
 }
 
 impl ResolvesServerCert for ReloadableServerCert {
     fn resolve(&self, _client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
-        self.current.read().ok().map(|guard| Arc::clone(&guard))
+        self.current
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .map(Arc::clone)
     }
 }
 
@@ -254,29 +270,37 @@ pub async fn serve(
     cancel: CancellationToken,
 ) -> Result<(), CertmeshError> {
     let acceptor = TlsAcceptor::from(Arc::new(config));
+    let session_cancel = cancel.child_token();
+    let mut sessions = JoinSet::new();
 
     loop {
         let (tcp, addr) = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => break,
+            joined = sessions.join_next(), if !sessions.is_empty() => {
+                observe_server_session(joined);
+                continue;
+            }
             res = listener.accept() => match res {
                 Ok(v) => v,
                 Err(e) => {
                     tracing::warn!(error = %e, "mTLS accept error");
                     continue;
                 }
-            },
-            _ = cancel.cancelled() => {
-                tracing::debug!("mTLS server stopped");
-                return Ok(());
             }
         };
 
         let acceptor = acceptor.clone();
         let router = router.clone();
-        let cancel = cancel.clone();
+        let cancel = session_cancel.clone();
 
-        tokio::spawn(async move {
+        sessions.spawn(async move {
             // TLS handshake — fails here if the client presents no / an untrusted cert.
-            let tls_stream = match acceptor.accept(tcp).await {
+            let tls_stream = match tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return,
+                result = acceptor.accept(tcp) => result,
+            } {
                 Ok(s) => s,
                 Err(e) => {
                     tracing::debug!(%addr, error = %e, "mTLS handshake failed");
@@ -317,6 +341,43 @@ pub async fn serve(
                 _ = cancel.cancelled() => {}
             }
         });
+    }
+
+    session_cancel.cancel();
+    drain_server_sessions(&mut sessions).await;
+    tracing::debug!("mTLS server stopped");
+    Ok(())
+}
+
+fn observe_server_session(result: Option<Result<(), tokio::task::JoinError>>) {
+    if let Some(Err(error)) = result {
+        if !error.is_cancelled() {
+            tracing::warn!(%error, "mTLS connection task failed");
+        }
+    }
+}
+
+/// Bound connection draining without ever detaching a task. Dropping `serve`
+/// while this await is in flight drops the JoinSet and aborts every remaining
+/// session, so cancellation of the shutdown caller is safe as well.
+async fn drain_server_sessions(sessions: &mut JoinSet<()>) {
+    const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+    let deadline = tokio::time::Instant::now() + DRAIN_TIMEOUT;
+    while !sessions.is_empty() {
+        match tokio::time::timeout_at(deadline, sessions.join_next()).await {
+            Ok(result) => observe_server_session(result),
+            Err(_) => {
+                sessions.abort_all();
+                while let Some(result) = sessions.join_next().await {
+                    if let Err(error) = result {
+                        if !error.is_cancelled() {
+                            tracing::warn!(%error, "aborted mTLS connection task failed");
+                        }
+                    }
+                }
+                break;
+            }
+        }
     }
 }
 
@@ -451,9 +512,9 @@ pub fn build_client_config(
 /// Generic over the stream so the plain and mTLS request paths share exactly one
 /// implementation (no copy-pasted hyper plumbing): a `Connection: close` exchange
 /// with the response body capped at [`MAX_RESPONSE_BYTES`]. The connection driver
-/// is spawned so `send_request` can proceed; its errors are logged (they resurface
-/// as a body-read failure if fatal). `json_body` present ⇒ POST-style body with a
-/// JSON content type; absent ⇒ empty body (e.g. a GET).
+/// and request are joined in this call, so no one-shot transport task is detached.
+/// `json_body` present ⇒ POST-style body with a JSON content type; absent ⇒ empty
+/// body (e.g. a GET).
 async fn drive_request<S>(
     stream: S,
     method: hyper::Method,
@@ -469,13 +530,6 @@ where
     let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
         .await
         .map_err(|e| CertmeshError::Internal(format!("http handshake: {e}")))?;
-    // Drive the one-shot connection concurrently so `send_request` can proceed.
-    tokio::spawn(async move {
-        if let Err(e) = conn.await {
-            tracing::debug!(error = %e, "client connection driver error");
-        }
-    });
-
     let builder = hyper::Request::builder()
         .method(method)
         .uri(path)
@@ -491,17 +545,24 @@ where
     }
     .map_err(|e| CertmeshError::Internal(format!("build request: {e}")))?;
 
-    let resp = sender
-        .send_request(req)
-        .await
-        .map_err(|e| CertmeshError::Internal(format!("send request: {e}")))?;
-    let status = resp.status().as_u16();
-    let body = http_body_util::Limited::new(resp.into_body(), MAX_RESPONSE_BYTES)
-        .collect()
-        .await
-        .map_err(|e| CertmeshError::Internal(format!("read body: {e}")))?
-        .to_bytes();
-    Ok((status, String::from_utf8_lossy(&body).into_owned()))
+    let request = async move {
+        let resp = sender
+            .send_request(req)
+            .await
+            .map_err(|e| CertmeshError::Internal(format!("send request: {e}")))?;
+        let status = resp.status().as_u16();
+        let body = http_body_util::Limited::new(resp.into_body(), MAX_RESPONSE_BYTES)
+            .collect()
+            .await
+            .map_err(|e| CertmeshError::Internal(format!("read body: {e}")))?
+            .to_bytes();
+        Ok::<_, CertmeshError>((status, String::from_utf8_lossy(&body).into_owned()))
+    };
+    let (connection, response) = tokio::join!(conn, request);
+    if let Err(error) = connection {
+        tracing::debug!(%error, "client connection driver error");
+    }
+    response
 }
 
 /// Open a plain TCP connection to `host:port` and drive one request over it.
@@ -857,6 +918,36 @@ mod tests {
 
         cancel.cancel();
         let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn cancellation_reaps_a_client_stalled_before_the_tls_handshake() {
+        let pki = test_pki();
+        let config =
+            build_server_config(&pki.server_cert_pem, &pki.server_key_pem, &pki.ca_pem).unwrap();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let cancel = CancellationToken::new();
+        let server = tokio::spawn(serve(cn_router(), listener, config, cancel.clone()));
+
+        // A real TCP peer that never sends a TLS ClientHello leaves the
+        // handshake future pending until the listener generation is cancelled.
+        let mut stalled = TcpStream::connect(addr)
+            .await
+            .expect("connect stalled peer");
+        tokio::task::yield_now().await;
+        cancel.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(1), server)
+            .await
+            .expect("listener must reap a half-open handshake without its drain timeout")
+            .expect("listener task joins")
+            .expect("listener exits cleanly");
+
+        let mut byte = [0_u8; 1];
+        let read = tokio::time::timeout(std::time::Duration::from_secs(1), stalled.read(&mut byte))
+            .await
+            .expect("stalled socket observes listener teardown");
+        assert!(matches!(read, Ok(0) | Err(_)));
     }
 
     #[tokio::test]

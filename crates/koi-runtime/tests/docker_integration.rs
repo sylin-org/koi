@@ -124,7 +124,7 @@ async fn runtime_core_start_watching_discovers_existing() {
     // Give the event processing a moment
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let status = core.status().await;
+    let status = core.status();
     assert!(status.active, "runtime should be active");
     assert_eq!(status.backend.as_deref(), Some("docker"));
     assert!(

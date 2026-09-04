@@ -1,12 +1,13 @@
 //! Lazy LAN-wide meta-browse controller.
 //!
-//! The mDNS browser cache is populated by [`crate::browser::worker`], which runs a
-//! meta-browse over every service type on the LAN — chatty multicast. Rather than run
-//! it from daemon start (whether or not anyone opens the browser), [`LazyMetaBrowse`]
-//! starts the worker on the first browser request and stops it after a period of
-//! inactivity. `koi status` reports whether it is currently active.
+//! The mDNS browser cache projects the domain-owned discovery snapshot. The
+//! [`crate::browser::worker`] owns only the query demand that feeds that domain snapshot:
+//! a meta-browse over every service type on the LAN — chatty multicast. Rather than run it
+//! from daemon start (whether or not anyone opens the browser), [`LazyMetaBrowse`] starts
+//! the worker on the first browser request and stops it after a period of inactivity.
+//! `koi status` reports whether it is currently active.
 
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
 use tokio::time::Instant;
@@ -25,19 +26,53 @@ const SUPERVISOR_TICK: Duration = Duration::from_secs(30);
 pub struct LazyMetaBrowse {
     source: Arc<dyn BrowseSource>,
     cache: BrowserCache,
-    parent_cancel: CancellationToken,
+    cancel: CancellationToken,
     idle: Duration,
     tick: Duration,
+    restart_gate: tokio::sync::Mutex<()>,
     inner: Mutex<Inner>,
 }
 
 struct Inner {
-    /// Cancellation token for the running worker, or `None` when idle.
-    worker_cancel: Option<CancellationToken>,
+    /// The owned running worker, or `None` when idle.
+    worker: Option<WorkerTask>,
     /// Last browser request (tokio clock so idle is testable under `time::pause`).
     last_active: Instant,
-    /// Whether the idle supervisor task is running.
-    supervisor_started: bool,
+    /// Prevent a synchronous touch from racing an explicit asynchronous restart.
+    restarting: bool,
+    /// Weakly supervised idle controller. It never retains `LazyMetaBrowse`.
+    supervisor: Option<tokio::task::JoinHandle<()>>,
+}
+
+struct WorkerTask {
+    cancel: CancellationToken,
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl WorkerTask {
+    async fn shutdown(mut self) {
+        self.cancel.cancel();
+        let Some(task) = self.task.as_mut() else {
+            return;
+        };
+        if tokio::time::timeout(Duration::from_secs(2), &mut *task)
+            .await
+            .is_err()
+        {
+            task.abort();
+            let _ = (&mut *task).await;
+        }
+        self.task.take();
+    }
+}
+
+impl Drop for WorkerTask {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+    }
 }
 
 impl LazyMetaBrowse {
@@ -64,16 +99,19 @@ impl LazyMetaBrowse {
         idle: Duration,
         tick: Duration,
     ) -> Arc<Self> {
+        let cancel = parent_cancel.child_token();
         Arc::new(Self {
             source,
             cache,
-            parent_cancel,
+            cancel,
             idle,
             tick,
+            restart_gate: tokio::sync::Mutex::new(()),
             inner: Mutex::new(Inner {
-                worker_cancel: None,
+                worker: None,
                 last_active: Instant::now(),
-                supervisor_started: false,
+                restarting: false,
+                supervisor: None,
             }),
         })
     }
@@ -89,31 +127,61 @@ impl LazyMetaBrowse {
     pub fn touch(self: &Arc<Self>) {
         let mut inner = self.locked();
         inner.last_active = Instant::now();
+        if inner
+            .worker
+            .as_ref()
+            .and_then(|worker| worker.task.as_ref())
+            .is_some_and(tokio::task::JoinHandle::is_finished)
+        {
+            inner.worker.take();
+        }
 
-        if inner.worker_cancel.is_none() {
-            let child = self.parent_cancel.child_token();
-            inner.worker_cancel = Some(child.clone());
-            tokio::spawn(worker(self.source.clone(), self.cache.clone(), child));
-            // A worker (re)start is a fresh query burst — record it so the
-            // deaf-detection counters judge answers against a real burst.
-            // Heartbeat touches that find the worker running skip this.
-            let cache = self.cache.clone();
-            tokio::spawn(async move {
-                cache.record_burst().await;
-            });
+        if inner.worker.is_none() && !inner.restarting && !self.cancel.is_cancelled() {
+            inner.worker = Some(self.spawn_worker());
             tracing::debug!("mDNS meta-browse started (lazy, on first request)");
         }
 
-        if !inner.supervisor_started {
-            inner.supervisor_started = true;
-            let this = Arc::clone(self);
-            tokio::spawn(this.supervise());
+        if inner
+            .supervisor
+            .as_ref()
+            .is_none_or(tokio::task::JoinHandle::is_finished)
+            && !self.cancel.is_cancelled()
+        {
+            inner.supervisor.take();
+            inner.supervisor = Some(tokio::spawn(Self::supervise(
+                Arc::downgrade(self),
+                self.cancel.clone(),
+                self.idle,
+                self.tick,
+            )));
+        }
+    }
+
+    fn spawn_worker(&self) -> WorkerTask {
+        let cancel = self.cancel.child_token();
+        let task = tokio::spawn(worker(
+            self.source.clone(),
+            self.cache.clone(),
+            cancel.clone(),
+        ));
+        WorkerTask {
+            cancel,
+            task: Some(task),
         }
     }
 
     /// Whether the meta-browse worker is currently running.
     pub fn is_active(&self) -> bool {
-        self.locked().worker_cancel.is_some()
+        let mut inner = self.locked();
+        if inner
+            .worker
+            .as_ref()
+            .and_then(|worker| worker.task.as_ref())
+            .is_some_and(tokio::task::JoinHandle::is_finished)
+        {
+            inner.worker.take();
+        }
+        inner.worker.is_some()
     }
 
     /// Force a fresh query burst: cancel the current worker and start a new one.
@@ -124,32 +192,63 @@ impl LazyMetaBrowse {
     /// restart the burst. Returns the number of types the cache already knows —
     /// the burst re-discovers them within moments.
     pub async fn requery(self: &Arc<Self>) -> usize {
-        {
+        let _restart = self.restart_gate.lock().await;
+        let retiring = {
             let mut inner = self.locked();
-            if let Some(cancel) = inner.worker_cancel.take() {
-                cancel.cancel();
-            }
+            inner.last_active = Instant::now();
+            inner.restarting = true;
+            inner.worker.take()
+        };
+        if let Some(worker) = retiring {
+            worker.shutdown().await;
         }
-        // touch() restarts the worker on a fresh token.
-        self.touch();
-        self.cache.known_type_count().await
+
+        let known = self.cache.known_type_count().await;
+        let mut inner = self.locked();
+        if !self.cancel.is_cancelled() {
+            inner.worker = Some(self.spawn_worker());
+        }
+        inner.restarting = false;
+        known
     }
 
     /// Idle supervisor: stop the worker once it has been inactive for `idle`. Lives for
     /// the controller's lifetime so a later `touch` can restart it.
-    async fn supervise(self: Arc<Self>) {
-        let mut tick = tokio::time::interval(self.tick);
+    async fn supervise(
+        controller: Weak<Self>,
+        cancel: CancellationToken,
+        idle: Duration,
+        interval: Duration,
+    ) {
+        let mut tick = tokio::time::interval(interval);
         tick.tick().await; // consume the immediate tick
 
         loop {
             tokio::select! {
-                _ = self.parent_cancel.cancelled() => break,
-                _ = tick.tick() => {
-                    let mut inner = self.locked();
-                    if inner.worker_cancel.is_some() && inner.last_active.elapsed() >= self.idle {
-                        if let Some(cancel) = inner.worker_cancel.take() {
-                            cancel.cancel();
+                _ = cancel.cancelled() => {
+                    if let Some(controller) = controller.upgrade() {
+                        let worker = controller.locked().worker.take();
+                        if let Some(worker) = worker {
+                            worker.shutdown().await;
                         }
+                    }
+                    break;
+                },
+                _ = tick.tick() => {
+                    let Some(controller) = controller.upgrade() else {
+                        break;
+                    };
+                    let worker = {
+                        let mut inner = controller.locked();
+                        (inner.worker.is_some()
+                            && !inner.restarting
+                            && inner.last_active.elapsed() >= idle)
+                            .then(|| inner.worker.take())
+                            .flatten()
+                    };
+                    drop(controller);
+                    if let Some(worker) = worker {
+                        worker.shutdown().await;
                         tracing::debug!("mDNS meta-browse idle-stopped");
                     }
                 }
@@ -158,13 +257,29 @@ impl LazyMetaBrowse {
     }
 }
 
+impl Drop for LazyMetaBrowse {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+        let inner = self
+            .inner
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        inner.worker.take();
+        if let Some(task) = inner.supervisor.take() {
+            task.abort();
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
     use crate::browse_source::{BrowseError, BrowseHandle, BrowserEvent};
+    use koi_common::integration::MdnsDiscoverySnapshot;
+    use koi_common::status::StatusFeed;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use tokio::sync::{broadcast, mpsc};
+    use tokio::sync::{broadcast, mpsc, watch};
 
     /// A `BrowseSource` that never emits events but counts `browse()` calls and keeps
     /// each handle's sender alive so the worker parks instead of seeing EOF.
@@ -172,6 +287,7 @@ pub(crate) mod tests {
         pub(crate) browses: AtomicUsize,
         keepalive: Mutex<Vec<mpsc::Sender<BrowserEvent>>>,
         tx: broadcast::Sender<BrowserEvent>,
+        snapshots: StatusFeed<MdnsDiscoverySnapshot>,
     }
 
     impl StubSource {
@@ -181,10 +297,15 @@ pub(crate) mod tests {
                 browses: AtomicUsize::new(0),
                 keepalive: Mutex::new(Vec::new()),
                 tx,
+                snapshots: StatusFeed::default(),
             })
         }
         pub(crate) fn browse_count(&self) -> usize {
             self.browses.load(Ordering::SeqCst)
+        }
+
+        pub(crate) fn publish_snapshot(&self, snapshot: MdnsDiscoverySnapshot) {
+            self.snapshots.publish(snapshot);
         }
     }
 
@@ -207,6 +328,14 @@ pub(crate) mod tests {
         fn subscribe(&self) -> broadcast::Receiver<BrowserEvent> {
             self.tx.subscribe()
         }
+
+        fn snapshot(&self) -> Arc<MdnsDiscoverySnapshot> {
+            self.snapshots.current()
+        }
+
+        fn watch_snapshot(&self) -> watch::Receiver<Arc<MdnsDiscoverySnapshot>> {
+            self.snapshots.subscribe()
+        }
     }
 
     pub(crate) fn controller(
@@ -226,6 +355,21 @@ pub(crate) mod tests {
         let (lazy, source) = controller(Duration::from_secs(60), Duration::from_secs(30));
         assert!(!lazy.is_active());
         assert_eq!(source.browse_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn supervisor_does_not_retain_its_controller() {
+        let (lazy, _) = controller(Duration::from_secs(60), Duration::from_secs(30));
+        lazy.touch();
+        let weak = Arc::downgrade(&lazy);
+
+        drop(lazy);
+        tokio::task::yield_now().await;
+
+        assert!(
+            weak.upgrade().is_none(),
+            "the owned supervisor must not create an Arc self-cycle"
+        );
     }
 
     #[tokio::test(start_paused = true)]

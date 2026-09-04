@@ -1,15 +1,15 @@
 //! mDNS browser surface — live network service-discovery explorer.
 //!
-//! Maintains an in-memory [`BrowserCache`] populated by the [`worker`], which runs a
-//! meta-browse to discover service types then a per-type browse pump for each. The
-//! worker is driven lazily by [`crate::meta_browse::LazyMetaBrowse`] — it starts on the
-//! first browser request and idles out, so the daemon performs no LAN-wide browsing
-//! until a presentation surface asks.
+//! Maintains an in-memory [`BrowserCache`] projected from the mDNS domain's authoritative
+//! discovery snapshot. The [`worker`] owns only browse demand: it runs a meta-browse to
+//! discover service types, then a per-type browse pump for each. The worker is driven lazily
+//! by [`crate::meta_browse::LazyMetaBrowse`] — it starts on the first browser request and
+//! idles out, so the daemon performs no LAN-wide browsing until a presentation surface asks.
 //!
 //! This is a **presentation read model** — the cache is an adapter-level concept, NOT a
 //! domain concept.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Instant;
@@ -26,8 +26,10 @@ use tokio::sync::RwLock;
 use tokio_stream::Stream;
 use tokio_util::sync::CancellationToken;
 
-use crate::browse_source::{BrowseSource, BrowserEvent, ResolvedService};
+use crate::browse_source::{BrowseSource, BrowserEvent};
 use crate::meta_browse::LazyMetaBrowse;
+use koi_common::integration::MdnsDiscoverySnapshot;
+use koi_common::types::ServiceRecord;
 use koi_common::types::META_QUERY;
 
 // ── HTML asset ──────────────────────────────────────────────────────
@@ -35,9 +37,6 @@ use koi_common::types::META_QUERY;
 const BROWSER_HTML: &str = include_str!("../assets/mdns-browser.html");
 
 // ── Cache model ─────────────────────────────────────────────────────
-
-/// Maximum total instances across all types.
-const MAX_INSTANCES: usize = 2000;
 
 /// Seconds after removal before purging from cache.
 const PURGE_AFTER_SECS: i64 = 120;
@@ -50,6 +49,12 @@ pub struct BrowserCache {
 }
 
 struct CacheInner {
+    /// Last accepted revision from the mDNS domain. `None` distinguishes an
+    /// uninitialized projection from the domain's valid revision zero.
+    source_revision: Option<u64>,
+    /// Authoritative current membership. `types` may additionally retain removed
+    /// instance tombstones briefly for the UI's fade-out presentation.
+    active_types: HashSet<String>,
     types: HashMap<String, DiscoveredType>,
     // Deaf-detection counters (ADR-035 D6): bursts the meta-browse sent vs
     // answers heard. A recent burst with zero answers is the deaf verdict —
@@ -61,6 +66,109 @@ struct CacheInner {
     /// What the PREVIOUS burst heard (finalized when the next one starts).
     last_burst_answers: u64,
     last_burst_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl CacheInner {
+    fn empty() -> Self {
+        Self {
+            source_revision: None,
+            active_types: HashSet::new(),
+            types: HashMap::new(),
+            total_bursts: 0,
+            total_answers: 0,
+            current_burst_answers: 0,
+            last_burst_answers: 0,
+            last_burst_at: None,
+        }
+    }
+
+    fn reconcile(&mut self, snapshot: &MdnsDiscoverySnapshot) -> bool {
+        if self
+            .source_revision
+            .is_some_and(|revision| snapshot.revision <= revision)
+        {
+            return false;
+        }
+
+        let now = Utc::now().to_rfc3339();
+        let mut active_types = snapshot
+            .service_types
+            .iter()
+            .map(|service_type| normalize_type(service_type))
+            .filter(|service_type| !service_type.is_empty())
+            .collect::<HashSet<_>>();
+        let mut records = HashMap::new();
+
+        for record in &snapshot.records {
+            let service_type = normalize_type(&record.service_type);
+            if service_type.is_empty() || record.name.is_empty() {
+                continue;
+            }
+            active_types.insert(service_type.clone());
+            records.insert((service_type, record.name.clone()), record);
+        }
+
+        for service_type in &active_types {
+            self.types
+                .entry(service_type.clone())
+                .or_insert_with(|| DiscoveredType {
+                    service_type: service_type.clone(),
+                    first_seen: now.clone(),
+                    instances: HashMap::new(),
+                });
+        }
+
+        for (service_type, dtype) in &mut self.types {
+            for (name, instance) in &mut dtype.instances {
+                let Some(record) = records.remove(&(service_type.clone(), name.clone())) else {
+                    if instance.removed_at.is_none() {
+                        instance.removed_at = Some(now.clone());
+                    }
+                    continue;
+                };
+
+                let resolved = has_usable_endpoint(record);
+                let changed = instance.host != record.host
+                    || instance.ip != record.ip
+                    || instance.port != record.port
+                    || instance.txt != record.txt
+                    || instance.resolved != resolved
+                    || instance.removed_at.is_some();
+                instance.host.clone_from(&record.host);
+                instance.ip.clone_from(&record.ip);
+                instance.port = record.port;
+                instance.txt.clone_from(&record.txt);
+                instance.resolved = resolved;
+                instance.removed_at = None;
+                if changed {
+                    instance.last_seen.clone_from(&now);
+                }
+            }
+        }
+
+        for ((service_type, name), record) in records {
+            let dtype = self
+                .types
+                .entry(service_type.clone())
+                .or_insert_with(|| DiscoveredType {
+                    service_type: service_type.clone(),
+                    first_seen: now.clone(),
+                    instances: HashMap::new(),
+                });
+            dtype.instances.insert(
+                name.clone(),
+                service_instance(record, &service_type, name, &now),
+            );
+        }
+
+        self.active_types = active_types;
+        let active_types = self.active_types.clone();
+        self.types.retain(|service_type, dtype| {
+            active_types.contains(service_type) || !dtype.instances.is_empty()
+        });
+        self.source_revision = Some(snapshot.revision);
+        true
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -75,9 +183,9 @@ struct ServiceInstance {
     name: String,
     instance_name: String,
     service_type: String,
-    host: String,
-    ip: String,
-    port: u16,
+    host: Option<String>,
+    ip: Option<String>,
+    port: Option<u16>,
     txt: HashMap<String, String>,
     first_seen: String,
     last_seen: String,
@@ -90,35 +198,36 @@ impl BrowserCache {
     /// How many service types the cache currently knows (used by the
     /// meta-browse's requery burst report).
     pub async fn known_type_count(&self) -> usize {
-        self.inner.read().await.types.len()
+        self.inner.read().await.active_types.len()
     }
 
     pub fn new() -> Self {
         Self {
-            inner: Arc::new(RwLock::new(CacheInner {
-                types: HashMap::new(),
-                total_bursts: 0,
-                total_answers: 0,
-                current_burst_answers: 0,
-                last_burst_answers: 0,
-                last_burst_at: None,
-            })),
+            inner: Arc::new(RwLock::new(CacheInner::empty())),
             started_at: Instant::now(),
         }
     }
 
-    /// Apply a browser event to the cache. Public so the worker and tests can drive the
-    /// cache through the same path without exposing the internal record model.
-    pub async fn ingest(&self, event: &BrowserEvent) {
-        match event {
-            BrowserEvent::Found { name, .. } => {
-                if !name.is_empty() {
-                    self.record_type(name).await;
-                }
-            }
-            BrowserEvent::Resolved(record) => self.record_resolved(record).await,
-            BrowserEvent::Removed { name, .. } => self.record_removed(name).await,
+    /// Construct an immediately truthful cache from the domain's current
+    /// projection. Route state uses this instead of exposing an empty cache
+    /// during the projector task's first scheduling window.
+    pub fn from_snapshot(snapshot: &MdnsDiscoverySnapshot) -> Self {
+        let mut inner = CacheInner::empty();
+        inner.reconcile(snapshot);
+        Self {
+            inner: Arc::new(RwLock::new(inner)),
+            started_at: Instant::now(),
         }
+    }
+
+    /// Reconcile presentation state from the mDNS domain's authoritative projection.
+    ///
+    /// Membership and service facts come only from this snapshot. Best-effort events
+    /// never mutate them. Equal or older revisions are ignored; a removal is retained
+    /// only as short-lived presentation metadata so the UI can animate it.
+    pub async fn reconcile(&self, snapshot: &MdnsDiscoverySnapshot) -> bool {
+        let mut inner = self.inner.write().await;
+        inner.reconcile(snapshot)
     }
 
     /// A fresh query burst just went out (worker start or explicit requery).
@@ -133,79 +242,22 @@ impl BrowserCache {
         inner.last_burst_at = Some(Utc::now());
     }
 
-    async fn record_type(&self, type_name: &str) {
-        let now = Utc::now().to_rfc3339();
-        let normalized = normalize_type(type_name);
+    /// Record one answer as presentation activity. This intentionally does not
+    /// change membership; the corresponding domain snapshot does that.
+    async fn record_answer(&self, service: Option<&ServiceRecord>) {
         let mut inner = self.inner.write().await;
         inner.total_answers += 1;
         inner.current_burst_answers += 1;
-        inner
-            .types
-            .entry(normalized.clone())
-            .or_insert_with(|| DiscoveredType {
-                service_type: normalized,
-                first_seen: now,
-                instances: HashMap::new(),
-            });
-    }
-
-    async fn record_resolved(&self, record: &ResolvedService) {
-        let now = Utc::now().to_rfc3339();
-        let mut inner = self.inner.write().await;
-        inner.total_answers += 1;
-        inner.current_burst_answers += 1;
-
-        let svc_type = normalize_type(&record.service_type);
-
-        let type_entry = inner
-            .types
-            .entry(svc_type.clone())
-            .or_insert_with(|| DiscoveredType {
-                service_type: svc_type.clone(),
-                first_seen: now.clone(),
-                instances: HashMap::new(),
-            });
-
-        let full_name = record.name.clone();
-        type_entry
-            .instances
-            .entry(full_name.clone())
-            .and_modify(|inst| {
-                inst.host.clone_from(&record.host);
-                inst.ip.clone_from(&record.ip);
-                inst.port = record.port;
-                inst.txt.clone_from(&record.txt);
-                inst.resolved = true;
-                inst.last_seen.clone_from(&now);
-                inst.removed_at = None;
-            })
-            .or_insert_with(|| ServiceInstance {
-                name: short_name(&full_name, &svc_type),
-                instance_name: full_name,
-                service_type: svc_type,
-                host: record.host.clone(),
-                ip: record.ip.clone(),
-                port: record.port,
-                txt: record.txt.clone(),
-                first_seen: now.clone(),
-                last_seen: now,
-                resolved: true,
-                removed_at: None,
-            });
-
-        let total: usize = inner.types.values().map(|t| t.instances.len()).sum();
-        if total > MAX_INSTANCES {
-            evict_oldest_instance(&mut inner.types);
-        }
-    }
-
-    async fn record_removed(&self, full_name: &str) {
-        let now = Utc::now().to_rfc3339();
-        let mut inner = self.inner.write().await;
-        for dtype in inner.types.values_mut() {
-            if let Some(inst) = dtype.instances.get_mut(full_name) {
-                inst.removed_at = Some(now);
-                return;
+        if let Some(service) = service {
+            let service_type = normalize_type(&service.service_type);
+            if inner.active_types.contains(&service_type) {
+                let instance = inner
+                    .types
+                    .get_mut(&service_type)
+                    .and_then(|dtype| dtype.instances.get_mut(&service.name));
+                if let Some(instance) = instance.filter(|instance| instance.removed_at.is_none()) {
+                    instance.last_seen = Utc::now().to_rfc3339();
+                }
             }
         }
     }
@@ -224,7 +276,10 @@ impl BrowserCache {
                 true
             });
         }
-        inner.types.retain(|_, dtype| !dtype.instances.is_empty());
+        let active_types = inner.active_types.clone();
+        inner.types.retain(|service_type, dtype| {
+            active_types.contains(service_type) || !dtype.instances.is_empty()
+        });
     }
 
     pub async fn snapshot(&self) -> BrowserSnapshot {
@@ -239,23 +294,30 @@ impl BrowserCache {
                 .values()
                 .filter(|i| i.removed_at.is_none())
                 .count();
-            let (label, description) = match crate::well_known::annotate(&dtype.service_type) {
-                Some((l, d)) => (Some(l), Some(d)),
-                None => (None, None),
-            };
-            type_summaries.push(TypeSummary {
-                service_type: dtype.service_type.clone(),
-                count: live_count,
-                first_seen: dtype.first_seen.clone(),
-                label,
-                description,
-            });
+            if inner.active_types.contains(&dtype.service_type) {
+                let (label, description) = match crate::well_known::annotate(&dtype.service_type) {
+                    Some((l, d)) => (Some(l), Some(d)),
+                    None => (None, None),
+                };
+                type_summaries.push(TypeSummary {
+                    service_type: dtype.service_type.clone(),
+                    count: live_count,
+                    first_seen: dtype.first_seen.clone(),
+                    label,
+                    description,
+                });
+            }
             for inst in dtype.instances.values() {
                 all_instances.push(inst.clone());
             }
         }
 
-        type_summaries.sort_by_key(|b| std::cmp::Reverse(b.count));
+        type_summaries.sort_by(|left, right| {
+            right
+                .count
+                .cmp(&left.count)
+                .then_with(|| left.service_type.cmp(&right.service_type))
+        });
         all_instances.sort_by(|a, b| a.last_seen.cmp(&b.last_seen).reverse());
 
         let burst = BurstStats {
@@ -267,6 +329,7 @@ impl BrowserCache {
         };
 
         BrowserSnapshot {
+            revision: inner.source_revision,
             total_types: type_summaries.len(),
             total_instances: all_instances
                 .iter()
@@ -305,32 +368,47 @@ fn short_name(full_name: &str, service_type: &str) -> String {
     clean.trim_end_matches(".local").to_string()
 }
 
-fn evict_oldest_instance(types: &mut HashMap<String, DiscoveredType>) {
-    let mut oldest_key = None;
-    let mut oldest_type = None;
-    let mut oldest_time = String::new();
-
-    for (tname, dtype) in types.iter() {
-        for (iname, inst) in &dtype.instances {
-            if oldest_key.is_none() || inst.last_seen < oldest_time {
-                oldest_time.clone_from(&inst.last_seen);
-                oldest_key = Some(iname.clone());
-                oldest_type = Some(tname.clone());
-            }
-        }
+fn service_instance(
+    record: &ServiceRecord,
+    service_type: &str,
+    instance_name: String,
+    now: &str,
+) -> ServiceInstance {
+    ServiceInstance {
+        name: short_name(&instance_name, service_type),
+        instance_name,
+        service_type: service_type.to_string(),
+        host: record.host.clone(),
+        ip: record.ip.clone(),
+        port: record.port,
+        txt: record.txt.clone(),
+        first_seen: now.to_string(),
+        last_seen: now.to_string(),
+        resolved: has_usable_endpoint(record),
+        removed_at: None,
     }
+}
 
-    if let (Some(tname), Some(iname)) = (oldest_type, oldest_key) {
-        if let Some(dtype) = types.get_mut(&tname) {
-            dtype.instances.remove(&iname);
-        }
-    }
+fn has_usable_endpoint(record: &ServiceRecord) -> bool {
+    let has_host = record
+        .host
+        .as_deref()
+        .is_some_and(|host| !host.trim().is_empty());
+    let has_ip = record
+        .ip
+        .as_deref()
+        .is_some_and(|ip| ip.parse::<std::net::IpAddr>().is_ok());
+    record.port.is_some_and(|port| port != 0) && (has_host || has_ip)
 }
 
 // ── Snapshot types ──────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
 pub struct BrowserSnapshot {
+    /// Revision of the authoritative mDNS discovery snapshot projected here.
+    /// `None` means no domain snapshot has been accepted yet; revision zero is
+    /// a distinct, valid domain fact.
+    revision: Option<u64>,
     total_types: usize,
     total_instances: usize,
     service_types: Vec<TypeSummary>,
@@ -376,7 +454,14 @@ struct TypeSummary {
 /// instances. Runs until `cancel` fires (driven lazily by [`LazyMetaBrowse`]).
 pub async fn worker(source: Arc<dyn BrowseSource>, cache: BrowserCache, cancel: CancellationToken) {
     tracing::info!("mDNS browser worker starting");
+    // Starting this owned worker is the query-burst boundary. Keeping the
+    // accounting in the worker avoids a second fire-and-forget task and makes
+    // cancellation before the first browse truthful.
+    cache.record_burst().await;
 
+    // Subscribe before arming the meta browse so a synchronous cache replay cannot
+    // race past the worker. The watch value is authoritative and already current.
+    let mut snapshots = source.watch_snapshot();
     let mut meta_handle = match source.browse(META_QUERY).await {
         Ok(handle) => Some(handle),
         Err(e) => {
@@ -385,81 +470,188 @@ pub async fn worker(source: Arc<dyn BrowseSource>, cache: BrowserCache, cancel: 
         }
     };
 
-    let mut discovered_types = std::collections::HashSet::new();
-    let mut pump_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    let initial = snapshots.borrow_and_update().clone();
+    let mut pump_tasks = HashMap::new();
+    sync_type_pumps(&source, initial.as_ref(), &mut pump_tasks, &cache, &cancel).await;
 
+    let mut retry_interval = tokio::time::interval(std::time::Duration::from_secs(30));
+    retry_interval.tick().await;
+
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => break,
+
+            event = async {
+                match meta_handle.as_mut() {
+                    Some(h) => h.recv().await,
+                    None => std::future::pending::<Option<BrowserEvent>>().await,
+                }
+            } => {
+                match event {
+                    Some(BrowserEvent::Found(_) | BrowserEvent::Resolved(_)) => {
+                        cache.record_answer(None).await;
+                    }
+                    Some(BrowserEvent::Resync) => {
+                        cache.reconcile(source.snapshot().as_ref()).await;
+                    }
+                    Some(BrowserEvent::Removed { .. }) => {}
+                    None => meta_handle = None,
+                }
+            }
+
+            changed = snapshots.changed() => {
+                if changed.is_err() {
+                    tracing::warn!("mDNS discovery snapshot feed closed; stopping browser worker");
+                    break;
+                }
+                let snapshot = snapshots.borrow_and_update().clone();
+                sync_type_pumps(
+                    &source,
+                    snapshot.as_ref(),
+                    &mut pump_tasks,
+                    &cache,
+                    &cancel,
+                ).await;
+            }
+
+            _ = retry_interval.tick() => {
+                if meta_handle.is_none() {
+                    meta_handle = match source.browse(META_QUERY).await {
+                        Ok(handle) => Some(handle),
+                        Err(error) => {
+                            tracing::debug!(%error, "Failed to restart meta-browse");
+                            None
+                        }
+                    };
+                }
+                let snapshot = snapshots.borrow().clone();
+                sync_type_pumps(
+                    &source,
+                    snapshot.as_ref(),
+                    &mut pump_tasks,
+                    &cache,
+                    &cancel,
+                ).await;
+            }
+        }
+    }
+
+    for (_, task) in pump_tasks.drain() {
+        task.abort();
+        let _ = task.await;
+    }
+    drop(meta_handle);
+
+    tracing::info!("mDNS browser worker stopped");
+}
+
+async fn sync_type_pumps(
+    source: &Arc<dyn BrowseSource>,
+    snapshot: &MdnsDiscoverySnapshot,
+    pumps: &mut HashMap<String, tokio::task::JoinHandle<()>>,
+    cache: &BrowserCache,
+    cancel: &CancellationToken,
+) {
+    let finished = pumps
+        .iter()
+        .filter_map(|(service_type, task)| task.is_finished().then_some(service_type.clone()))
+        .collect::<Vec<_>>();
+    for service_type in finished {
+        if let Some(task) = pumps.remove(&service_type) {
+            let _ = task.await;
+        }
+    }
+
+    let desired = snapshot
+        .service_types
+        .iter()
+        .filter_map(|service_type| {
+            let normalized = normalize_type(service_type);
+            (!normalized.is_empty()).then(|| (normalized, service_type.clone()))
+        })
+        .collect::<HashMap<_, _>>();
+
+    let obsolete = pumps
+        .keys()
+        .filter(|service_type| !desired.contains_key(*service_type))
+        .cloned()
+        .collect::<Vec<_>>();
+    for service_type in obsolete {
+        if let Some(task) = pumps.remove(&service_type) {
+            task.abort();
+            let _ = task.await;
+        }
+    }
+
+    let mut missing = desired
+        .into_iter()
+        .filter(|(service_type, _)| !pumps.contains_key(service_type))
+        .collect::<Vec<_>>();
+    missing.sort_by(|left, right| left.0.cmp(&right.0));
+
+    for (service_type, browse_type) in missing {
+        tracing::debug!(%service_type, "Discovered service type, starting per-type browse");
+        match source.browse(&browse_type).await {
+            Ok(mut handle) => {
+                let source = source.clone();
+                let cache = cache.clone();
+                let cancel = cancel.clone();
+                let task = tokio::spawn(async move {
+                    loop {
+                        tokio::select! {
+                            _ = cancel.cancelled() => break,
+                            event = handle.recv() => {
+                                match event {
+                                    Some(BrowserEvent::Resolved(record)) => {
+                                        cache.record_answer(Some(&record)).await;
+                                    }
+                                    Some(BrowserEvent::Resync) => {
+                                        cache.reconcile(source.snapshot().as_ref()).await;
+                                    }
+                                    Some(BrowserEvent::Found(_) | BrowserEvent::Removed { .. }) => {}
+                                    None => break,
+                                }
+                            }
+                        }
+                    }
+                });
+                pumps.insert(service_type, task);
+            }
+            Err(error) => {
+                tracing::debug!(%error, %browse_type, "Failed to browse type");
+            }
+        }
+    }
+}
+
+/// Continuously project domain discovery truth into the presentation cache. Watching
+/// the domain is cheap and does not arm multicast browsing; only `worker` owns query
+/// demand. Keeping this projector alive also prevents idle-stop from leaving stale
+/// membership visible through Pond or the snapshot endpoint.
+async fn project_snapshots(
+    source: Arc<dyn BrowseSource>,
+    cache: BrowserCache,
+    cancel: CancellationToken,
+) {
+    let mut snapshots = source.watch_snapshot();
+    let initial = snapshots.borrow_and_update().clone();
+    cache.reconcile(initial.as_ref()).await;
     let mut purge_interval = tokio::time::interval(std::time::Duration::from_secs(30));
     purge_interval.tick().await;
 
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
-
-            Some(event) = async {
-                match meta_handle.as_mut() {
-                    Some(h) => h.recv().await,
-                    None => std::future::pending::<Option<BrowserEvent>>().await,
+            _ = purge_interval.tick() => cache.purge_stale().await,
+            changed = snapshots.changed() => {
+                if changed.is_err() {
+                    break;
                 }
-            } => {
-                if let BrowserEvent::Found { ref name, .. } = event {
-                    let type_name = name.clone();
-                    if type_name.is_empty() {
-                        continue;
-                    }
-
-                    cache.record_type(&type_name).await;
-
-                    let normalized = normalize_type(&type_name);
-                    if discovered_types.insert(normalized.clone()) {
-                        tracing::debug!(service_type = %normalized, "Discovered service type, starting per-type browse");
-
-                        let browse_type = format!("{normalized}.local.");
-                        match source.browse(&browse_type).await {
-                            Ok(mut handle) => {
-                                let cache_clone = cache.clone();
-                                let cancel_clone = cancel.clone();
-
-                                let task = tokio::spawn(async move {
-                                    loop {
-                                        tokio::select! {
-                                            _ = cancel_clone.cancelled() => break,
-                                            result = handle.recv() => {
-                                                match result {
-                                                    Some(BrowserEvent::Resolved(record)) => {
-                                                        cache_clone.record_resolved(&record).await;
-                                                    }
-                                                    Some(BrowserEvent::Removed { name, .. }) => {
-                                                        cache_clone.record_removed(&name).await;
-                                                    }
-                                                    Some(BrowserEvent::Found { .. }) => {}
-                                                    None => break,
-                                                }
-                                            }
-                                        }
-                                    }
-                                });
-                                pump_tasks.push(task);
-                                pump_tasks.retain(|h| !h.is_finished());
-                            }
-                            Err(e) => {
-                                tracing::debug!(error = %e, browse_type, "Failed to browse type");
-                            }
-                        }
-                    }
-                }
-            }
-
-            _ = purge_interval.tick() => {
-                cache.purge_stale().await;
+                let snapshot = snapshots.borrow_and_update().clone();
+                cache.reconcile(snapshot.as_ref()).await;
             }
         }
     }
-
-    for task in &pump_tasks {
-        task.abort();
-    }
-
-    tracing::info!("mDNS browser worker stopped");
 }
 
 // ── SSE stream ──────────────────────────────────────────────────────
@@ -478,15 +670,20 @@ pub(crate) fn browser_event_stream(
             tokio::select! {
                 result = rx.recv() => {
                     match result {
+                        Ok(BrowserEvent::Resync) => {
+                            if let Some(event) = snapshot_resync_event(&source, &cache).await {
+                                yield Ok(event);
+                            }
+                        }
                         Ok(event) => {
                             let sse = match &event {
-                                BrowserEvent::Found { name, service_type } => {
-                                    if service_type.is_empty() {
+                                BrowserEvent::Found(record) => {
+                                    if record.service_type.is_empty() {
                                         Event::default()
                                             .event("type_found")
                                             .id(uuid::Uuid::now_v7().to_string())
                                             .json_data(serde_json::json!({
-                                                "service_type": name,
+                                                "service_type": record.name,
                                             })).ok()
                                     } else {
                                         None
@@ -507,14 +704,17 @@ pub(crate) fn browser_event_stream(
                                             "service_type": service_type
                                         })).ok()
                                 }
+                                BrowserEvent::Resync => unreachable!("handled before event mapping"),
                             };
                             if let Some(ev) = sse {
                                 yield Ok(ev);
                             }
                         }
                         Err(broadcast::error::RecvError::Lagged(n)) => {
-                            tracing::warn!(dropped = n, "Browser SSE stream lagged");
-                            continue;
+                            tracing::warn!(dropped = n, "Browser SSE stream lagged; rereading snapshot");
+                            if let Some(event) = snapshot_resync_event(&source, &cache).await {
+                                yield Ok(event);
+                            }
                         }
                         Err(broadcast::error::RecvError::Closed) => break,
                     }
@@ -543,6 +743,20 @@ pub(crate) fn browser_event_stream(
     }
 }
 
+async fn snapshot_resync_event(
+    source: &Arc<dyn BrowseSource>,
+    cache: &BrowserCache,
+) -> Option<Event> {
+    let authoritative = source.snapshot();
+    cache.reconcile(authoritative.as_ref()).await;
+    let snapshot = cache.snapshot().await;
+    Event::default()
+        .event("resync")
+        .id(snapshot.revision?.to_string())
+        .json_data(&snapshot)
+        .ok()
+}
+
 // ── Shared state ────────────────────────────────────────────────────
 
 /// Shared state for the browser routes.
@@ -551,6 +765,56 @@ pub struct BrowserState {
     pub source: Arc<dyn BrowseSource>,
     pub cache: BrowserCache,
     pub meta: Arc<LazyMetaBrowse>,
+    _lifecycle: Arc<BrowserLifecycle>,
+}
+
+struct BrowserLifecycle {
+    cancel: CancellationToken,
+    projector: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+impl Drop for BrowserLifecycle {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+        if let Some(task) = self
+            .projector
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
+            task.abort();
+        }
+    }
+}
+
+impl BrowserState {
+    /// Construct route state and own the permanent snapshot projector.
+    ///
+    /// The projector contains no domain truth; it keeps this presentation cache
+    /// converged from the authoritative mDNS snapshot until either the parent
+    /// scope or the final route-state clone is dropped.
+    pub fn new(
+        source: Arc<dyn BrowseSource>,
+        cache: BrowserCache,
+        meta: Arc<LazyMetaBrowse>,
+        parent_cancel: CancellationToken,
+    ) -> Self {
+        let cancel = parent_cancel.child_token();
+        let projector = tokio::spawn(project_snapshots(
+            source.clone(),
+            cache.clone(),
+            cancel.clone(),
+        ));
+        Self {
+            source,
+            cache,
+            meta,
+            _lifecycle: Arc::new(BrowserLifecycle {
+                cancel,
+                projector: std::sync::Mutex::new(Some(projector)),
+            }),
+        }
+    }
 }
 
 /// Build a [`BrowserState`] wrapping the given `MdnsCore` with a lazy meta-browse.
@@ -562,14 +826,10 @@ pub fn build_state(
     parent_cancel: CancellationToken,
 ) -> BrowserState {
     let adapter = crate::browse_source::MdnsBrowseAdapter::new(mdns_core, parent_cancel.clone());
-    let cache = BrowserCache::new();
     let source = adapter as Arc<dyn BrowseSource>;
-    let meta = LazyMetaBrowse::new(source.clone(), cache.clone(), parent_cancel);
-    BrowserState {
-        source,
-        cache,
-        meta,
-    }
+    let cache = BrowserCache::from_snapshot(source.snapshot().as_ref());
+    let meta = LazyMetaBrowse::new(source.clone(), cache.clone(), parent_cancel.clone());
+    BrowserState::new(source, cache, meta, parent_cancel)
 }
 
 // ── Routes ──────────────────────────────────────────────────────────
@@ -627,10 +887,141 @@ async fn post_query(Extension(state): Extension<BrowserState>) -> Json<serde_jso
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::browse_source::{BrowseError, BrowseHandle};
     use crate::meta_browse::{tests::StubSource, LazyMetaBrowse};
     use std::sync::atomic::Ordering;
+    use std::sync::Mutex;
     use std::time::Duration;
+    use tokio::sync::{broadcast, mpsc, oneshot, watch};
     use tokio_stream::StreamExt;
+
+    fn record(name: &str) -> ServiceRecord {
+        ServiceRecord {
+            name: name.to_string(),
+            service_type: "_ipp._tcp.local.".to_string(),
+            host: Some("printer.local.".to_string()),
+            ip: Some("192.168.1.42".to_string()),
+            port: Some(631),
+            txt: HashMap::new(),
+        }
+    }
+
+    fn discovery(revision: u64, records: Vec<ServiceRecord>) -> MdnsDiscoverySnapshot {
+        MdnsDiscoverySnapshot {
+            revision,
+            service_types: vec!["_ipp._tcp.local.".to_string()],
+            records,
+        }
+    }
+
+    #[tokio::test]
+    async fn last_browser_owner_aborts_and_reaps_its_snapshot_projector() {
+        struct DropProbe(Option<oneshot::Sender<()>>);
+
+        impl Drop for DropProbe {
+            fn drop(&mut self) {
+                if let Some(done) = self.0.take() {
+                    let _ = done.send(());
+                }
+            }
+        }
+
+        let cancel = CancellationToken::new();
+        let observed_cancel = cancel.clone();
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let (dropped_tx, dropped_rx) = oneshot::channel();
+        let projector = tokio::spawn(async move {
+            let _probe = DropProbe(Some(dropped_tx));
+            let _ = ready_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        ready_rx.await.expect("projector started");
+
+        drop(BrowserLifecycle {
+            cancel,
+            projector: std::sync::Mutex::new(Some(projector)),
+        });
+
+        assert!(observed_cancel.is_cancelled());
+        tokio::time::timeout(Duration::from_secs(1), dropped_rx)
+            .await
+            .expect("aborted projector is reaped by the runtime")
+            .expect("projector drop probe remains connected");
+    }
+
+    #[tokio::test]
+    async fn seeded_cache_is_truthful_before_any_projector_task_runs() {
+        let cache = BrowserCache::from_snapshot(&discovery(7, vec![record("ready-now")]));
+        let visible = cache.snapshot().await;
+
+        assert_eq!(visible.revision, Some(7));
+        assert_eq!(visible.total_types, 1);
+        assert_eq!(visible.total_instances, 1);
+        assert_eq!(visible.instances[0].name, "ready-now");
+    }
+
+    #[tokio::test]
+    async fn uninitialized_cache_does_not_invent_revision_zero() {
+        let visible = BrowserCache::new().snapshot().await;
+
+        assert_eq!(visible.revision, None);
+        let wire = serde_json::to_value(visible).expect("browser snapshot JSON");
+        assert!(wire["revision"].is_null());
+    }
+
+    #[tokio::test]
+    async fn partial_record_stays_partial_and_unresolved() {
+        let mut partial = record("missing-port");
+        partial.ip = None;
+        partial.port = None;
+        let cache = BrowserCache::from_snapshot(&discovery(1, vec![partial]));
+
+        let visible = cache.snapshot().await;
+        let instance = &visible.instances[0];
+        assert_eq!(instance.host.as_deref(), Some("printer.local."));
+        assert_eq!(instance.ip, None);
+        assert_eq!(instance.port, None);
+        assert!(!instance.resolved);
+        let wire = serde_json::to_value(&visible).expect("browser snapshot JSON");
+        assert!(wire["instances"][0]["ip"].is_null());
+        assert!(wire["instances"][0]["port"].is_null());
+
+        let mut unusable = record("no-locator");
+        unusable.host = Some("  ".to_string());
+        unusable.ip = Some("not-an-ip".to_string());
+        let cache = BrowserCache::from_snapshot(&discovery(2, vec![unusable]));
+        let visible = cache.snapshot().await;
+        let instance = &visible.instances[0];
+        assert_eq!(instance.host.as_deref(), Some("  "));
+        assert_eq!(instance.ip.as_deref(), Some("not-an-ip"));
+        assert_eq!(instance.port, Some(631));
+        assert!(!instance.resolved);
+    }
+
+    #[tokio::test]
+    async fn nonzero_port_and_either_concrete_locator_resolve() {
+        let mut host_endpoint = record("host-endpoint");
+        host_endpoint.ip = None;
+        let mut ip_endpoint = record("ip-endpoint");
+        ip_endpoint.host = None;
+        let cache = BrowserCache::from_snapshot(&discovery(1, vec![host_endpoint, ip_endpoint]));
+
+        let visible = cache.snapshot().await;
+        assert_eq!(visible.instances.len(), 2);
+        assert!(visible.instances.iter().all(|instance| instance.resolved));
+    }
+
+    #[tokio::test]
+    async fn complete_record_resolves_without_rewriting_optional_fields() {
+        let cache = BrowserCache::from_snapshot(&discovery(1, vec![record("complete")]));
+
+        let visible = cache.snapshot().await;
+        let instance = &visible.instances[0];
+        assert_eq!(instance.host.as_deref(), Some("printer.local."));
+        assert_eq!(instance.ip.as_deref(), Some("192.168.1.42"));
+        assert_eq!(instance.port, Some(631));
+        assert!(instance.resolved);
+    }
 
     /// The contract the workbench (and any long-lived subscriber) depends on:
     /// a held-open events stream keeps the lazy meta-browse worker alive past
@@ -649,26 +1040,9 @@ mod tests {
         assert!(fresh.burst.last_burst_at.is_none());
 
         cache.record_burst().await;
-        let resolved = |name: &str| ResolvedService {
-            name: name.to_string(),
-            service_type: "_ipp._tcp.local.".to_string(),
-            host: "printer.internal.".to_string(),
-            ip: "192.168.1.42".to_string(),
-            port: 631,
-            txt: HashMap::new(),
-        };
-        cache
-            .ingest(&BrowserEvent::Found {
-                name: "_ipp._tcp.local.".to_string(),
-                service_type: "_ipp._tcp.local.".to_string(),
-            })
-            .await;
-        cache
-            .ingest(&BrowserEvent::Resolved(resolved("Brother HL")))
-            .await;
-        cache
-            .ingest(&BrowserEvent::Resolved(resolved("Brother HL")))
-            .await;
+        cache.record_answer(None).await;
+        cache.record_answer(None).await;
+        cache.record_answer(None).await;
 
         // A second burst finalizes the first one's answer count.
         cache.record_burst().await;
@@ -684,6 +1058,166 @@ mod tests {
         );
         assert_eq!(snap.burst.last_burst_age_secs, Some(0));
         assert!(snap.burst.last_burst_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn authoritative_snapshot_owns_membership_and_rejects_revision_rollback() {
+        let cache = BrowserCache::new();
+        assert!(
+            cache
+                .reconcile(&discovery(4, vec![record("Brother HL")]))
+                .await
+        );
+
+        let visible = cache.snapshot().await;
+        assert_eq!(visible.revision, Some(4));
+        assert_eq!(visible.total_types, 1);
+        assert_eq!(visible.total_instances, 1);
+
+        let removed = MdnsDiscoverySnapshot {
+            revision: 6,
+            service_types: Vec::new(),
+            records: Vec::new(),
+        };
+        assert!(cache.reconcile(&removed).await);
+        assert!(!cache.reconcile(&discovery(5, vec![record("stale")])).await);
+        let late_event = record("Brother HL");
+        cache.record_answer(Some(&late_event)).await;
+
+        let converged = cache.snapshot().await;
+        assert_eq!(converged.revision, Some(6));
+        assert_eq!(converged.total_types, 0);
+        assert_eq!(converged.total_instances, 0);
+        assert_eq!(
+            converged.instances.len(),
+            1,
+            "removal tombstone is presentation-only"
+        );
+        assert!(converged.instances[0].removed_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn late_projection_subscriber_starts_from_current_snapshot() {
+        let source = StubSource::new();
+        source.publish_snapshot(discovery(9, vec![record("Office Printer")]));
+        let source = source as Arc<dyn BrowseSource>;
+        let cache = BrowserCache::new();
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn(project_snapshots(source, cache.clone(), cancel.clone()));
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if cache.snapshot().await.revision == Some(9) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("late subscriber reconciles immediately");
+
+        let snapshot = cache.snapshot().await;
+        assert_eq!(snapshot.total_instances, 1);
+        cancel.cancel();
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn worker_arms_types_from_current_snapshot_without_event_replay() {
+        let source = StubSource::new();
+        source.publish_snapshot(discovery(3, Vec::new()));
+        let cache = BrowserCache::new();
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn(worker(
+            source.clone() as Arc<dyn BrowseSource>,
+            cache,
+            cancel.clone(),
+        ));
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while source.browse_count() < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("current snapshot arms meta plus the discovered type browse");
+        assert_eq!(source.browse_count(), 2);
+
+        cancel.cancel();
+        task.await.unwrap();
+    }
+
+    struct PreLaggedSource {
+        snapshot: Arc<MdnsDiscoverySnapshot>,
+        event_rx: Mutex<Option<broadcast::Receiver<BrowserEvent>>>,
+        snapshot_tx: watch::Sender<Arc<MdnsDiscoverySnapshot>>,
+    }
+
+    impl PreLaggedSource {
+        fn new(snapshot: MdnsDiscoverySnapshot) -> Arc<Self> {
+            let (event_tx, event_rx) = broadcast::channel(1);
+            event_tx
+                .send(BrowserEvent::Removed {
+                    name: "missed".to_string(),
+                    service_type: "_ipp._tcp.local.".to_string(),
+                })
+                .unwrap();
+            event_tx.send(BrowserEvent::Resync).unwrap();
+            let snapshot = Arc::new(snapshot);
+            let (snapshot_tx, _) = watch::channel(snapshot.clone());
+            Arc::new(Self {
+                snapshot,
+                event_rx: Mutex::new(Some(event_rx)),
+                snapshot_tx,
+            })
+        }
+    }
+
+    impl BrowseSource for PreLaggedSource {
+        fn browse(
+            &self,
+            _service_type: &str,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<BrowseHandle, BrowseError>> + Send + '_>,
+        > {
+            let (_tx, rx) = mpsc::channel(1);
+            Box::pin(async move { Ok(BrowseHandle::new(rx)) })
+        }
+
+        fn subscribe(&self) -> broadcast::Receiver<BrowserEvent> {
+            self.event_rx
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take()
+                .expect("test stream subscribes once")
+        }
+
+        fn snapshot(&self) -> Arc<MdnsDiscoverySnapshot> {
+            self.snapshot.clone()
+        }
+
+        fn watch_snapshot(&self) -> watch::Receiver<Arc<MdnsDiscoverySnapshot>> {
+            self.snapshot_tx.subscribe()
+        }
+    }
+
+    #[tokio::test]
+    async fn lagged_sse_consumer_rereads_authoritative_snapshot() {
+        let source = PreLaggedSource::new(discovery(12, vec![record("Recovered Printer")]))
+            as Arc<dyn BrowseSource>;
+        let cache = BrowserCache::new();
+        let stream = browser_event_stream(source, cache.clone(), None);
+        tokio::pin!(stream);
+
+        let event = tokio::time::timeout(Duration::from_secs(1), stream.next())
+            .await
+            .expect("lag produces a prompt resync event")
+            .expect("stream remains open");
+        assert!(event.is_ok());
+
+        let snapshot = cache.snapshot().await;
+        assert_eq!(snapshot.revision, Some(12));
+        assert_eq!(snapshot.total_instances, 1);
     }
 
     #[tokio::test(start_paused = true)]

@@ -52,6 +52,13 @@ pub struct MemberState {
     /// a pulled bundle with a strictly lower `seq` is rejected.
     #[serde(default)]
     pub last_bundle_seq: u64,
+    /// Digest of the last accepted bundle's semantic contents (the signed
+    /// payload excluding its informational `issued_at`). This makes an equal
+    /// sequence a provable idempotent replay rather than an opportunity to
+    /// equivocate about policy, membership, or revocation without advancing
+    /// the authoritative sequence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_bundle_digest: Option<String>,
     /// Cross-member revoked leaf fingerprints learned from the last accepted trust
     /// bundle — the **full authoritative set** (full-replace each accepted bundle, so
     /// an un-revoked entry also clears). Unioned into
@@ -140,36 +147,73 @@ pub fn port_from_endpoint(endpoint: &str) -> u16 {
     port_str.parse().unwrap_or(DEFAULT_CA_HTTP_PORT)
 }
 
-/// Load the member renewal state, or `None` if it is absent/unreadable.
-pub fn load(path: &std::path::Path) -> Option<MemberState> {
-    let bytes = std::fs::read(path).ok()?;
-    serde_json::from_slice(&bytes).ok()
+/// Load the member renewal state.
+///
+/// Only a missing file is absence. Durable corruption and filesystem failures
+/// are domain errors so commands cannot reinterpret a damaged member as Open.
+pub fn load(path: &std::path::Path) -> Result<Option<MemberState>, CertmeshError> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(CertmeshError::Io(error)),
+    };
+    serde_json::from_slice(&bytes).map(Some).map_err(|error| {
+        CertmeshError::Internal(format!(
+            "persisted member state at '{}' is invalid: {error}",
+            path.display()
+        ))
+    })
 }
 
-/// Persist the member renewal state atomically (temp file → rename), 0600 on Unix.
-pub fn save(path: &std::path::Path, state: &MemberState) -> Result<(), CertmeshError> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+/// Persist the member renewal state durably and atomically, 0600 on Unix.
+#[cfg(test)]
+pub(crate) fn save(path: &std::path::Path, state: &MemberState) -> Result<(), CertmeshError> {
     let json = serde_json::to_vec_pretty(state)
         .map_err(|e| CertmeshError::Internal(format!("serialize member state: {e}")))?;
+    save_bytes_with(path, &json, |path, bytes| {
+        koi_common::persist::write_bytes_atomic_with_options(
+            path,
+            bytes,
+            koi_common::persist::AtomicWriteOptions::new().with_unix_mode(0o600),
+        )
+    })
+}
 
-    // PID-qualified temp so concurrent processes sharing the data dir don't clobber
-    // each other's temp file before the rename.
-    let tmp = path.with_extension(format!("json.tmp.{}", std::process::id()));
-    std::fs::write(&tmp, &json)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+#[cfg(test)]
+fn save_bytes_with(
+    path: &std::path::Path,
+    bytes: &[u8],
+    write: impl FnOnce(&std::path::Path, &[u8]) -> std::io::Result<koi_common::persist::AtomicCommit>,
+) -> Result<(), CertmeshError> {
+    match write(path, bytes)? {
+        koi_common::persist::AtomicCommit::Durable => {}
+        koi_common::persist::AtomicCommit::DurabilityUncertain(error) => {
+            // The replacement is already visible. Reporting rejection would leave
+            // the caller's model behind the state read from this path immediately
+            // (and potentially after restart), so accept it and make the lost
+            // crash-durability guarantee loud.
+            tracing::error!(
+                path = %path.display(),
+                %error,
+                "Member state is visible, but its crash durability could not be confirmed"
+            );
+        }
     }
-    std::fs::rename(&tmp, path)?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn state_path(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "koi-memberstate-{name}-{}",
+            koi_common::id::generate_short_id()
+        ));
+        let path = dir.join("member.json");
+        (dir, path)
+    }
 
     fn sample() -> MemberState {
         MemberState {
@@ -181,6 +225,7 @@ mod tests {
             sans: vec!["web-01".to_string(), "web-01.local".to_string()],
             policy: CertPolicy::default(),
             last_bundle_seq: 0,
+            last_bundle_digest: None,
             revoked_fingerprints: Vec::new(),
             self_revoked: false,
             reload_hook: None,
@@ -208,20 +253,113 @@ mod tests {
 
     #[test]
     fn save_then_load_round_trips() {
-        let dir = std::env::temp_dir().join(format!("koi-memberstate-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("member.json");
+        let (dir, path) = state_path("roundtrip");
         let state = sample();
         save(&path, &state).unwrap();
-        let loaded = load(&path).expect("state loads back");
+        let loaded = load(&path)
+            .expect("member-state read succeeds")
+            .expect("state loads back");
         assert_eq!(loaded, state);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pre_replace_failure_preserves_the_previous_member_state() {
+        let (dir, path) = state_path("pre-replace-failure");
+        let old = sample();
+        save(&path, &old).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let mut replacement = old.clone();
+        replacement.ca_host = "new-ca".to_string();
+        let bytes = serde_json::to_vec_pretty(&replacement).unwrap();
+
+        let result = save_bytes_with(&path, &bytes, |_, _| {
+            Err(std::io::Error::other("injected pre-replace failure"))
+        });
+
+        assert!(
+            matches!(result, Err(CertmeshError::Io(ref error)) if error.to_string().contains("injected"))
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(load(&path).unwrap(), Some(old));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn visible_uncertain_save_is_accepted_and_reload_observes_the_new_state() {
+        let (dir, path) = state_path("visible-uncertain");
+        let old = sample();
+        save(&path, &old).unwrap();
+        let mut replacement = old;
+        replacement.ca_host = "new-ca".to_string();
+        replacement.last_bundle_seq = 42;
+        let bytes = serde_json::to_vec_pretty(&replacement).unwrap();
+
+        save_bytes_with(&path, &bytes, |target, bytes| {
+            let outcome = koi_common::persist::write_bytes_atomic_with_options(
+                target,
+                bytes,
+                koi_common::persist::AtomicWriteOptions::new().with_unix_mode(0o600),
+            )?;
+            Ok(match outcome {
+                koi_common::persist::AtomicCommit::Durable => {
+                    koi_common::persist::AtomicCommit::DurabilityUncertain(std::io::Error::other(
+                        "injected post-replace sync failure",
+                    ))
+                }
+                uncertain @ koi_common::persist::AtomicCommit::DurabilityUncertain(_) => uncertain,
+            })
+        })
+        .expect("a visible member-state replacement is an accepted commit");
+
+        assert_eq!(load(&path).unwrap(), Some(replacement));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn load_absent_is_none() {
-        let path = std::path::Path::new("/nonexistent/koi/member.json");
-        assert!(load(path).is_none());
+        let (dir, path) = state_path("absent");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(load(&path).unwrap().is_none());
+    }
+
+    #[test]
+    fn load_rejects_corrupt_state_instead_of_manufacturing_absence() {
+        let (dir, path) = state_path("corrupt");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, b"{ definitely not member json").unwrap();
+
+        let error = load(&path).unwrap_err();
+        assert!(
+            matches!(error, CertmeshError::Internal(ref message) if message.contains("persisted member state")),
+            "unexpected error: {error}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_propagates_non_not_found_filesystem_failures() {
+        let (dir, path) = state_path("read-error");
+        std::fs::create_dir_all(&path).unwrap();
+
+        assert!(matches!(load(&path), Err(CertmeshError::Io(_))));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

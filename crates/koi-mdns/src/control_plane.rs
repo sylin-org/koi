@@ -5,15 +5,17 @@
 //! registration registry and discovery hub respectively.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, oneshot, watch, Mutex};
+use tokio::task::{JoinHandle, JoinSet};
 
 use koi_common::mdns_protocol::{
     ControlPlaneState, MdnsCapabilities, MdnsControlPlaneStatus, MdnsProviderReport, MdnsRoutes,
     ProviderAvailability, ProviderSessionState, PublicationSync,
 };
+use koi_common::status::StatusFeed;
 
 use crate::adapter::{failed_assessment, MdnsAdapter};
 use crate::error::{MdnsError, ProviderFailure, ProviderOperation};
@@ -66,8 +68,9 @@ impl Default for ControlPlaneConfig {
 /// Stable application service used by `MdnsCore` and `DiscoveryHub`.
 pub(crate) struct MdnsControlPlane {
     command_tx: mpsc::Sender<Command>,
-    status: Arc<RwLock<MdnsControlPlaneStatus>>,
+    status: StatusFeed<MdnsControlPlaneStatus>,
     browse_generation_tx: watch::Sender<u64>,
+    actor_task: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl MdnsControlPlane {
@@ -126,7 +129,7 @@ impl MdnsControlPlane {
             }
         }
 
-        let status = Arc::new(RwLock::new(MdnsControlPlaneStatus::default()));
+        let status = StatusFeed::new(MdnsControlPlaneStatus::default());
         let (browse_generation_tx, _) = watch::channel(0_u64);
         let (command_tx, command_rx) = mpsc::channel(COMMAND_CAPACITY);
         let (initial_tx, initial_rx) = oneshot::channel();
@@ -135,7 +138,7 @@ impl MdnsControlPlane {
             registry,
             command_tx: command_tx.clone(),
             command_rx,
-            status: Arc::clone(&status),
+            status: status.clone(),
             browse_generation_tx: browse_generation_tx.clone(),
             config: config.clone(),
             plan: None,
@@ -148,18 +151,24 @@ impl MdnsControlPlane {
             pending_transition: None,
             transition_note: Some("probing provider catalog".to_string()),
             initial_tx: Some(initial_tx),
+            assessment_tasks: JoinSet::new(),
         };
         let actor_task = tokio::spawn(actor.run());
+        let mut actor_task = Some(actor_task);
         match tokio::time::timeout(config.initial_timeout, initial_rx).await {
             Ok(Ok(())) => {}
             Ok(Err(_)) => {
-                actor_task.abort();
+                let task = actor_task.take().expect("control-plane actor task");
+                task.abort();
+                let _ = task.await;
                 return Err(MdnsError::Daemon(
                     "mDNS control plane stopped during initial reconciliation".to_string(),
                 ));
             }
             Err(_) => {
-                actor_task.abort();
+                let task = actor_task.take().expect("control-plane actor task");
+                task.abort();
+                let _ = task.await;
                 return Err(provider_error(
                     "control-plane",
                     ProviderOperation::Inspect,
@@ -173,14 +182,16 @@ impl MdnsControlPlane {
             command_tx,
             status,
             browse_generation_tx,
+            actor_task: Mutex::new(actor_task),
         }))
     }
 
-    pub(crate) fn status(&self) -> MdnsControlPlaneStatus {
-        self.status
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
+    pub(crate) fn status(&self) -> Arc<MdnsControlPlaneStatus> {
+        self.status.current()
+    }
+
+    pub(crate) fn watch_status(&self) -> watch::Receiver<Arc<MdnsControlPlaneStatus>> {
+        self.status.subscribe()
     }
 
     pub(crate) async fn publish(&self, announcement: Announcement) -> Result<()> {
@@ -209,6 +220,20 @@ impl MdnsControlPlane {
         reply_rx
             .await
             .map_err(|_| stopped_error(ProviderOperation::Withdraw))?
+    }
+
+    /// Reconcile the projection after the registry commits or rolls back a
+    /// transaction that brackets a provider command.
+    pub(crate) async fn reconcile_status(&self) {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if self
+            .command_tx
+            .send(Command::ReconcileStatus(reply_tx))
+            .await
+            .is_ok()
+        {
+            let _ = reply_rx.await;
+        }
     }
 
     pub(crate) async fn browse(&self, service_type: &str, is_meta: bool) -> Result<ProviderBrowse> {
@@ -278,9 +303,55 @@ impl MdnsControlPlane {
             .send(Command::Shutdown(reply_tx))
             .await
             .map_err(|_| stopped_error(ProviderOperation::Shutdown))?;
-        reply_rx
+        let result = reply_rx
             .await
-            .map_err(|_| stopped_error(ProviderOperation::Shutdown))?
+            .map_err(|_| stopped_error(ProviderOperation::Shutdown))?;
+        if result.is_ok() {
+            // Borrow the handle in place. Cancellation of this await therefore
+            // leaves ownership in the control plane for a later shutdown/drop.
+            let mut actor_task = self.actor_task.lock().await;
+            if let Some(task) = actor_task.as_mut() {
+                let _ = task.await;
+            }
+            actor_task.take();
+        }
+        result
+    }
+
+    /// Abort the actor when its acknowledged async shutdown can no longer be
+    /// awaited. Dropping the actor releases its provider sessions and leases,
+    /// whose adapters own their platform-specific fail-close behavior.
+    pub(crate) fn fail_close(&self) {
+        if let Ok(mut actor_task) = self.actor_task.try_lock() {
+            if let Some(task) = actor_task.take() {
+                task.abort();
+            }
+        }
+        self.status.update(|current| {
+            let mut providers = current.providers.clone();
+            for provider in &mut providers {
+                provider.session = None;
+            }
+            let mut stopped = MdnsControlPlaneStatus {
+                state: ControlPlaneState::Stopped,
+                generation: current.generation,
+                routes: MdnsRoutes::default(),
+                providers,
+                publications: PublicationSync::default(),
+                transition: None,
+            };
+            if &stopped == current {
+                return None;
+            }
+            stopped.generation = current.generation.saturating_add(1);
+            Some(stopped)
+        });
+    }
+}
+
+impl Drop for MdnsControlPlane {
+    fn drop(&mut self) {
+        self.fail_close();
     }
 }
 
@@ -322,6 +393,7 @@ enum Command {
         id: String,
         reply: oneshot::Sender<Result<()>>,
     },
+    ReconcileStatus(oneshot::Sender<()>),
     Browse {
         service_type: String,
         is_meta: bool,
@@ -408,7 +480,7 @@ struct ControlPlaneActor {
     registry: Arc<RegistrationRegistry>,
     command_tx: mpsc::Sender<Command>,
     command_rx: mpsc::Receiver<Command>,
-    status: Arc<RwLock<MdnsControlPlaneStatus>>,
+    status: StatusFeed<MdnsControlPlaneStatus>,
     browse_generation_tx: watch::Sender<u64>,
     config: ControlPlaneConfig,
     plan: Option<RoutePlan>,
@@ -421,6 +493,7 @@ struct ControlPlaneActor {
     pending_transition: Option<PendingTransition>,
     transition_note: Option<String>,
     initial_tx: Option<oneshot::Sender<()>>,
+    assessment_tasks: JoinSet<()>,
 }
 
 impl ControlPlaneActor {
@@ -433,6 +506,11 @@ impl ControlPlaneActor {
         );
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
+            while let Some(result) = self.assessment_tasks.try_join_next() {
+                if let Err(error) = result {
+                    tracing::debug!(%error, "mDNS provider assessment task did not exit cleanly");
+                }
+            }
             tokio::select! {
                 command = self.command_rx.recv() => {
                     let Some(command) = command else {
@@ -452,6 +530,7 @@ impl ControlPlaneActor {
                 }
             }
         }
+        self.assessment_tasks.shutdown().await;
         self.set_stopped();
     }
 
@@ -482,6 +561,11 @@ impl ControlPlaneActor {
                 self.refresh_status();
                 let _ = reply.send(result);
             }
+            Command::ReconcileStatus(reply) => {
+                let _ = self.synchronize_publications().await;
+                self.refresh_status();
+                let _ = reply.send(());
+            }
             Command::Browse {
                 service_type,
                 is_meta,
@@ -504,6 +588,17 @@ impl ControlPlaneActor {
                 self.advance_browse_generation();
                 let result = self.release_everything().await;
                 let complete = result.is_ok();
+                if complete {
+                    // The command acknowledgement is the lifecycle causal
+                    // fence: once it is observable, current status must already
+                    // describe the released provider epoch.
+                    self.set_stopped();
+                } else {
+                    // A failed shutdown may still have released a subset of
+                    // resources. Publish that accepted truth before returning
+                    // the failure so callers never retain the pre-command view.
+                    self.refresh_status();
+                }
                 let _ = reply.send(result);
                 if complete {
                     return false;
@@ -525,7 +620,7 @@ impl ControlPlaneActor {
         for (index, adapter) in self.adapters.iter().cloned().enumerate() {
             let command_tx = self.command_tx.clone();
             let inspect_timeout = self.config.inspect_timeout;
-            tokio::spawn(async move {
+            self.assessment_tasks.spawn(async move {
                 let descriptor = adapter.descriptor();
                 let report = match tokio::time::timeout(inspect_timeout, adapter.assess()).await {
                     Ok(report) => report,
@@ -612,6 +707,10 @@ impl ControlPlaneActor {
             round.decided = true;
         }
         if let Some(initial_tx) = self.initial_tx.take() {
+            // Startup does not complete at the private route-plan mutation. Its
+            // acknowledgement fences the immutable status projection consumed
+            // by MdnsCore and every later subscriber.
+            self.refresh_status();
             let _ = initial_tx.send(());
         }
     }
@@ -770,7 +869,6 @@ impl ControlPlaneActor {
         self.shutdown_indices(&leaving).await?;
 
         self.plan = target;
-        self.advance_status_generation();
         self.transition_note = None;
         self.synchronize_publications().await
     }
@@ -1166,20 +1264,19 @@ impl ControlPlaneActor {
                     .resolve
                     .map(|index| self.adapters[index].descriptor().name.to_string()),
             });
-        let mut status = self
-            .status
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        status.state = state;
-        status.routes = routes;
-        status.providers = providers;
-        status.publications = PublicationSync {
-            desired,
-            established,
-            pending: registry_pending.max(desired.saturating_sub(established)),
-            failed: self.publication_failures.len(),
-        };
-        status.transition.clone_from(&self.transition_note);
+        self.publish_status(MdnsControlPlaneStatus {
+            state,
+            generation: 0,
+            routes,
+            providers,
+            publications: PublicationSync {
+                desired,
+                established,
+                pending: registry_pending.max(desired.saturating_sub(established)),
+                failed: self.publication_failures.len(),
+            },
+            transition: self.transition_note.clone(),
+        });
     }
 
     fn advance_browse_generation(&self) {
@@ -1187,22 +1284,41 @@ impl ControlPlaneActor {
         self.browse_generation_tx.send_replace(next);
     }
 
-    fn advance_status_generation(&self) {
-        let mut status = self
-            .status
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        status.generation = status.generation.saturating_add(1);
+    fn set_stopped(&self) {
+        let current = self.status.current();
+        let (desired, registry_pending) = self.registry.publication_intent_counts();
+        let mut providers = current.providers.clone();
+        for provider in &mut providers {
+            provider.session = None;
+        }
+        self.publish_status(MdnsControlPlaneStatus {
+            state: ControlPlaneState::Stopped,
+            generation: 0,
+            routes: MdnsRoutes::default(),
+            providers,
+            publications: PublicationSync {
+                desired,
+                established: 0,
+                pending: registry_pending.max(desired),
+                failed: 0,
+            },
+            transition: None,
+        });
     }
 
-    fn set_stopped(&self) {
-        let mut status = self
-            .status
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        status.state = ControlPlaneState::Stopped;
-        status.routes = MdnsRoutes::default();
-        status.transition = None;
+    /// Publish a fully assembled projection, assigning the next generation only
+    /// when a semantic field changed. `generation` is the public monotonic
+    /// revision for the control-plane snapshot; browse invalidation retains its
+    /// separate provider-epoch counter.
+    fn publish_status(&self, mut next: MdnsControlPlaneStatus) {
+        self.status.update(move |current| {
+            next.generation = current.generation;
+            if &next == current {
+                return None;
+            }
+            next.generation = current.generation.saturating_add(1);
+            Some(next)
+        });
     }
 }
 
@@ -1774,6 +1890,126 @@ mod tests {
         })
         .await
         .expect("route transition");
+    }
+
+    #[tokio::test]
+    async fn lifecycle_acknowledgements_fence_current_status() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let adapter = TestAdapter::new(
+            ProviderDescriptor::new(
+                "lifecycle-provider",
+                500,
+                crate::adapter::ProviderApi::Embedded,
+                MdnsCapabilities::FULL_PROVIDER_WITH_DIRECT_RESOLVE,
+            ),
+            true,
+            log,
+        );
+        let registry = Arc::new(RegistrationRegistry::new());
+        let mut config = fast_config();
+        config.probe_interval = Duration::from_secs(60);
+
+        let control_plane =
+            MdnsControlPlane::start_catalog(vec![adapter], Arc::clone(&registry), config)
+                .await
+                .expect("start control plane");
+
+        // No polling: successful construction itself acknowledges the final
+        // initial route projection.
+        let started = control_plane.status();
+        assert_eq!(started.state, ControlPlaneState::Ready);
+        assert_eq!(
+            started.routes.publish.as_deref(),
+            Some("lifecycle-provider")
+        );
+        assert_eq!(started.transition, None);
+        assert_eq!(
+            started.providers[0].session,
+            Some(ProviderSessionState::Ready)
+        );
+
+        let status_rx = control_plane.watch_status();
+        control_plane.shutdown().await.expect("shutdown");
+
+        // Likewise, a successful shutdown reply cannot race the Stopped
+        // projection. Existing watchers and direct reads already agree.
+        let stopped = control_plane.status();
+        assert_eq!(stopped.state, ControlPlaneState::Stopped);
+        assert!(stopped.routes.publish.is_none());
+        assert!(stopped
+            .providers
+            .iter()
+            .all(|provider| provider.session.is_none()));
+        assert!(stopped.generation > started.generation);
+        assert_eq!(status_rx.borrow().as_ref(), stopped.as_ref());
+        assert!(
+            control_plane.actor_task.lock().await.is_none(),
+            "successful shutdown must reap the actor rather than detach it"
+        );
+    }
+
+    #[tokio::test]
+    async fn status_feed_is_immediate_revisioned_and_suppresses_noop_publication() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let adapter = TestAdapter::new(
+            ProviderDescriptor::new(
+                "status-provider",
+                500,
+                crate::adapter::ProviderApi::Embedded,
+                MdnsCapabilities::FULL_PROVIDER_WITH_DIRECT_RESOLVE,
+            ),
+            true,
+            log,
+        );
+        let registry = Arc::new(RegistrationRegistry::new());
+        let mut config = fast_config();
+        config.probe_interval = Duration::from_secs(60);
+        let control_plane =
+            MdnsControlPlane::start_catalog(vec![adapter], Arc::clone(&registry), config)
+                .await
+                .expect("start control plane");
+        wait_for_route(
+            &control_plane,
+            |routes| routes.publish.as_deref(),
+            "status-provider",
+        )
+        .await;
+
+        let first = control_plane.status();
+        let second = control_plane.status();
+        assert!(Arc::ptr_eq(&first, &second));
+        let mut status_rx = control_plane.watch_status();
+
+        let attempt = registry.begin_registration(
+            "status-reg".to_string(),
+            test_payload(),
+            LeasePolicy::Permanent,
+            None,
+        );
+        let announcement = registry
+            .desired_announcement(attempt.outcome.id())
+            .expect("announcement");
+        control_plane
+            .publish(announcement.clone())
+            .await
+            .expect("publish");
+        status_rx
+            .changed()
+            .await
+            .expect("publication should update status");
+        let published = status_rx.borrow_and_update().clone();
+        assert!(published.generation > first.generation);
+        assert_eq!(published.publications.established, 1);
+
+        control_plane
+            .publish(announcement)
+            .await
+            .expect("idempotent publication");
+        assert_eq!(control_plane.status().generation, published.generation);
+        assert!(status_rx.has_changed().is_ok_and(|changed| !changed));
+
+        control_plane.shutdown().await.expect("shutdown");
+        drop(attempt);
     }
 
     #[tokio::test]

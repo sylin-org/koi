@@ -38,11 +38,11 @@ koi-compose.workspace = true
 koi-serve.workspace = true
 koi-mdns.workspace = true
 koi-certmesh.workspace = true
+koi-trust.workspace = true
 # The batteries-included binary ships every optional backend. Request the leaf features
 # explicitly so a future default-features flip cannot silently strip Docker / the
 # credential store / QR from the daemon.
 koi-crypto = { workspace = true, features = ["keyring", "qr"] }
-os-truststore.workspace = true
 koi-config.workspace = true
 koi-dns.workspace = true
 koi-health.workspace = true
@@ -68,7 +68,6 @@ async-trait.workspace = true
 async-stream.workspace = true
 axum.workspace = true
 tower-http.workspace = true
-hostname = "0.4"
 if-addrs.workspace = true
 hickory-proto.workspace = true
 crossterm.workspace = true

@@ -36,6 +36,7 @@ pub fn prepare_promotion(
     ca: &CaState,
     auth_state: &AuthState,
     roster: &Roster,
+    acme_accounts_json: Option<String>,
     client_public_key: &[u8; 32],
 ) -> Result<PromoteResponse, CertmeshError> {
     let server_kp = EphemeralKeyPair::generate();
@@ -69,6 +70,7 @@ pub fn prepare_promotion(
         encrypted_ca_key,
         auth_data,
         roster_json,
+        acme_accounts_json,
         ca_cert_pem: ca.cert_pem.clone(),
         ephemeral_public: Some(server_pub),
     })
@@ -82,7 +84,7 @@ pub fn prepare_promotion(
 pub fn accept_promotion(
     response: &PromoteResponse,
     our_keypair: EphemeralKeyPair,
-) -> Result<(CaKeyPair, AuthState, Roster), CertmeshError> {
+) -> Result<(CaKeyPair, AuthState, Roster, Option<String>), CertmeshError> {
     let server_pub = response.ephemeral_public.as_ref().ok_or_else(|| {
         CertmeshError::PromotionFailed("server did not provide ephemeral public key".into())
     })?;
@@ -119,7 +121,12 @@ pub fn accept_promotion(
     let roster: Roster = serde_json::from_str(&response.roster_json)
         .map_err(|e| CertmeshError::PromotionFailed(format!("roster deserialization: {e}")))?;
 
-    Ok((ca_key, auth_state, roster))
+    Ok((
+        ca_key,
+        auth_state,
+        roster,
+        response.acme_accounts_json.clone(),
+    ))
 }
 
 #[cfg(test)]
@@ -177,7 +184,7 @@ mod tests {
         let client_kp = koi_crypto::key_agreement::EphemeralKeyPair::generate();
         let client_pub = client_kp.public_key_bytes();
 
-        let response = prepare_promotion(&ca, &auth_state, &roster, &client_pub).unwrap();
+        let response = prepare_promotion(&ca, &auth_state, &roster, None, &client_pub).unwrap();
 
         // Verify encrypted material is non-empty
         assert!(!response.encrypted_ca_key.ciphertext.is_empty());
@@ -187,7 +194,7 @@ mod tests {
         assert!(response.ephemeral_public.is_some());
 
         // Accept on the standby side using DH
-        let (ca_key, accepted_auth, accepted_roster) =
+        let (ca_key, accepted_auth, accepted_roster, accepted_accounts) =
             accept_promotion(&response, client_kp).unwrap();
 
         // Verify the decrypted key produces the same public key
@@ -200,6 +207,7 @@ mod tests {
         // Verify roster survived
         assert_eq!(accepted_roster.members.len(), 1);
         assert_eq!(accepted_roster.members[0].hostname, "node-01");
+        assert!(accepted_accounts.is_none());
     }
 
     #[test]
@@ -211,7 +219,7 @@ mod tests {
 
         let client_kp = koi_crypto::key_agreement::EphemeralKeyPair::generate();
         let client_pub = client_kp.public_key_bytes();
-        let mut response = prepare_promotion(&ca, &auth_state, &roster, &client_pub).unwrap();
+        let mut response = prepare_promotion(&ca, &auth_state, &roster, None, &client_pub).unwrap();
 
         // Remove the server's ephemeral key — acceptance must fail
         response.ephemeral_public = None;
@@ -230,7 +238,7 @@ mod tests {
 
         let client_kp = koi_crypto::key_agreement::EphemeralKeyPair::generate();
         let client_pub = client_kp.public_key_bytes();
-        let mut response = prepare_promotion(&ca, &auth, &roster, &client_pub).unwrap();
+        let mut response = prepare_promotion(&ca, &auth, &roster, None, &client_pub).unwrap();
 
         // Swap in a DIFFERENT CA's certificate (a different keypair). The DH
         // decryption still yields the original key, but it no longer matches the cert.
@@ -256,7 +264,7 @@ mod tests {
         let client_kp = koi_crypto::key_agreement::EphemeralKeyPair::generate();
         let client_pub = client_kp.public_key_bytes();
 
-        let response = prepare_promotion(&ca, &auth_state, &roster, &client_pub).unwrap();
+        let response = prepare_promotion(&ca, &auth_state, &roster, None, &client_pub).unwrap();
 
         // Try to accept with a DIFFERENT keypair -- should fail
         let wrong_kp = koi_crypto::key_agreement::EphemeralKeyPair::generate();
@@ -277,8 +285,8 @@ mod tests {
         let client_kp = koi_crypto::key_agreement::EphemeralKeyPair::generate();
         let client_pub = client_kp.public_key_bytes();
 
-        let response = prepare_promotion(&ca, &auth, &roster, &client_pub).unwrap();
-        let (_, _, accepted_roster) = accept_promotion(&response, client_kp).unwrap();
+        let response = prepare_promotion(&ca, &auth, &roster, None, &client_pub).unwrap();
+        let (_, _, accepted_roster, _) = accept_promotion(&response, client_kp).unwrap();
         assert_eq!(
             accepted_roster.metadata.operator.as_deref(),
             Some("ops-team")
@@ -304,8 +312,8 @@ mod tests {
         let client_kp = koi_crypto::key_agreement::EphemeralKeyPair::generate();
         let client_pub = client_kp.public_key_bytes();
 
-        let response = prepare_promotion(&ca, &auth, &roster, &client_pub).unwrap();
-        let (_, _, accepted_roster) = accept_promotion(&response, client_kp).unwrap();
+        let response = prepare_promotion(&ca, &auth, &roster, None, &client_pub).unwrap();
+        let (_, _, accepted_roster, _) = accept_promotion(&response, client_kp).unwrap();
         assert!(accepted_roster.members.is_empty());
     }
 }

@@ -362,8 +362,12 @@ All registrations are removed within seconds.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/v1/runtime/status` | Adapter status (active, backend, instance count) |
+| GET | `/v1/runtime/status` | Revisioned adapter state and full normalized instance inventory |
 | GET | `/v1/runtime/instances` | List all tracked instances with ports, labels, state |
+
+The status response carries `revision`, `active`, `backend`, optional `backend_error`,
+`instance_count`, and `instances`. Consumers can use the revision to detect a changed
+process-local snapshot; it is not a durable container-engine cursor.
 
 ---
 

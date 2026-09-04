@@ -1,4 +1,5 @@
 pub mod api;
+pub mod blocking;
 pub mod capability;
 pub mod ceremony;
 pub mod diagnosis;
@@ -17,8 +18,9 @@ pub mod paths;
 pub mod peer;
 pub mod persist;
 pub mod pipeline;
+pub mod pond;
 pub mod posture;
-pub mod runtime_state;
 pub mod sealed;
+pub mod status;
 pub mod test;
 pub mod types;

@@ -20,7 +20,17 @@ need to call the daemon from `spawn_blocking`.
 use koi_client::KoiClient;
 
 let client = KoiClient::new("http://127.0.0.1:5641");
-let status = client.status()?;
+let status = client.unified_status()?;
+
+// Remote discovery/enrollment uses the deliberately minimal public view.
+let bootstrap = client.certmesh_bootstrap()?;
+
+// Operator tooling uses the full status projection (and supplies a DAT when remote).
+let operator = KoiClient::with_token("http://koi-host:5641", "daemon-access-token");
+let certmesh = operator.certmesh_status()?;
+
+// Remove Pond's current serving selection without deleting retained generations.
+operator.pond_clear_ui()?;
 ```
 
 ## Part of Koi

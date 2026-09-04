@@ -2,8 +2,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use koi_config::state::DnsEntry;
-use koi_embedded::{Builder, KoiEvent, ServiceMode};
+use koi_dns::DnsEntry;
+use koi_embedded::{Builder, KoiError, KoiEvent, ServiceMode};
 use koi_proxy::ProxyEntry;
 
 fn temp_data_dir() -> PathBuf {
@@ -45,11 +45,21 @@ async fn dns_add_entry_emits_event() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
     let handle = koi.start().await?;
 
-    let mut rx = handle.subscribe();
+    let mut rx = handle.subscribe()?;
     let dns = handle.dns()?;
 
-    let entry = DnsEntry {
+    let outside_zone = dns.add_entry(DnsEntry {
         name: "test.lan".to_string(),
+        ip: "127.0.0.1".to_string(),
+        ttl: None,
+    });
+    assert!(matches!(
+        outside_zone,
+        Err(KoiError::Dns(koi_dns::DnsError::InvalidEntry(_)))
+    ));
+
+    let entry = DnsEntry {
+        name: "test.internal".to_string(),
         ip: "127.0.0.1".to_string(),
         ttl: None,
     };
@@ -58,7 +68,7 @@ async fn dns_add_entry_emits_event() -> Result<(), Box<dyn std::error::Error>> {
     let event = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await??;
     match event {
         KoiEvent::DnsEntryUpdated { name, ip } => {
-            assert_eq!(name, "test.lan");
+            assert_eq!(name, "test.internal.");
             assert_eq!(ip, "127.0.0.1");
         }
         other => panic!("unexpected event: {other:?}"),
@@ -82,23 +92,29 @@ async fn dns_remove_entry_emits_event() -> Result<(), Box<dyn std::error::Error>
         .build()?;
     let handle = koi.start().await?;
     let dns = handle.dns()?;
-    let mut rx = handle.subscribe();
+    let mut rx = handle.subscribe()?;
 
     // Add an entry first, then drain its event.
     let entry = DnsEntry {
-        name: "remove-me.lan".to_string(),
+        name: "remove-me.internal".to_string(),
         ip: "10.0.0.1".to_string(),
         ttl: None,
     };
     dns.add_entry(entry)?;
     let _ = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await??;
 
-    dns.remove_entry("remove-me.lan")?;
+    let remaining = dns.remove_entry("remove-me.internal")?;
+    assert_eq!(remaining, Some(Vec::new()));
+    assert_eq!(
+        dns.remove_entry("remove-me.internal")?,
+        None,
+        "a missing entry remains distinguishable from an empty accepted set"
+    );
 
     let event = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await??;
     match event {
         KoiEvent::DnsEntryRemoved { name } => {
-            assert_eq!(name, "remove-me.lan");
+            assert_eq!(name, "remove-me.internal.");
         }
         other => panic!("expected DnsEntryRemoved, got {other:?}"),
     }
@@ -121,7 +137,7 @@ async fn proxy_upsert_and_remove_emit_events() -> Result<(), Box<dyn std::error:
         .build()?;
     let handle = koi.start().await?;
 
-    let mut rx = handle.subscribe();
+    let mut rx = handle.subscribe()?;
     let proxy = handle.proxy()?;
 
     // upsert

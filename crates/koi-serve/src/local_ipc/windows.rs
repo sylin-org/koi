@@ -1,10 +1,12 @@
 use std::ffi::c_void;
 use std::os::windows::io::AsRawHandle;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use koi_config::local_access::LocalOperator;
 use koi_mdns::MdnsCore;
 use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, HANDLE};
 use windows_sys::Win32::Security::Authorization::{
@@ -18,60 +20,134 @@ use windows_sys::Win32::System::Threading::{
     OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 
-use super::{split_stream, LocalControlConfig};
+use super::{
+    drain_sessions, observe_session_result, run_session, split_stream, LocalControlConfig,
+};
 
-pub(super) async fn start(
-    mdns: Option<Arc<MdnsCore>>,
-    config: LocalControlConfig,
-    cancel: CancellationToken,
-) -> anyhow::Result<()> {
-    let expected_sid = match &config.operator {
-        LocalOperator::WindowsSid { sid } => sid.clone(),
-        LocalOperator::UnixUid { .. } => {
-            anyhow::bail!("Unix UID cannot authorize a Windows local-control pipe")
-        }
-    };
-    let pipe_name = config.path.to_string_lossy().into_owned();
-    let security = PipeSecurity::new(&expected_sid)?;
-    let mut first = true;
+/// One acquired Windows named-pipe generation. The first-instance handle is
+/// created during construction and stays owned until the run loop begins.
+pub(super) struct LocalControl {
+    listener: NamedPipeServer,
+    path: PathBuf,
+    security: PipeSecurity,
+    expected_sid: String,
+    access: Option<koi_common::local_control::LocalDaemonAccess>,
+    info: koi_common::local_control::LocalDaemonInfo,
+}
 
-    tracing::info!(pipe = %pipe_name, "Local control listening (Windows named pipe)");
-    loop {
-        let mut options = ServerOptions::new();
-        options
-            .first_pipe_instance(first)
-            .reject_remote_clients(true);
-        // SAFETY: `security` owns the descriptor referenced by `attributes` and
-        // remains alive until after CreateNamedPipeW returns.
-        let server = unsafe {
-            options.create_with_security_attributes_raw(&pipe_name, security.attributes())?
-        };
-        first = false;
-
-        tokio::select! {
-            connected = server.connect() => {
-                connected?;
-                if !peer_has_sid(&server, &expected_sid)? {
-                    tracing::warn!("Rejected unauthorized local-control pipe peer");
-                    continue;
-                }
-                let mdns = mdns.clone();
-                let access = config.access.clone();
-                let info = config.info.clone();
-                tokio::spawn(async move {
-                    let (reader, writer) = split_stream(server);
-                    if let Err(error) =
-                        super::handle_connection(mdns, reader, writer, access, info).await
-                    {
-                        tracing::debug!(%error, "Local-control connection closed with an error");
-                    }
-                });
+impl LocalControl {
+    pub(super) fn acquire(config: LocalControlConfig) -> anyhow::Result<Self> {
+        let expected_sid = match &config.operator {
+            LocalOperator::WindowsSid { sid } => sid.clone(),
+            LocalOperator::UnixUid { .. } => {
+                anyhow::bail!("Unix UID cannot authorize a Windows local-control pipe")
             }
-            _ = cancel.cancelled() => break,
-        }
+        };
+        let security = PipeSecurity::new(&expected_sid)?;
+        let listener = create_server(&config.path, &security, true)?;
+        Ok(Self {
+            listener,
+            path: config.path,
+            security,
+            expected_sid,
+            access: config.access,
+            info: config.info,
+        })
     }
-    tracing::debug!("Local control stopped (Windows named pipe)");
-    Ok(())
+
+    pub(super) async fn run(
+        self,
+        mdns: Option<Arc<MdnsCore>>,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<()> {
+        let Self {
+            mut listener,
+            path,
+            security,
+            expected_sid,
+            access,
+            info,
+        } = self;
+        let session_cancel = cancel.child_token();
+        let mut sessions = JoinSet::new();
+        tracing::info!(pipe = %path.display(), "Local control listening (Windows named pipe)");
+
+        // Keep the Win32 security owner in this future directly. Creating a pipe
+        // borrows it only for the synchronous CreateNamedPipeW call below.
+        let result: anyhow::Result<()> = loop {
+            let connected = {
+                let connection = listener.connect();
+                tokio::pin!(connection);
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => break None,
+                        joined = sessions.join_next(), if !sessions.is_empty() => {
+                            observe_session_result(joined);
+                        }
+                        connected = &mut connection => break Some(connected),
+                    }
+                }
+            };
+            let Some(connected) = connected else {
+                break Ok(());
+            };
+            if let Err(error) = connected {
+                break Err(error.into());
+            }
+
+            // Create the next secured listener while the connected instance is
+            // still alive. There is never a zero-instance window in which a
+            // second Koi generation can claim first-instance ownership.
+            let next = match create_server(&path, &security, false) {
+                Ok(next) => next,
+                Err(error) => break Err(error),
+            };
+            let connected = std::mem::replace(&mut listener, next);
+
+            let authorized = match peer_has_sid(&connected, &expected_sid) {
+                Ok(authorized) => authorized,
+                Err(error) => break Err(error),
+            };
+            if !authorized {
+                tracing::warn!("Rejected unauthorized local-control pipe peer");
+                continue;
+            }
+
+            let (reader, writer) = split_stream(connected);
+            sessions.spawn(run_session(
+                mdns.clone(),
+                reader,
+                writer,
+                access.clone(),
+                info.clone(),
+                session_cancel.clone(),
+            ));
+        };
+
+        // Drop the pending accept instance first so no new client can enter;
+        // connected instances remain owned by `sessions` until bounded drain.
+        drop(listener);
+        session_cancel.cancel();
+        drain_sessions(&mut sessions).await;
+        tracing::debug!("Local control stopped (Windows named pipe)");
+        result
+    }
+}
+
+fn create_server(
+    path: &Path,
+    security: &PipeSecurity,
+    first_instance: bool,
+) -> anyhow::Result<NamedPipeServer> {
+    let mut options = ServerOptions::new();
+    options
+        .first_pipe_instance(first_instance)
+        .reject_remote_clients(true);
+    // SAFETY: `security` owns the descriptor referenced by `attributes` and
+    // remains alive until after this synchronous CreateNamedPipeW call.
+    unsafe { options.create_with_security_attributes_raw(path, security.attributes()) }
+        .map_err(Into::into)
 }
 
 struct PipeSecurity {

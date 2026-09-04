@@ -169,7 +169,7 @@ pub fn parse(body: &str) -> Result<FileConfig, String> {
     let mut root: toml::Table =
         toml::from_str(body).map_err(|e| format!("invalid config file: {e}"))?;
     if let Some(proxy) = root.remove("proxy") {
-        let _: koi_proxy::config::ProxyConfig = proxy
+        let _: koi_proxy::ProxyConfig = proxy
             .try_into()
             .map_err(|e| format!("invalid config file: {e}"))?;
     }
@@ -252,9 +252,17 @@ fn resolve_action_path(explicit: Option<&Path>) -> anyhow::Result<ActionPath> {
         None => None,
     };
     let active_daemon = if explicit.is_none() {
-        koi_client::local_daemon_info()
-            .ok()
-            .map(|info| PathBuf::from(info.config_path))
+        match koi_client::observe_local_daemon_info() {
+            koi_client::LocalDaemonObservation::Present(info) => {
+                Some(PathBuf::from(info.config_path))
+            }
+            koi_client::LocalDaemonObservation::Absent => None,
+            koi_client::LocalDaemonObservation::Uncertain(error) => {
+                anyhow::bail!(
+                    "cannot determine the active daemon config path: {error}. Pass --config explicitly or repair local service discovery"
+                )
+            }
+        }
     } else {
         None
     };

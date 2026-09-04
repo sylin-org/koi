@@ -27,6 +27,7 @@ koi-mdns.workspace = true
 koi-dns.workspace = true
 koi-health.workspace = true
 koi-certmesh = { workspace = true, default-features = false }
+koi-trust.workspace = true
 koi-proxy.workspace = true
 koi-udp.workspace = true
 koi-config.workspace = true
@@ -45,7 +46,6 @@ axum.workspace = true
 reqwest = { workspace = true, features = ["json"] }
 serde_json.workspace = true
 futures-util.workspace = true
-hostname.workspace = true
 
 [features]
 # Optional heavy backends, default-on (a default build is unchanged from today). A lean
@@ -62,4 +62,5 @@ qr = ["koi-crypto/qr"]
 
 [dev-dependencies]
 base64.workspace = true
-
+async-trait.workspace = true
+tokio = { workspace = true, features = ["test-util"] }

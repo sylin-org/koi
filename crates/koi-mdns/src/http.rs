@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::{Extension, Path, Query};
-use axum::response::sse::{Event, Sse};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Json};
 use axum::routing::{delete, get, post, put};
 use axum::Router;
@@ -17,17 +17,17 @@ use crate::protocol::{
     AdminRegistration, DaemonStatus, RegisterPayload, RegistrationCounts, RegistrationResult,
     RenewalResult, Response,
 };
-use crate::{LeasePolicy, MdnsCore};
-
-/// Default heartbeat lease duration for HTTP-registered services.
-const DEFAULT_HEARTBEAT_LEASE: Duration = Duration::from_secs(90);
-
-/// Default grace period after a heartbeat lease expires before removal.
-const DEFAULT_HEARTBEAT_GRACE: Duration = Duration::from_secs(30);
+use crate::{BrowseRecvError, MdnsCore};
 
 /// Default idle timeout for SSE streams (seconds).
 /// Stream closes after this duration with no new events.
 const DEFAULT_SSE_IDLE: Duration = Duration::from_secs(5);
+
+/// Liveness fence for long-lived mDNS streams. This must remain comfortably
+/// inside `koi_client::SSE_CANCELLATION_BOUND`; clients treat a missed read
+/// window as a real transport failure and never resume a potentially partial
+/// SSE frame.
+const SSE_KEEPALIVE_INTERVAL: Duration = Duration::from_millis(500);
 
 #[derive(Debug, serde::Deserialize, IntoParams)]
 pub struct BrowseParams {
@@ -65,6 +65,7 @@ pub mod paths {
     pub const PREFIX: &str = "/v1/mdns";
 
     pub const DISCOVER: &str = "/v1/mdns/discover";
+    pub const SNAPSHOT: &str = "/v1/mdns/snapshot";
     pub const ANNOUNCE: &str = "/v1/mdns/announce";
     pub const UNREGISTER: &str = "/v1/mdns/unregister/{id}";
     pub const RESOLVE: &str = "/v1/mdns/resolve";
@@ -87,6 +88,7 @@ pub fn routes(core: Arc<MdnsCore>) -> Router {
     use paths::rel;
     Router::new()
         .route(rel(paths::DISCOVER), get(browse_handler))
+        .route(rel(paths::SNAPSHOT), get(discovery_snapshot_handler))
         .route(rel(paths::ANNOUNCE), post(register_handler))
         .route(rel(paths::UNREGISTER), delete(unregister_handler))
         .route(rel(paths::HEARTBEAT), put(heartbeat_handler))
@@ -102,6 +104,15 @@ pub fn routes(core: Arc<MdnsCore>) -> Router {
         .route(rel(paths::ADMIN_DRAIN), post(admin_drain_handler))
         .route(rel(paths::ADMIN_REVIVE), post(admin_revive_handler))
         .layer(Extension(core))
+}
+
+#[utoipa::path(get, path = "/snapshot", tag = "mdns",
+    summary = "Read the authoritative current mDNS discovery snapshot",
+    responses((status = 200, body = koi_common::integration::MdnsDiscoverySnapshot)))]
+async fn discovery_snapshot_handler(
+    Extension(core): Extension<Arc<MdnsCore>>,
+) -> Json<koi_common::integration::MdnsDiscoverySnapshot> {
+    Json(core.discovery_snapshot().as_ref().clone())
 }
 
 #[utoipa::path(get, path = "/discover", tag = "mdns",
@@ -123,6 +134,7 @@ async fn browse_handler(
 
     let idle = idle_duration(params.idle_for);
     let handle = Arc::new(handle);
+    let stream_core = Arc::clone(&core);
     let stream = async_stream::stream! {
         loop {
             let next = match idle {
@@ -133,7 +145,7 @@ async fn browse_handler(
                 None => handle.recv().await,
             };
             match next {
-                Some(event) => {
+                Ok(event) => {
                     let resp = crate::protocol::browse_event_to_pipeline(event);
                     match serde_json::to_string(&resp) {
                         Ok(data) => {
@@ -146,12 +158,26 @@ async fn browse_handler(
                         }
                     }
                 }
-                None => break,
+                Err(BrowseRecvError::Lagged { dropped }) => {
+                    tracing::warn!(dropped, "mDNS browse SSE lagged; publishing authoritative resync");
+                    let resp = PipelineResponse::clean(Response::Snapshot(
+                        stream_core.discovery_snapshot().as_ref().clone(),
+                    ));
+                    if let Ok(data) = serde_json::to_string(&resp) {
+                        let id = uuid::Uuid::now_v7().to_string();
+                        yield Ok::<_, std::convert::Infallible>(
+                            Event::default().id(id).event("resync").data(data),
+                        );
+                    }
+                }
+                Err(BrowseRecvError::Closed) => break,
             }
         }
     };
 
-    Sse::new(stream).into_response()
+    Sse::new(stream)
+        .keep_alive(sse_keep_alive())
+        .into_response()
 }
 
 #[utoipa::path(post, path = "/announce", tag = "mdns",
@@ -162,11 +188,7 @@ async fn register_handler(
     Extension(core): Extension<Arc<MdnsCore>>,
     Json(payload): Json<RegisterPayload>,
 ) -> impl IntoResponse {
-    let policy = match policy_from_lease_secs(payload.lease_secs) {
-        Ok(p) => p,
-        Err(e) => return error_json(e).into_response(),
-    };
-    match core.register_with_policy(payload, policy, None).await {
+    match core.register_heartbeat(payload).await {
         Ok(result) => {
             let resp = PipelineResponse::clean(Response::Registered(result));
             (axum::http::StatusCode::CREATED, Json(resp)).into_response()
@@ -224,6 +246,7 @@ async fn events_handler(
 
     let idle = idle_duration(params.idle_for);
     let handle = Arc::new(handle);
+    let stream_core = Arc::clone(&core);
     let stream = async_stream::stream! {
         loop {
             let next = match idle {
@@ -234,7 +257,7 @@ async fn events_handler(
                 None => handle.recv().await,
             };
             match next {
-                Some(event) => {
+                Ok(event) => {
                     let resp = crate::protocol::subscribe_event_to_pipeline(event);
                     match serde_json::to_string(&resp) {
                         Ok(data) => {
@@ -247,12 +270,26 @@ async fn events_handler(
                         }
                     }
                 }
-                None => break,
+                Err(BrowseRecvError::Lagged { dropped }) => {
+                    tracing::warn!(dropped, "mDNS event SSE lagged; publishing authoritative resync");
+                    let resp = PipelineResponse::clean(Response::Snapshot(
+                        stream_core.discovery_snapshot().as_ref().clone(),
+                    ));
+                    if let Ok(data) = serde_json::to_string(&resp) {
+                        let id = uuid::Uuid::now_v7().to_string();
+                        yield Ok::<_, std::convert::Infallible>(
+                            Event::default().id(id).event("resync").data(data),
+                        );
+                    }
+                }
+                Err(BrowseRecvError::Closed) => break,
             }
         }
     };
 
-    Sse::new(stream).into_response()
+    Sse::new(stream)
+        .keep_alive(sse_keep_alive())
+        .into_response()
 }
 
 #[utoipa::path(put, path = "/heartbeat/{id}", tag = "mdns",
@@ -263,7 +300,7 @@ async fn heartbeat_handler(
     Extension(core): Extension<Arc<MdnsCore>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match core.heartbeat(&id) {
+    match core.heartbeat(&id).await {
         Ok(lease_secs) => {
             let resp = PipelineResponse::clean(Response::Renewed(RenewalResult { id, lease_secs }));
             Json(resp).into_response()
@@ -376,22 +413,10 @@ fn error_event_stream(
     }
 }
 
-/// Determine lease policy from the optional `lease_secs` field in the register payload.
-/// HTTP default: heartbeat with 90s lease, 30s grace.
-fn policy_from_lease_secs(lease_secs: Option<u64>) -> Result<LeasePolicy, MdnsError> {
-    match lease_secs {
-        Some(0) => Err(MdnsError::InvalidPayload(
-            "lease_secs=0 is not allowed via HTTP".into(),
-        )),
-        Some(secs) => Ok(LeasePolicy::Heartbeat {
-            lease: Duration::from_secs(secs),
-            grace: DEFAULT_HEARTBEAT_GRACE,
-        }),
-        None => Ok(LeasePolicy::Heartbeat {
-            lease: DEFAULT_HEARTBEAT_LEASE,
-            grace: DEFAULT_HEARTBEAT_GRACE,
-        }),
-    }
+fn sse_keep_alive() -> KeepAlive {
+    KeepAlive::new()
+        .interval(SSE_KEEPALIVE_INTERVAL)
+        .text("keepalive")
 }
 
 /// OpenAPI documentation for the mDNS domain.
@@ -399,6 +424,7 @@ fn policy_from_lease_secs(lease_secs: Option<u64>) -> Result<LeasePolicy, MdnsEr
 #[openapi(
     paths(
         browse_handler,
+        discovery_snapshot_handler,
         register_handler,
         unregister_handler,
         resolve_handler,
@@ -418,6 +444,8 @@ fn policy_from_lease_secs(lease_secs: Option<u64>) -> Result<LeasePolicy, MdnsEr
         AdminRegistration,
         DaemonStatus,
         RegistrationCounts,
+        koi_common::integration::MdnsDiscoverySnapshot,
+        koi_common::types::ServiceRecord,
         crate::protocol::LeaseMode,
         crate::protocol::LeaseState,
     ))
@@ -427,6 +455,8 @@ pub struct MdnsApiDoc;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::registry::heartbeat_policy;
+    use crate::LeasePolicy;
 
     // ── idle_duration tests ──────────────────────────────────────────
 
@@ -458,7 +488,7 @@ mod tests {
 
     #[test]
     fn policy_from_none_returns_default_heartbeat() {
-        let policy = policy_from_lease_secs(None).unwrap();
+        let policy = heartbeat_policy(None).unwrap();
         assert!(matches!(
             policy,
             LeasePolicy::Heartbeat { lease, grace }
@@ -468,13 +498,16 @@ mod tests {
 
     #[test]
     fn policy_from_zero_returns_error() {
-        let result = policy_from_lease_secs(Some(0));
-        assert!(result.is_err(), "lease_secs=0 should be rejected via HTTP");
+        let result = heartbeat_policy(Some(0));
+        assert!(
+            result.is_err(),
+            "lease_secs=0 should be rejected for every heartbeat adapter"
+        );
     }
 
     #[test]
     fn policy_from_custom_returns_heartbeat_with_custom_lease() {
-        let policy = policy_from_lease_secs(Some(300)).unwrap();
+        let policy = heartbeat_policy(Some(300)).unwrap();
         assert!(matches!(
             policy,
             LeasePolicy::Heartbeat { lease, grace }
@@ -559,25 +592,39 @@ mod tests {
     // ── Constants ───────────────────────────────────────────────────
 
     #[test]
-    fn default_heartbeat_lease_is_90s() {
-        assert_eq!(DEFAULT_HEARTBEAT_LEASE, Duration::from_secs(90));
-    }
-
-    #[test]
-    fn default_heartbeat_grace_is_30s() {
-        assert_eq!(DEFAULT_HEARTBEAT_GRACE, Duration::from_secs(30));
-    }
-
-    #[test]
     fn default_sse_idle_is_5s() {
         assert_eq!(DEFAULT_SSE_IDLE, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn sse_keepalive_is_frequent_enough_for_liveness() {
+        assert_eq!(SSE_KEEPALIVE_INTERVAL, Duration::from_millis(500));
+    }
+
+    #[tokio::test]
+    async fn idle_sse_body_emits_the_liveness_comment() {
+        use tokio_stream::StreamExt;
+
+        let stream =
+            tokio_stream::pending::<std::result::Result<Event, std::convert::Infallible>>();
+        let response = Sse::new(stream)
+            .keep_alive(sse_keep_alive())
+            .into_response();
+        let mut body = response.into_body().into_data_stream();
+        let bytes = tokio::time::timeout(Duration::from_secs(1), body.next())
+            .await
+            .expect("keepalive deadline")
+            .expect("body remains open")
+            .expect("body frame");
+
+        assert_eq!(bytes.as_ref(), b": keepalive\n\n");
     }
 
     // ── policy_from_lease_secs edge cases ───────────────────────────
 
     #[test]
     fn policy_from_one_second_returns_heartbeat() {
-        let policy = policy_from_lease_secs(Some(1)).unwrap();
+        let policy = heartbeat_policy(Some(1)).unwrap();
         assert!(matches!(
             policy,
             LeasePolicy::Heartbeat { lease, .. }
@@ -587,7 +634,7 @@ mod tests {
 
     #[test]
     fn policy_from_u64_max_returns_heartbeat() {
-        let policy = policy_from_lease_secs(Some(u64::MAX)).unwrap();
+        let policy = heartbeat_policy(Some(u64::MAX)).unwrap();
         assert!(matches!(policy, LeasePolicy::Heartbeat { .. }));
     }
 

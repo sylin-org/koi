@@ -24,8 +24,8 @@ pub mod manual;
 pub mod openrc;
 #[cfg(target_os = "linux")]
 pub mod systemd;
-#[cfg(target_os = "linux")]
-mod transaction;
+#[cfg(unix)]
+pub(crate) mod transaction;
 
 // ── Init detection (capability-keyed, root-parameterized for tests) ─
 
@@ -43,20 +43,20 @@ pub enum InitSystem {
 }
 
 #[cfg(target_os = "linux")]
-pub fn detect_in(root: &Path) -> InitSystem {
-    if root.join("run/systemd/system").exists() {
-        return InitSystem::Systemd;
+pub fn detect_in(root: &Path) -> anyhow::Result<InitSystem> {
+    if directory_exists(&root.join("run/systemd/system"))? {
+        return Ok(InitSystem::Systemd);
     }
     for dir in ["sbin", "usr/sbin", "bin", "usr/bin"] {
-        if root.join(dir).join("rc-update").exists() {
-            return InitSystem::Openrc;
+        if file_target_exists(&root.join(dir).join("rc-update"))? {
+            return Ok(InitSystem::Openrc);
         }
     }
-    InitSystem::None
+    Ok(InitSystem::None)
 }
 
 #[cfg(target_os = "linux")]
-pub fn detect() -> InitSystem {
+pub fn detect() -> anyhow::Result<InitSystem> {
     detect_in(Path::new("/"))
 }
 
@@ -67,16 +67,21 @@ pub fn install(user: bool, operator: Option<&str>, data_dir: &Path) -> anyhow::R
     if !user {
         super::check_root("install")?;
     }
+    let _install_lock = if user {
+        super::install_lock::InstallLock::acquire_user()?
+    } else {
+        super::install_lock::InstallLock::acquire_system()?
+    };
 
-    let init = detect();
-    if !user {
-        // System service recipes own durable transactions which must include
-        // operator policy alongside the binary, registration, and config.
-        match init {
-            InitSystem::Systemd => return systemd::install_system(operator, data_dir),
-            InitSystem::Openrc => return openrc::install_system(operator, data_dir),
-            InitSystem::None => {}
-        }
+    let init = detect()?;
+    refuse_parallel_registration(init, user, data_dir)?;
+    // Native service recipes own their complete durable transaction, including
+    // operator policy. The manual fallback retains the smaller local snapshot.
+    match (init, user) {
+        (InitSystem::Systemd, false) => return systemd::install_system(operator, data_dir),
+        (InitSystem::Systemd, true) => return systemd::install_user(operator, data_dir),
+        (InitSystem::Openrc, false) => return openrc::install_system(operator, data_dir),
+        _ => {}
     }
 
     // Other recipes retain the in-process operator rollback introduced by
@@ -84,8 +89,7 @@ pub fn install(user: bool, operator: Option<&str>, data_dir: &Path) -> anyhow::R
     let policy = FileSnapshot::capture(&koi_config::local_access::policy_path(data_dir))?;
     super::record_unix_operator(user, operator, data_dir)?;
     let result = match (init, user) {
-        (InitSystem::Systemd, false) => unreachable!("handled by the durable system transaction"),
-        (InitSystem::Systemd, true) => systemd::install_user(),
+        (InitSystem::Systemd, _) => unreachable!("handled by the durable systemd transaction"),
         (InitSystem::Openrc, false) => {
             unreachable!("handled by the durable OpenRC transaction")
         }
@@ -105,6 +109,60 @@ pub fn install(user: bool, operator: Option<&str>, data_dir: &Path) -> anyhow::R
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+fn refuse_parallel_registration(
+    selected: InitSystem,
+    user: bool,
+    data_dir: &Path,
+) -> anyhow::Result<()> {
+    let systemd_system = regular_file_exists(&systemd::system_unit_path())?;
+    let systemd_user = regular_file_exists(&systemd::user_unit_path()?)?;
+    let openrc = regular_file_exists(&openrc::initd_path())?;
+    let selected_systemd_system = selected == InitSystem::Systemd && !user;
+    let selected_systemd_user = selected == InitSystem::Systemd && user;
+    let selected_openrc = selected == InitSystem::Openrc && !user;
+
+    let conflicts = [
+        (systemd_system && !selected_systemd_system, "systemd system"),
+        (systemd_user && !selected_systemd_user, "systemd user"),
+        (openrc && !selected_openrc, "OpenRC"),
+    ]
+    .into_iter()
+    .filter_map(|(present, name)| present.then_some(name))
+    .collect::<Vec<_>>();
+    if !conflicts.is_empty() {
+        anyhow::bail!(
+            "refusing to create a parallel Koi service while {} registration exists; uninstall it first",
+            conflicts.join(" and ")
+        );
+    }
+
+    let foreign_recovery = [
+        (
+            systemd::transaction_pending(data_dir, false)? && !selected_systemd_system,
+            "systemd system",
+        ),
+        (
+            systemd::transaction_pending(data_dir, true)? && !selected_systemd_user,
+            "systemd user",
+        ),
+        (
+            openrc::transaction_pending(data_dir)? && !selected_openrc,
+            "OpenRC",
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(pending, name)| pending.then_some(name))
+    .collect::<Vec<_>>();
+    if !foreign_recovery.is_empty() {
+        anyhow::bail!(
+            "an unfinished {} service transaction must be recovered with its native manager before installing",
+            foreign_recovery.join(" and ")
+        );
+    }
+    Ok(())
+}
+
 /// Byte-and-mode snapshot for the small set of product-owned files changed by
 /// an installer transaction. An absent file is a state too: rollback removes
 /// a file that the failed attempt introduced.
@@ -113,21 +171,28 @@ pub fn install(user: bool, operator: Option<&str>, data_dir: &Path) -> anyhow::R
 pub(crate) struct FileSnapshot {
     path: PathBuf,
     body: Option<Vec<u8>>,
+    #[cfg(unix)]
     permissions: Option<std::fs::Permissions>,
 }
 
 #[cfg(any(unix, test))]
 impl FileSnapshot {
     pub(crate) fn capture(path: &Path) -> std::io::Result<Self> {
-        match std::fs::read(path) {
-            Ok(body) => Ok(Self {
+        match std::fs::symlink_metadata(path) {
+            Ok(metadata) if !metadata.file_type().is_file() => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("expected a regular file at {}", path.display()),
+            )),
+            Ok(_metadata) => Ok(Self {
                 path: path.to_path_buf(),
-                body: Some(body),
-                permissions: Some(std::fs::metadata(path)?.permissions()),
+                body: Some(std::fs::read(path)?),
+                #[cfg(unix)]
+                permissions: Some(_metadata.permissions()),
             }),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self {
                 path: path.to_path_buf(),
                 body: None,
+                #[cfg(unix)]
                 permissions: None,
             }),
             Err(error) => Err(error),
@@ -137,20 +202,34 @@ impl FileSnapshot {
     pub(crate) fn restore(&self) -> std::io::Result<()> {
         match &self.body {
             Some(body) => {
-                if let Some(parent) = self.path.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                std::fs::write(&self.path, body)?;
-                if let Some(permissions) = &self.permissions {
-                    std::fs::set_permissions(&self.path, permissions.clone())?;
-                }
-                Ok(())
+                #[cfg(unix)]
+                let options = {
+                    use std::os::unix::fs::PermissionsExt;
+                    self.permissions.as_ref().map_or_else(
+                        koi_common::persist::AtomicWriteOptions::new,
+                        |permissions| {
+                            koi_common::persist::AtomicWriteOptions::new()
+                                .with_unix_mode(permissions.mode())
+                        },
+                    )
+                };
+                #[cfg(not(unix))]
+                let options = koi_common::persist::AtomicWriteOptions::new();
+                let outcome = koi_common::persist::write_bytes_atomic_with_options(
+                    &self.path, body, options,
+                )?;
+                koi_common::persist::require_durable(
+                    outcome,
+                    "restoring the install-time operator policy",
+                )
             }
-            None => match std::fs::remove_file(&self.path) {
-                Ok(()) => Ok(()),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(error) => Err(error),
-            },
+            None => {
+                let outcome = koi_common::persist::remove_file_durable(&self.path)?;
+                koi_common::persist::require_durable(
+                    outcome,
+                    "removing an install-time operator policy created by a failed install",
+                )
+            }
         }
     }
 }
@@ -158,24 +237,77 @@ impl FileSnapshot {
 /// Uninstall every koi service shape found on this machine (system unit,
 /// user unit, OpenRC init script). Binary and operator config are preserved.
 #[cfg(target_os = "linux")]
-pub fn uninstall() -> anyhow::Result<()> {
+pub fn uninstall(data_dir: &Path) -> anyhow::Result<()> {
+    let system_unit = regular_file_exists(&systemd::system_unit_path())?
+        || systemd::transaction_pending(data_dir, false)?;
+    let user_unit = regular_file_exists(&systemd::user_unit_path()?)?
+        || systemd::transaction_pending(data_dir, true)?;
+    let openrc_unit =
+        regular_file_exists(&openrc::initd_path())? || openrc::transaction_pending(data_dir)?;
+    let _system_lock = if system_unit || openrc_unit {
+        super::check_root("uninstall")?;
+        Some(super::install_lock::InstallLock::acquire_system()?)
+    } else {
+        None
+    };
+    let _user_lock = if user_unit {
+        Some(super::install_lock::InstallLock::acquire_user()?)
+    } else {
+        None
+    };
     let mut any = false;
-    if systemd::system_unit_path().exists() {
-        systemd::uninstall_system()?;
+    if system_unit {
+        systemd::uninstall_system(data_dir)?;
         any = true;
     }
-    if systemd::user_unit_path().exists() {
-        systemd::uninstall_user()?;
+    if user_unit {
+        systemd::uninstall_user(data_dir)?;
         any = true;
     }
-    if openrc::initd_path().exists() {
-        openrc::uninstall_system()?;
+    if openrc_unit {
+        openrc::uninstall_system(data_dir)?;
         any = true;
     }
     if !any {
         println!("Koi is not installed as a service. Nothing to uninstall.");
     }
     Ok(())
+}
+
+/// Observe a product-owned regular-file target without confusing an I/O
+/// failure, directory, or special file with absence.
+pub(crate) fn regular_file_exists(path: &Path) -> anyhow::Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() => Ok(true),
+        Ok(_) => anyhow::bail!("expected a regular file at {}", path.display()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Observe an executable/tool path while allowing the platform's ordinary
+/// symlink layout. A dangling or unreadable symlink remains uncertainty.
+#[cfg(target_os = "linux")]
+pub(crate) fn file_target_exists(path: &Path) -> anyhow::Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => match std::fs::metadata(path) {
+            Ok(metadata) if metadata.is_file() => Ok(true),
+            Ok(_) => anyhow::bail!("expected a file target at {}", path.display()),
+            Err(error) => Err(error.into()),
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn directory_exists(path: &Path) -> anyhow::Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_dir() => Ok(true),
+        Ok(_) => anyhow::bail!("expected a directory at {}", path.display()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
 }
 
 // ── Port planning ───────────────────────────────────────────────────
@@ -314,15 +446,23 @@ pub enum Existing {
 
 /// Parse `Environment=KOI_PORT=…` lines from a systemd drop-in directory.
 #[cfg(target_os = "linux")]
-fn ports_from_dropin_dir(dir: &Path) -> Option<(u16, u16, u16, String)> {
-    let entries = std::fs::read_dir(dir).ok()?;
+fn ports_from_dropin_dir(dir: &Path) -> anyhow::Result<Option<(u16, u16, u16, String)>> {
+    let mut paths = std::fs::read_dir(dir)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    paths.sort();
     let mut http = None;
     let mut mtls = None;
     let mut acme = None;
-    let mut source = None;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let body = std::fs::read_to_string(&path).ok()?;
+    let mut sources = Vec::new();
+    for path in paths {
+        if path.extension().and_then(|value| value.to_str()) != Some("conf") {
+            continue;
+        }
+        if !regular_file_exists(&path)? {
+            continue;
+        }
+        let body = std::fs::read_to_string(&path)?;
         for line in body.lines() {
             let Some(rest) = line.trim().strip_prefix("Environment=") else {
                 continue;
@@ -331,34 +471,57 @@ fn ports_from_dropin_dir(dir: &Path) -> Option<(u16, u16, u16, String)> {
             let Some((key, value)) = rest.split_once('=') else {
                 continue;
             };
+            let parsed = || {
+                value.trim().parse::<u16>().map_err(|error| {
+                    anyhow::anyhow!("invalid {key} port in {}: {error}", path.display())
+                })
+            };
             match key.trim() {
-                "KOI_PORT" => http = value.trim().parse().ok(),
-                "KOI_MTLS_PORT" => mtls = value.trim().parse().ok(),
-                "KOI_ACME_PORT" => acme = value.trim().parse().ok(),
+                "KOI_PORT" => http = Some(parsed()?),
+                "KOI_MTLS_PORT" => mtls = Some(parsed()?),
+                "KOI_ACME_PORT" => acme = Some(parsed()?),
                 _ => {}
             }
         }
-        if source.is_none() {
-            source = Some(path.display().to_string());
+        if http.is_some() || mtls.is_some() || acme.is_some() {
+            sources.push(path.display().to_string());
         }
     }
-    Some((http?, mtls?, acme?, source?))
+    match (http, mtls, acme) {
+        (None, None, None) => Ok(None),
+        (Some(http), Some(mtls), Some(acme)) => Ok(Some((http, mtls, acme, sources.join(", ")))),
+        _ => anyhow::bail!(
+            "incomplete Koi port declaration in systemd drop-ins at {}",
+            dir.display()
+        ),
+    }
 }
 
 /// Ports declared in a config file body, parsed by the substrate itself.
-pub fn ports_from_config_body(path: &Path) -> Option<(u16, u16, u16)> {
-    let body = std::fs::read_to_string(path).ok()?;
-    let cfg = crate::config_file::parse(&body).ok()?;
-    Some((cfg.port?, cfg.mtls_port?, cfg.acme_port?))
+pub fn ports_from_config_body(path: &Path) -> anyhow::Result<Option<(u16, u16, u16)>> {
+    let body = std::fs::read_to_string(path)?;
+    ports_from_config_text(path, &body)
+}
+
+fn ports_from_config_text(path: &Path, body: &str) -> anyhow::Result<Option<(u16, u16, u16)>> {
+    let cfg = crate::config_file::parse(body).map_err(anyhow::Error::msg)?;
+    match (cfg.port, cfg.mtls_port, cfg.acme_port) {
+        (None, None, None) => Ok(None),
+        (Some(http), Some(mtls), Some(acme)) => Ok(Some((http, mtls, acme))),
+        _ => anyhow::bail!(
+            "{} must declare port, mtls_port, and acme_port together",
+            path.display()
+        ),
+    }
 }
 
 /// Detect existing port decisions for a Linux system install.
 #[cfg(target_os = "linux")]
-pub fn honor_existing_linux() -> Existing {
+pub fn honor_existing_linux() -> anyhow::Result<Existing> {
     let dropin = Path::new("/etc/systemd/system/koi.service.d");
-    if dropin.exists() {
-        if let Some((http, mtls, acme, source)) = ports_from_dropin_dir(dropin) {
-            return Existing::Declared(
+    if directory_exists(dropin)? {
+        if let Some((http, mtls, acme, source)) = ports_from_dropin_dir(dropin)? {
+            return Ok(Existing::Declared(
                 PortPlan {
                     http,
                     mtls,
@@ -366,13 +529,13 @@ pub fn honor_existing_linux() -> Existing {
                     shifted: http != STD_HTTP,
                 },
                 format!("systemd drop-in {source}"),
-            );
+            ));
         }
     }
     let cfg = Path::new("/etc/koi/config.toml");
-    if cfg.exists() {
-        if let Some((http, mtls, acme)) = ports_from_config_body(cfg) {
-            return Existing::Declared(
+    if regular_file_exists(cfg)? {
+        if let Some((http, mtls, acme)) = ports_from_config_body(cfg)? {
+            return Ok(Existing::Declared(
                 PortPlan {
                     http,
                     mtls,
@@ -380,18 +543,18 @@ pub fn honor_existing_linux() -> Existing {
                     shifted: http != STD_HTTP,
                 },
                 format!("config {}", cfg.display()),
-            );
+            ));
         }
-        return Existing::ConfigWithoutPorts(cfg.to_path_buf());
+        return Ok(Existing::ConfigWithoutPorts(cfg.to_path_buf()));
     }
-    Existing::Nothing
+    Ok(Existing::Nothing)
 }
 
 /// Existing decisions for a user install: only the user's own config file.
-pub fn honor_existing_config(config_path: &Path) -> Existing {
-    if config_path.exists() {
-        if let Some((http, mtls, acme)) = ports_from_config_body(config_path) {
-            return Existing::Declared(
+pub fn honor_existing_config(config_path: &Path) -> anyhow::Result<Existing> {
+    if regular_file_exists(config_path)? {
+        if let Some((http, mtls, acme)) = ports_from_config_body(config_path)? {
+            return Ok(Existing::Declared(
                 PortPlan {
                     http,
                     mtls,
@@ -399,11 +562,11 @@ pub fn honor_existing_config(config_path: &Path) -> Existing {
                     shifted: http != STD_HTTP,
                 },
                 format!("config {}", config_path.display()),
-            );
+            ));
         }
-        return Existing::ConfigWithoutPorts(config_path.to_path_buf());
+        return Ok(Existing::ConfigWithoutPorts(config_path.to_path_buf()));
     }
-    Existing::Nothing
+    Ok(Existing::Nothing)
 }
 
 // ── Persisting a shifted plan in the config substrate ───────────────
@@ -421,12 +584,6 @@ fn port_lines(plan: &PortPlan) -> String {
 /// Create a fresh config carrying a shifted plan. Refuses to clobber an
 /// existing file (the operator's config is never destroyed).
 pub fn write_config_new(path: &Path, plan: &PortPlan) -> anyhow::Result<()> {
-    if path.exists() {
-        anyhow::bail!("{} already exists; not touching it", path.display());
-    }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
     let body = format!(
         "{}{}\n{}\n",
         crate::config_file::TEMPLATE,
@@ -440,14 +597,47 @@ pub fn write_config_new(path: &Path, plan: &PortPlan) -> anyhow::Result<()> {
             lines
         }
     );
-    std::fs::write(path, body)?;
+    let outcome = koi_common::persist::write_bytes_atomic_new_with_options(
+        path,
+        body.as_bytes(),
+        koi_common::persist::AtomicWriteOptions::new().with_unix_mode(0o644),
+    )
+    .map_err(|error| {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            anyhow::anyhow!("{} already exists; not touching it", path.display())
+        } else {
+            anyhow::Error::from(error)
+        }
+    })?;
+    koi_common::persist::require_durable(outcome, "creating the installer config")?;
     Ok(())
 }
 
 /// Append the configured ports under the installer marker. Existing keys are never
 /// modified; the caller has already verified none are declared.
 pub fn append_config_ports(path: &Path, plan: &PortPlan) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    let (options, owner) = {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let metadata = std::fs::symlink_metadata(path)?;
+        if !metadata.file_type().is_file() {
+            anyhow::bail!("expected a regular config file at {}", path.display());
+        }
+        (
+            koi_common::persist::AtomicWriteOptions::new()
+                .with_unix_mode(metadata.permissions().mode()),
+            (metadata.uid(), metadata.gid()),
+        )
+    };
+    #[cfg(not(unix))]
+    let options = koi_common::persist::AtomicWriteOptions::new();
     let mut body = std::fs::read_to_string(path)?;
+    if ports_from_config_text(path, &body)?.is_some() {
+        anyhow::bail!(
+            "{} changed after install planning and now declares ports; retry so that decision is honored",
+            path.display()
+        );
+    }
     if !body.ends_with('\n') {
         body.push('\n');
     }
@@ -455,31 +645,34 @@ pub fn append_config_ports(path: &Path, plan: &PortPlan) -> anyhow::Result<()> {
     body.push_str(INSTALLER_MARKER);
     body.push('\n');
     body.push_str(&port_lines(plan));
-    std::fs::write(path, body)?;
+    #[cfg(unix)]
+    let outcome = koi_common::persist::write_bytes_atomic_with_options_and_prepare_stage(
+        path,
+        body.as_bytes(),
+        options,
+        |stage| chown_unix(stage, owner.0, owner.1),
+    )?;
+    #[cfg(not(unix))]
+    let outcome =
+        koi_common::persist::write_bytes_atomic_with_options(path, body.as_bytes(), options)?;
+    koi_common::persist::require_durable(outcome, "updating the installer config")?;
     Ok(())
 }
 
-/// Persist a shifted plan per ADR-036: honor what exists, write only when
-/// shifted. Returns a human line for the summary (empty when nothing needed).
-#[cfg_attr(windows, allow(dead_code))] // only the non-transactional recipes use it
-pub fn persist_plan(existing: &Existing, planned: &PortPlan, fresh_path: &Path) -> String {
-    persist_plan_checked(existing, planned, fresh_path).unwrap_or_else(|error| match existing {
-        Existing::ConfigWithoutPorts(path) => {
-            format!(
-                "warning: could not record ports in {}: {error}",
-                path.display()
-            )
-        }
-        Existing::Nothing => format!("warning: could not write {}: {error}", fresh_path.display()),
-        Existing::Declared(_, _) => {
-            format!("warning: could not preserve declared ports: {error}")
-        }
-    })
+#[cfg(unix)]
+fn chown_unix(path: &Path, uid: u32, gid: u32) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+    if unsafe { libc::chown(path.as_ptr(), uid, gid) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
 }
 
-/// Persist a shifted plan and surface any write failure to transactional
-/// installers. Older platform recipes retain [`persist_plan`]'s diagnostic
-/// string until their own rollback boundaries are implemented.
+/// Persist a shifted plan and surface every write failure to the owning
+/// service-manager transaction.
 pub fn persist_plan_checked(
     existing: &Existing,
     planned: &PortPlan,
@@ -517,32 +710,30 @@ pub fn stage_binary(src: &Path, dst: &Path) -> anyhow::Result<bool> {
         .zip(dst.canonicalize().ok())
         .is_some_and(|(s, d)| s == d);
     if same {
-        set_executable(dst);
+        set_executable(dst)?;
         return Ok(false);
     }
-    let tmp = PathBuf::from(format!("{}.new", dst.display()));
-    std::fs::copy(src, &tmp)?;
-    set_executable(&tmp);
-    if let Err(e) = std::fs::rename(&tmp, dst) {
-        let _ = std::fs::remove_file(&tmp);
-        // Windows: the running service holds the destination.
-        anyhow::bail!(
-            "could not replace {} ({e}); if the koi service is running from it, \
-             stop it first and re-run",
-            dst.display()
-        );
-    }
+    let (outcome, _) = koi_common::persist::copy_file_atomic_with_options(
+        src,
+        dst,
+        koi_common::persist::AtomicWriteOptions::new().with_unix_mode(0o755),
+    )?;
+    koi_common::persist::require_durable(outcome, "installing the Koi executable")?;
     Ok(true)
 }
 
 #[cfg(unix)]
-fn set_executable(path: &Path) {
+fn set_executable(path: &Path) -> anyhow::Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755));
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))?;
+    std::fs::File::open(path)?.sync_all()?;
+    Ok(())
 }
 
 #[cfg(all(not(unix), test))]
-fn set_executable(_path: &Path) {}
+fn set_executable(_path: &Path) -> anyhow::Result<()> {
+    Ok(())
+}
 
 // ── Verification with koi's own client (no curl anywhere) ───────────
 
@@ -571,7 +762,12 @@ fn healthz_once(port: u16) -> bool {
     let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else {
         return false;
     };
-    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+    if stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+        .is_err()
+    {
+        return false;
+    }
     const REQUEST: &str = "GET /healthz HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n";
     if stream.write_all(REQUEST.as_bytes()).is_err() {
         return false;
@@ -724,8 +920,9 @@ mod tests {
             "[Service]\nEnvironment=KOI_PORT=21441\nEnvironment=\"KOI_MTLS_PORT=21442\"\nEnvironment=KOI_ACME_PORT=21443\n",
         )
         .unwrap();
-        let (http, mtls, acme, source) =
-            ports_from_dropin_dir(&dropin).expect("drop-in ports parse");
+        let (http, mtls, acme, source) = ports_from_dropin_dir(&dropin)
+            .expect("drop-in inspection")
+            .expect("drop-in ports parse");
         assert_eq!((http, mtls, acme), (21441, 21442, 21443));
         assert!(source.ends_with("ports.conf"));
         let _ = std::fs::remove_dir_all(&dropin);
@@ -748,6 +945,65 @@ mod tests {
     }
 
     #[test]
+    fn malformed_or_partial_config_is_not_treated_as_no_decision() {
+        let dir = koi_common::test::ensure_data_dir("recipes-tests");
+        let malformed = dir.join("malformed-installer-config.toml");
+        let partial = dir.join("partial-installer-config.toml");
+        std::fs::write(&malformed, "not = [valid").unwrap();
+        std::fs::write(&partial, "version = 1\nport = 5641\n").unwrap();
+        assert!(honor_existing_config(&malformed).is_err());
+        assert!(honor_existing_config(&partial).is_err());
+        let _ = std::fs::remove_file(malformed);
+        let _ = std::fs::remove_file(partial);
+    }
+
+    #[test]
+    fn non_file_config_target_is_not_absence() {
+        let dir =
+            koi_common::test::ensure_data_dir("recipes-tests").join("installer-config-directory");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(honor_existing_config(&dir).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn racing_fresh_config_creators_never_clobber() {
+        let dir = std::env::temp_dir().join(format!(
+            "koi-config-create-race-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = std::sync::Arc::new(dir.join("config.toml"));
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let workers = (1..=8)
+            .map(|shift| {
+                let path = std::sync::Arc::clone(&path);
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    write_config_new(&path, &PortPlan::shift(shift).unwrap())
+                })
+            })
+            .collect::<Vec<_>>();
+        let successes = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .filter(Result::is_ok)
+            .count();
+        assert_eq!(successes, 1);
+        crate::config_file::load(&path)
+            .unwrap()
+            .expect("one complete config is visible");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn append_only_adds_keys_it_does_not_own() {
         let dir = koi_common::test::ensure_data_dir("recipes-tests");
         let path = dir.join("append-config.toml");
@@ -763,6 +1019,11 @@ mod tests {
             body.contains("http_bind = \"loopback\""),
             "operator keys untouched"
         );
+        let error = append_config_ports(&path, &PortPlan::shift(2).unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("changed after install planning"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), body);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -771,7 +1032,7 @@ mod tests {
         let dir = koi_common::test::ensure_data_dir("recipes-tests");
         let bin = dir.join("staged-koi");
         std::fs::write(&bin, b"#!/bin/sh\ntrue\n").unwrap();
-        set_executable(&bin);
+        set_executable(&bin).unwrap();
         // Source == destination: no copy, no error, no .new litter.
         assert!(!stage_binary(&bin, &bin).unwrap());
         assert!(!dir.join(format!("{}.new", bin.display())).exists());
@@ -801,19 +1062,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         // Nothing → manual.
-        assert_eq!(detect_in(&dir), InitSystem::None);
+        assert_eq!(detect_in(&dir).unwrap(), InitSystem::None);
         // The canonical systemd marker wins over everything.
         std::fs::create_dir_all(dir.join("run/systemd/system")).unwrap();
         std::fs::create_dir_all(dir.join("sbin")).unwrap();
         std::fs::write(dir.join("sbin/rc-update"), b"#!/bin/sh\n").unwrap();
-        assert_eq!(detect_in(&dir), InitSystem::Systemd);
+        assert_eq!(detect_in(&dir).unwrap(), InitSystem::Systemd);
         std::fs::remove_dir_all(dir.join("run/systemd")).unwrap();
         // rc-update alone → OpenRC, in any of the usual homes.
-        assert_eq!(detect_in(&dir), InitSystem::Openrc);
+        assert_eq!(detect_in(&dir).unwrap(), InitSystem::Openrc);
         std::fs::remove_file(dir.join("sbin/rc-update")).unwrap();
         std::fs::create_dir_all(dir.join("usr/sbin")).unwrap();
         std::fs::write(dir.join("usr/sbin/rc-update"), b"#!/bin/sh\n").unwrap();
-        assert_eq!(detect_in(&dir), InitSystem::Openrc);
+        assert_eq!(detect_in(&dir).unwrap(), InitSystem::Openrc);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

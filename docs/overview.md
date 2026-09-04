@@ -98,18 +98,18 @@ existing stack. Every capability can be disabled independently.
 
 ## Ways to use it
 
-The same binary supports four access modes:
+The same binary supports four explicit access shapes:
 
 - **Daemon** — `koi --daemon` (or installed as a service). The composed capabilities,
   HTTP API on `127.0.0.1:5641`, dashboard, and trust plane.
-- **Standalone** — `koi mdns discover` with no daemon running does the work directly and
-  exits. Instant, zero config.
-- **Client** — the same command *with* a daemon running talks to it over HTTP instead.
+- **Standalone** — `koi --standalone mdns discover` deliberately owns a one-shot local
+  composition and exits; it is refused beside a live local service.
+- **Client** — capability commands use the healthy local service or an explicit endpoint.
 - **Embedded** — `koi-embedded` is a Rust library that puts the same cores inside your own
   application, no separate process.
 
-You don't pick a mode; Koi detects it. Bare `koi` shows live status and the command
-catalog.
+Koi discovers the authoritative local service, but never infers permission to create
+one. Bare `koi` shows live status and the command catalog.
 
 ## The trust boundary
 

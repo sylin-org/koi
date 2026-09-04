@@ -1,6 +1,8 @@
 #[cfg(windows)]
 pub mod windows;
 
+mod install_lock;
+
 #[cfg(unix)]
 pub mod unix;
 
@@ -8,7 +10,8 @@ pub mod unix;
 // Linux-gated, the shared pieces serve every platform.
 pub mod recipes;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", all(test, unix)))]
+#[cfg_attr(all(test, not(target_os = "macos")), allow(dead_code))]
 pub mod macos;
 
 /// Load the install-time local operator policy, safely falling back to the
@@ -50,9 +53,7 @@ pub fn record_unix_operator(
         // SAFETY: getuid has no preconditions.
         unsafe { libc::getuid() }
     } else {
-        ["SUDO_UID", "PKEXEC_UID"]
-            .into_iter()
-            .find_map(|name| std::env::var(name).ok()?.parse::<u32>().ok())
+        elevated_operator_uid()?
             // Direct root/package installs have no operator provenance; root is
             // safe and `--operator` makes the desired desktop principal explicit.
             .unwrap_or_else(|| unsafe { libc::getuid() })
@@ -60,9 +61,27 @@ pub fn record_unix_operator(
     let policy = koi_config::local_access::LocalAccessPolicy::new(
         koi_config::local_access::LocalOperator::UnixUid { uid },
     );
-    koi_config::local_access::save(data_dir, &policy)?;
+    let outcome = koi_config::local_access::save_commit(data_dir, &policy)?;
+    koi_common::persist::require_durable(outcome, "persisting the local operator policy")?;
     println!("  Local operator UID: {uid}");
     Ok(())
+}
+
+#[cfg(unix)]
+fn elevated_operator_uid() -> anyhow::Result<Option<u32>> {
+    for name in ["SUDO_UID", "PKEXEC_UID"] {
+        let Some(value) = std::env::var_os(name) else {
+            continue;
+        };
+        let value = value
+            .into_string()
+            .map_err(|_| anyhow::anyhow!("{name} is not valid UTF-8"))?;
+        let uid = value
+            .parse::<u32>()
+            .map_err(|error| anyhow::anyhow!("{name} is not a valid UID: {error}"))?;
+        return Ok(Some(uid));
+    }
+    Ok(None)
 }
 
 #[cfg(unix)]

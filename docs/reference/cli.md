@@ -112,6 +112,12 @@ koi dns list                                      # list all resolvable names
 
 ## Health
 
+Health commands target the installed local service by default or the daemon named by
+`--endpoint`. Direct local composition is opt-in with `koi --standalone health …` and is
+refused while Koi cannot prove that another local service is absent. The transition-log
+command reads through the same Health domain boundary as `GET /v1/health/log`; it never
+opens the daemon's persistence directly.
+
 ```
 koi health status                                 # current state of all checks
 koi health watch [--interval SECS]                # live dashboard
@@ -256,22 +262,15 @@ install scripts (`install.sh` / `install.ps1`), not by the `koi` binary itself.
 
 ---
 
-## Piped JSON mode
-
-When stdin is a pipe, Koi reads NDJSON commands and writes NDJSON responses:
-
-```bash
-echo '{"browse":"_http._tcp"}' | koi
-echo '{"register":{"name":"test","type":"_http._tcp","port":8080}}' | koi | jq '.registered.id'
-```
-
----
-
 ## Mode detection
 
-1. **Subcommand present** → CLI mode (client if daemon running, standalone if not)
-2. **`--standalone`** → forced standalone mode
-3. **`--endpoint URL`** → forced client mode
-4. **Stdin is a pipe** → NDJSON piped mode
-5. **No subcommand** → daemon mode (HTTP + IPC)
-6. **Windows, no args, launched by SCM** → Windows Service mode
+1. **Installed service or `--daemon`** → one long-lived composition owns the machine resources.
+2. **Capability subcommand + `--endpoint URL`** → client of that explicit service.
+3. **Capability subcommand, no endpoint** → client of the healthy authenticated local service.
+4. **Capability subcommand + `--standalone`** → intentional in-process composition, refused while the local service is alive.
+5. **No subcommand** → status and command catalog; never an implicit daemon or mDNS responder.
+6. **Windows SCM launch** → Windows Service mode with the same daemon composition.
+
+Redirected stdin does not select an execution mode. Machine-readable command
+output is requested with `--json`; `koi mcp serve` is the separate, explicit MCP
+stdio client surface.

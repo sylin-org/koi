@@ -1,14 +1,15 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 
-use koi_common::integration::{CertmeshSnapshot, MdnsSnapshot};
-use koi_config::state::DnsState;
+use crate::state::DnsState;
+use koi_common::integration::{CertmeshRosterSnapshot, MdnsDiscoverySnapshot};
 
 use crate::aliases::{build_aliases, AliasFeedback};
 use crate::safety::is_private_ip;
 use crate::zone::DnsZone;
 
 /// Aggregated local record sources used by the resolver.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordsSnapshot {
     pub static_entries: HashMap<String, Vec<IpAddr>>,
     pub certmesh_entries: HashMap<String, Vec<IpAddr>>,
@@ -19,14 +20,16 @@ pub struct RecordsSnapshot {
 pub fn build_snapshot(
     zone: &DnsZone,
     state: &DnsState,
-    certmesh: Option<&dyn CertmeshSnapshot>,
-    mdns: Option<&dyn MdnsSnapshot>,
+    certmesh: Option<&CertmeshRosterSnapshot>,
+    mdns: Option<&MdnsDiscoverySnapshot>,
 ) -> RecordsSnapshot {
     let static_entries = static_entries(zone, state);
-    let mdns_records = mdns.map(|m| m.cached_records()).unwrap_or_default();
-    let host_ips = mdns.map(|m| m.host_ips()).unwrap_or_default();
+    let mdns_records = mdns
+        .map(|snapshot| snapshot.records.clone())
+        .unwrap_or_default();
+    let host_ips = mdns.map(|snapshot| snapshot.host_ips()).unwrap_or_default();
     let certmesh_entries = certmesh
-        .map(|cm| certmesh_entries(zone, &cm.active_members(), &host_ips))
+        .map(|snapshot| certmesh_entries(zone, &snapshot.active_members, &host_ips))
         .unwrap_or_default();
     let aliases = build_aliases(zone, &mdns_records);
 
@@ -91,7 +94,7 @@ mod tests {
     fn static_entries_ignore_outside_zone() {
         let zone = DnsZone::new("lan").unwrap();
         let state = DnsState {
-            entries: vec![koi_config::state::DnsEntry {
+            entries: vec![crate::DnsEntry {
                 name: "example.com".to_string(),
                 ip: "10.0.0.1".to_string(),
                 ttl: None,

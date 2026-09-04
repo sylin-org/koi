@@ -430,18 +430,21 @@ body::before {
   const HTTP_PORTS = new Set([80, 8080, 8000, 8888, 3000, 3001, 5000, 5001, 9090]);
 
   function normalizeType(t) {
-    return t.replace(/\.local\.?$/, '');
+    return String(t || '').replace(/\.local\.?$/, '');
   }
 
   function inferEndpoint(svc) {
-    if (!svc.ip && !svc.host) return null;
-    if (!svc.port) return null;
+    if (!svc.resolved) return null;
+    const ip = typeof svc.ip === 'string' ? svc.ip : '';
+    const hostname = typeof svc.host === 'string' ? svc.host : '';
+    const port = Number.isInteger(svc.port) ? svc.port : 0;
+    if ((!ip && !hostname) || port <= 0) return null;
 
     const normType = normalizeType(svc.service_type);
     const isExplicitHttp = HTTP_TYPES.has(normType) || HTTP_TYPES.has(svc.service_type);
     const isExplicitHttps = HTTPS_TYPES.has(normType) || HTTPS_TYPES.has(svc.service_type);
-    const isHttpPort = HTTP_PORTS.has(svc.port);
-    const isHttpsPort = HTTPS_PORTS.has(svc.port);
+    const isHttpPort = HTTP_PORTS.has(port);
+    const isHttpsPort = HTTPS_PORTS.has(port);
 
     // Check TXT records for explicit URL — only honour http/https.
     const txt = svc.txt || {};
@@ -457,7 +460,7 @@ body::before {
     // Must be an HTTP-like type or HTTP-ish port
     if (!isExplicitHttp && !isExplicitHttps && !isHttpPort && !isHttpsPort) return null;
 
-    const host = svc.ip || svc.host.replace(/\.$/, '');
+    const host = ip || hostname.replace(/\.$/, '');
     const useHttps = isExplicitHttps || isHttpsPort;
     const scheme = useHttps ? 'https' : 'http';
 
@@ -467,7 +470,7 @@ body::before {
 
     // Omit default port in label
     const defaultPort = useHttps ? 443 : 80;
-    const portStr = (svc.port === defaultPort) ? '' : ':' + svc.port;
+    const portStr = (port === defaultPort) ? '' : ':' + port;
     const url = scheme + '://' + host + portStr + path;
     const label = host + portStr + path;
 
@@ -572,7 +575,10 @@ body::before {
       if (svc.removed_at) return false; // hide purged
       if (filterText) {
         const q = filterText.toLowerCase();
-        const haystack = (svc.name + ' ' + svc.instance_name + ' ' + svc.service_type + ' ' + svc.host + ' ' + svc.ip).toLowerCase();
+        const haystack = [svc.name, svc.instance_name, svc.service_type, svc.host, svc.ip]
+          .map(function(value) { return value == null ? '' : String(value); })
+          .join(' ')
+          .toLowerCase();
         if (haystack.indexOf(q) === -1) return false;
       }
       if (activeTypes.size > 0) {

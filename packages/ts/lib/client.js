@@ -1,10 +1,10 @@
-// Koi HTTP client (beta) — read-side surfaces over the frozen HTTP API.
+// Koi HTTP client (beta) — read-side surfaces over the versioned HTTP API.
 //
 // Zero runtime dependencies: Node 18+ built-ins only. Shapes are pinned by the
 // repository's conformance vectors (docs/reference/vectors/) and the language-
 // neutral wire contract (docs/reference/trust-protocol.md).
 //
-// Beta scope: status, health, certmesh status/posture, Agent-Door discovery,
+// Beta scope: status, health, certmesh status/bootstrap/posture, Agent-Door discovery,
 // and the /v1/events SSE stream. Enrollment (raw-CSR custody) is not yet in
 // the beta surface; it is documented in trust-protocol.md §4/§8 and will land
 // as a 0.x addition without breaking these shapes.
@@ -175,9 +175,22 @@ export class KoiClient {
     return res.statusCode >= 200 && res.statusCode < 300;
   }
 
-  /** `/v1/certmesh/status` — roster summary + CA posture booleans. */
+  /**
+   * The authoritative Certmesh status for operator tooling. Authority-only
+   * enrollment and roster state lives under the optional `authority` member.
+   * Remote calls require a Daemon Access Token.
+   */
   async certmeshStatus() {
     return this.#json("GET", "/v1/certmesh/status");
+  }
+
+  /**
+   * Minimal public authority preflight for discovery and enrollment. The
+   * client's token is deliberately omitted so a local DAT cannot leak to a
+   * remote authority.
+   */
+  async certmeshBootstrap() {
+    return this.#json("GET", "/v1/certmesh/bootstrap", undefined, { noAuth: true });
   }
 
   /** `/v1/certmesh/posture` — `{signed, encrypted, level}`. */

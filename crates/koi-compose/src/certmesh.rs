@@ -19,6 +19,8 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use crate::cores::RunningCores;
+
 /// Decides one enrollment-approval request.
 ///
 /// The `bool` is the mesh's `requires_approval` flag (whether an operator name must
@@ -28,7 +30,9 @@ use tokio_util::sync::CancellationToken;
 /// interactive stdin prompt; the Windows service and embedded daemons (no console) supply
 /// [`deny_and_log_decider`], which never blocks and never silently approves.
 ///
-/// Called inside `spawn_blocking`, so a blocking implementation (stdin) is fine.
+/// Called inside the owned approval task's non-cancellable blocking section, so
+/// a blocking implementation (stdin) is fine. Once admitted, shutdown retains
+/// that task and truthfully waits for the decision rather than detaching it.
 pub type ApprovalDecider = Arc<dyn Fn(&str, bool) -> ApprovalDecision + Send + Sync>;
 
 /// An [`ApprovalDecider`] that denies every request and logs it.
@@ -47,19 +51,19 @@ pub fn deny_and_log_decider() -> ApprovalDecider {
 
 /// Wire the certmesh approval channel to `decider` and pump requests until cancellation.
 ///
-/// Each request is resolved on a blocking task (so a stdin decider is safe) and the
-/// decision is sent back over the request's one-shot reply channel.
+/// Each request is resolved inside the pump's owned task (so a stdin decider is
+/// safe) and the decision is sent back over the request's one-shot reply channel.
 pub async fn spawn_enrollment_approval(
     certmesh: &Arc<CertmeshCore>,
     decider: ApprovalDecider,
     cancel: &CancellationToken,
-    tasks: &mut Vec<JoinHandle<()>>,
+    owner: &RunningCores,
 ) {
     let (tx, mut rx) = mpsc::channel(8);
     certmesh.set_approval_channel(tx).await;
 
     let token = cancel.clone();
-    tasks.push(tokio::spawn(async move {
+    owner.own_task(tokio::spawn(async move {
         loop {
             tokio::select! {
                 _ = token.cancelled() => break,
@@ -84,15 +88,21 @@ async fn dispatch_approval(request: ApprovalRequest, decider: ApprovalDecider) {
         requires_approval,
         respond_to,
     } = request;
-    let decision = tokio::task::spawn_blocking(move || decider(&hostname, requires_approval))
-        .await
-        .unwrap_or(ApprovalDecision::Denied);
+    // `spawn_blocking` would detach this decision if the pump were cancelled
+    // while awaiting its JoinHandle. Keep the complete admitted decision in the
+    // pump's current poll; Tokio compensates with `block_in_place` on the daemon's
+    // multithread runtime, and ordered shutdown retains this pump to completion.
+    let decision =
+        koi_common::blocking::run_to_completion(move || decider(&hostname, requires_approval));
     let _ = respond_to.send(decision);
 }
 
-/// Spawn certmesh background tasks based on the node's role.
+/// Spawn the Certmesh-owned background tasks.
 ///
-/// Spawns one loop: the **member-pull renewal** check (ADR-017 F6). On a node that
+/// The deadline-aware status clock required by ADR-043 is unconditional: opting
+/// out of automatic renewal must not make the authoritative status stale when a
+/// certificate crosses a renewal or expiry boundary. When `manage_membership` is
+/// true, this also spawns the **member-pull renewal** check (ADR-017 F6). On a node that
 /// joined a mesh it periodically asks the certmesh core whether the local leaf is
 /// within the CA policy's renewal threshold and, if so, performs a rotate-key pull
 /// renewal over mTLS. On the **CA** (cornerstone) the member-pull check is a no-op,
@@ -107,6 +117,7 @@ pub fn spawn_certmesh_background_tasks(
     certmesh: &Arc<CertmeshCore>,
     cancel: &CancellationToken,
     tasks: &mut Vec<JoinHandle<()>>,
+    manage_membership: bool,
 ) {
     // ── Member trust-bundle + renewal loop ──────────────────────────
     // A joined member (a) pulls the CA's signed trust bundle to refresh its policy and
@@ -117,25 +128,35 @@ pub fn spawn_certmesh_background_tasks(
     // (a)+(b) are no-ops on the CA / unconfigured nodes; (c) re-issues the CA's own self
     // leaf when due (a no-op unless this node is the CA). The whole loop is a no-op until
     // the node is a member — self-management is intrinsic to membership.
+    if manage_membership {
+        let cm = Arc::clone(certmesh);
+        let token = cancel.clone();
+        tasks.push(tokio::spawn(async move {
+            let interval =
+                Duration::from_secs(koi_certmesh::lifecycle::RENEWAL_CHECK_INTERVAL_SECS);
+            loop {
+                // Run a pass immediately on startup, then once per `interval`. The startup
+                // pass means a node that boots with an already-overdue leaf refreshes at
+                // once instead of serving stale material for up to a full interval.
+                run_renewal_pass(&cm).await;
+                tokio::select! {
+                    _ = token.cancelled() => break,
+                    _ = tokio::time::sleep(interval) => {}
+                }
+            }
+        }));
+    }
+
+    // Certificate health changes when a deadline passes even if no command is
+    // issued. Certmesh owns that clock and publishes its revised status; the
+    // composition root owns only its lifetime.
     let cm = Arc::clone(certmesh);
     let token = cancel.clone();
     tasks.push(tokio::spawn(async move {
-        let interval = Duration::from_secs(koi_certmesh::lifecycle::RENEWAL_CHECK_INTERVAL_SECS);
-        loop {
-            // Run a pass immediately on startup, then once per `interval`. The startup
-            // pass means a node that boots with an already-overdue leaf — e.g. an
-            // embedded consumer that enabled this loop but started via `serve()` rather
-            // than `participate()` — refreshes at once instead of serving a stale cert
-            // for up to a full interval.
-            run_renewal_pass(&cm).await;
-            tokio::select! {
-                _ = token.cancelled() => break,
-                _ = tokio::time::sleep(interval) => {}
-            }
-        }
+        cm.run_status_clock(token).await;
     }));
 
-    tracing::debug!("Certmesh background tasks spawned");
+    tracing::debug!(manage_membership, "Certmesh background tasks spawned");
 }
 
 /// One renewal pass: refresh trust (policy + cross-member revocations, ADR-023), renew the
@@ -190,6 +211,7 @@ async fn run_renewal_pass(cm: &CertmeshCore) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::sync::oneshot;
 
     #[tokio::test]
@@ -239,22 +261,61 @@ mod tests {
         ));
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn abort_cannot_detach_an_admitted_blocking_decision() {
+        let entered = Arc::new(AtomicBool::new(false));
+        let release = Arc::new(AtomicBool::new(false));
+        let completed = Arc::new(AtomicBool::new(false));
+        let decider: ApprovalDecider = Arc::new({
+            let entered = Arc::clone(&entered);
+            let release = Arc::clone(&release);
+            let completed = Arc::clone(&completed);
+            move |_hostname, _requires_approval| {
+                entered.store(true, Ordering::Release);
+                while !release.load(Ordering::Acquire) {
+                    std::thread::yield_now();
+                }
+                completed.store(true, Ordering::Release);
+                ApprovalDecision::Denied
+            }
+        });
+        let (respond_to, _response) = oneshot::channel();
+        let task = tokio::spawn(dispatch_approval(
+            ApprovalRequest {
+                hostname: "node-blocked".to_string(),
+                requires_approval: true,
+                respond_to,
+            },
+            decider,
+        ));
+
+        while !entered.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+        task.abort();
+        release.store(true, Ordering::Release);
+        let _ = task.await;
+        assert!(completed.load(Ordering::Acquire));
+    }
+
     #[tokio::test]
     async fn spawn_enrollment_approval_pumps_until_cancel() {
         // A certmesh core with no CA still accepts an approval channel; the pump should
         // wire it and then exit cleanly on cancellation.
         let dir = std::env::temp_dir().join(format!("koi-compose-approval-{}", std::process::id()));
         let paths = koi_certmesh::CertmeshPaths::with_data_dir(dir);
-        let certmesh = Arc::new(koi_certmesh::CertmeshCore::uninitialized_with_paths(paths));
+        let certmesh = Arc::new(
+            koi_certmesh::CertmeshCore::uninitialized_with_paths(paths)
+                .with_local_hostname("compose-approval-host")
+                .expect("configure test host identity"),
+        );
         let cancel = CancellationToken::new();
-        let mut tasks = Vec::new();
+        let owner = RunningCores::default();
 
-        spawn_enrollment_approval(&certmesh, deny_and_log_decider(), &cancel, &mut tasks).await;
-        assert_eq!(tasks.len(), 1);
+        spawn_enrollment_approval(&certmesh, deny_and_log_decider(), &cancel, &owner).await;
+        assert_eq!(owner.owned_task_count(), 1);
 
-        cancel.cancel();
-        for task in tasks {
-            task.await.expect("pump task joins cleanly");
-        }
+        crate::cores::ordered_shutdown(&cancel, &owner, Duration::from_secs(1), Duration::ZERO)
+            .await;
     }
 }

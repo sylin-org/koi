@@ -44,9 +44,12 @@ pub fn validate_check(check: &HealthCheckConfig) -> Result<(), String> {
             }
         }
         ServiceCheckKind::Tcp => {
+            if check.target.parse::<std::net::SocketAddr>().is_ok() {
+                return Ok(());
+            }
             let (host, port) = check
                 .target
-                .split_once(':')
+                .rsplit_once(':')
                 .ok_or_else(|| "TCP target must be host:port".to_string())?;
             if host.trim().is_empty() {
                 return Err("TCP target host is empty".to_string());
@@ -108,5 +111,30 @@ async fn run_tcp_check(check: &HealthCheckConfig) -> ServiceCheckOutcome {
             status: ServiceStatus::Down,
             message: Some("tcp_timeout".to_string()),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tcp_check(target: &str) -> HealthCheckConfig {
+        HealthCheckConfig {
+            name: "ipv6".to_string(),
+            kind: ServiceCheckKind::Tcp,
+            target: target.to_string(),
+            interval_secs: 30,
+            timeout_secs: 5,
+        }
+    }
+
+    #[test]
+    fn bracketed_ipv6_tcp_authority_is_valid() {
+        assert!(validate_check(&tcp_check("[2001:db8::25]:8080")).is_ok());
+    }
+
+    #[test]
+    fn hostname_tcp_authority_remains_valid() {
+        assert!(validate_check(&tcp_check("example.test:8080")).is_ok());
     }
 }

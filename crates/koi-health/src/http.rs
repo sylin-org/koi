@@ -11,7 +11,7 @@ use koi_common::error::ErrorCode;
 
 use crate::service::ServiceCheckKind;
 use crate::state::{DEFAULT_INTERVAL_SECS, DEFAULT_TIMEOUT_SECS};
-use crate::{HealthCheckConfig, HealthCore, HealthError, HealthSnapshot};
+use crate::{HealthCheckConfig, HealthError, HealthRuntime, HealthSnapshot, HealthTransitionLog};
 
 #[derive(Debug, Deserialize, ToSchema)]
 struct AddCheckRequest {
@@ -37,6 +37,7 @@ pub mod paths {
     pub const PREFIX: &str = "/v1/health";
 
     pub const STATUS: &str = "/v1/health/status";
+    pub const LOG: &str = "/v1/health/log";
     pub const LIST: &str = "/v1/health/list";
     pub const ADD: &str = "/v1/health/add";
     pub const REMOVE: &str = "/v1/health/remove/{name}";
@@ -48,29 +49,43 @@ pub mod paths {
 }
 
 /// Build health domain routes. The binary crate mounts these at `/v1/health/`.
-pub fn routes(core: Arc<HealthCore>) -> Router {
+pub fn routes(runtime: Arc<HealthRuntime>) -> Router {
     use paths::rel;
     Router::new()
         .route(rel(paths::STATUS), get(status_handler))
+        .route(rel(paths::LOG), get(log_handler))
         .route(rel(paths::LIST), get(list_checks_handler))
         .route(rel(paths::ADD), post(add_check_handler))
         .route(rel(paths::REMOVE), delete(remove_check_handler))
-        .layer(Extension(core))
+        .layer(Extension(runtime))
 }
 
 #[utoipa::path(get, path = "/status", tag = "health",
     summary = "Snapshot of all checks with current state",
     responses((status = 200, body = HealthSnapshot)))]
-async fn status_handler(Extension(core): Extension<Arc<HealthCore>>) -> impl IntoResponse {
-    let snapshot: HealthSnapshot = core.snapshot().await;
-    Json(snapshot)
+async fn status_handler(Extension(runtime): Extension<Arc<HealthRuntime>>) -> impl IntoResponse {
+    Json(runtime.status().as_ref().clone())
+}
+
+#[utoipa::path(get, path = "/log", tag = "health",
+    summary = "Read durable health transition history",
+    responses((status = 200, body = HealthTransitionLog)))]
+async fn log_handler(
+    Extension(runtime): Extension<Arc<HealthRuntime>>,
+) -> axum::response::Response {
+    match runtime.transition_log().await {
+        Ok(log) => Json(log).into_response(),
+        Err(error) => map_error(error),
+    }
 }
 
 #[utoipa::path(get, path = "/list", tag = "health",
     summary = "List registered check configurations",
     responses((status = 200, body = ChecksListResponse)))]
-async fn list_checks_handler(Extension(core): Extension<Arc<HealthCore>>) -> impl IntoResponse {
-    let checks = core.list_checks().await;
+async fn list_checks_handler(
+    Extension(runtime): Extension<Arc<HealthRuntime>>,
+) -> impl IntoResponse {
+    let checks = runtime.list_checks().await;
     Json(serde_json::json!({ "checks": checks }))
 }
 
@@ -79,7 +94,7 @@ async fn list_checks_handler(Extension(core): Extension<Arc<HealthCore>>) -> imp
     request_body = AddCheckRequest,
     responses((status = 200, body = StatusOk)))]
 async fn add_check_handler(
-    Extension(core): Extension<Arc<HealthCore>>,
+    Extension(runtime): Extension<Arc<HealthRuntime>>,
     Json(payload): Json<AddCheckRequest>,
 ) -> impl IntoResponse {
     let kind = match parse_kind(&payload.kind) {
@@ -101,7 +116,7 @@ async fn add_check_handler(
         timeout_secs: payload.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS),
     };
 
-    match core.add_check(check).await {
+    match runtime.add_check(check).await {
         Ok(()) => Json(serde_json::json!({ "status": "ok" })).into_response(),
         Err(err) => map_error(err),
     }
@@ -112,10 +127,10 @@ async fn add_check_handler(
     params(("name" = String, Path, description = "Check name")),
     responses((status = 200, body = StatusOk)))]
 async fn remove_check_handler(
-    Extension(core): Extension<Arc<HealthCore>>,
+    Extension(runtime): Extension<Arc<HealthRuntime>>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    match core.remove_check(&name).await {
+    match runtime.remove_check(&name).await {
         Ok(()) => Json(serde_json::json!({ "status": "ok" })).into_response(),
         Err(err) => map_error(err),
     }
@@ -136,6 +151,13 @@ fn map_error(err: HealthError) -> axum::response::Response {
         }
         HealthError::NotFound(msg) => koi_common::http::error_response(ErrorCode::NotFound, msg),
         HealthError::Io(msg) => koi_common::http::error_response(ErrorCode::IoError, msg),
+        HealthError::ShutDown => koi_common::http::error_response(
+            ErrorCode::ShuttingDown,
+            "health runtime has already shut down",
+        ),
+        HealthError::Worker(message) => {
+            koi_common::http::error_response(ErrorCode::Internal, message)
+        }
     }
 }
 
@@ -144,12 +166,14 @@ fn map_error(err: HealthError) -> axum::response::Response {
 #[openapi(
     paths(
         status_handler,
+        log_handler,
         list_checks_handler,
         add_check_handler,
         remove_check_handler
     ),
     components(schemas(
         HealthSnapshot,
+        HealthTransitionLog,
         AddCheckRequest,
         ChecksListResponse,
         StatusOk,
@@ -161,3 +185,79 @@ fn map_error(err: HealthError) -> axum::response::Response {
     ))
 )]
 pub struct HealthApiDoc;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use utoipa::OpenApi;
+
+    #[tokio::test]
+    async fn status_endpoint_serializes_the_authoritative_health_snapshot() {
+        let state_path =
+            koi_common::test::ensure_data_dir("koi-health-http-status-tests").join("health.json");
+        let core = Arc::new(
+            crate::HealthCore::open(
+                crate::HealthPaths::new(state_path.clone(), state_path.with_extension("log")),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("health core"),
+        );
+        let runtime = Arc::new(HealthRuntime::new(core));
+        let expected = runtime.status();
+
+        let response = status_handler(Extension(runtime)).await.into_response();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("status body");
+        let actual: HealthSnapshot = serde_json::from_slice(&bytes).expect("health status JSON");
+        assert_eq!(&actual, expected.as_ref());
+    }
+
+    #[tokio::test]
+    async fn log_endpoint_reads_the_transition_history_owned_by_health() {
+        let root = koi_common::test::ensure_data_dir("koi-health-http-log-tests")
+            .join(format!("log-{}", koi_common::id::generate_short_id()));
+        let state_path = root.join("health.json");
+        let log_path = state_path.with_extension("log");
+        crate::log::append_transition(
+            &log_path,
+            "api",
+            crate::ServiceStatus::Unknown,
+            crate::ServiceStatus::Down,
+            "connection refused",
+        )
+        .expect("append transition fixture");
+        let core = Arc::new(
+            crate::HealthCore::open(
+                crate::HealthPaths::new(state_path, log_path),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("health core"),
+        );
+        let response = log_handler(Extension(Arc::new(HealthRuntime::new(core)))).await;
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("log body");
+        let actual: HealthTransitionLog =
+            serde_json::from_slice(&bytes).expect("health transition log JSON");
+        assert!(actual.entries.contains("api | Unknown -> Down"));
+        assert!(actual.entries.contains("connection refused"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn openapi_declares_the_real_transition_log_route() {
+        let spec = HealthApiDoc::openapi();
+        assert!(spec.paths.paths.contains_key("/log"));
+    }
+}

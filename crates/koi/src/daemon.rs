@@ -4,18 +4,20 @@
 
 use std::sync::Arc;
 
+use anyhow::Context as _;
 use tokio_util::sync::CancellationToken;
 
 use crate::cli::Config;
-use crate::infra::{
-    breadcrumb_endpoint, resolve_http_bind_ip, shutdown_signal, startup_diagnostics,
-};
+use crate::infra::{resolve_http_bind_ip, shutdown_signal, startup_diagnostics};
 use crate::platform;
 
 // ── Daemon mode ──────────────────────────────────────────────────────
 
 pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
-    koi_config::dirs::ensure_data_dir();
+    koi_config::dirs::prepare_data_root(&config.data_dir)
+        .context("preparing the configured daemon data root")?;
+    let host = koi_compose::host::HostIdentity::observe()
+        .context("observing the machine identity for this Koi composition")?;
 
     // Resolve the HTTP bind address up front so startup logs and the breadcrumb
     // agree with what the adapter actually binds. Only meaningful when HTTP is on.
@@ -24,29 +26,21 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
     } else {
         Some(resolve_http_bind_ip(&config.http_bind)?)
     };
-    startup_diagnostics(&config, http_bind_ip);
+    startup_diagnostics(&config, http_bind_ip, &host);
+
+    let webhook_sinks = config.webhook_sinks()?;
 
     // Generate a Daemon Access Token (DAT) for authenticating mutation requests
     let dat_token = crate::infra::mint_dat();
 
-    // Write breadcrumb so clients can discover the daemon. Clients connect over a
-    // routable address, so an unspecified bind (0.0.0.0) is advertised as loopback.
-    let local_endpoint =
-        (!config.no_http).then(|| breadcrumb_endpoint(http_bind_ip, config.http_port));
-    if let Some(endpoint) = &local_endpoint {
-        koi_config::breadcrumb::write_breadcrumb(endpoint, &dat_token);
-    }
-
     let local_operator = platform::daemon_local_operator(&config.data_dir)?;
 
     let cancel = CancellationToken::new();
-    let mut tasks = Vec::new();
     let started_at = std::time::Instant::now();
 
     // ── Build all domain cores + bridges + domain background tasks ──
     // The construction graph, the orchestrator, and the certmesh role loops live in
     // koi-compose so the Windows service constructs the identical daemon (P07).
-    let mut capability_notes = Vec::new();
     let cores = koi_compose::cores::build_cores(
         &koi_compose::cores::CoreSpec {
             no_mdns: config.no_mdns,
@@ -63,25 +57,22 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
             runtime_scope: std::env::var("KOI_SCOPE").ok().filter(|s| !s.is_empty()),
             ..koi_compose::cores::CoreSpec::daemon_defaults()
         },
+        &host,
         &cancel,
-        &mut tasks,
-        &mut capability_notes,
     )
     .await
-    // fail_fast = false (daemon default): build_cores logs+drops a failed capability and
-    // always returns Ok, so this never falls back — Cores::default() is a panic-free guard.
-    .unwrap_or_default();
+    .context("constructing Koi domain graph")?;
 
     // ── Serving stack (shared verbatim with the Windows service via koi-serve) ──
     // Dashboard + event forwarder, the mDNS browser, the HTTP adapter, the
     // posture-reactive trust plane (mTLS + ACME + _certmesh._tcp), the IPC adapter, and
     // the posture-reactive _http/_mcp self-announce — one call so the two boot paths
     // cannot drift. The daemon always serves the dashboard.
-    koi_common::capability::record_notes(capability_notes);
-    koi_serve::serve(
+    let serving = match koi_serve::serve(
         &cores,
         started_at,
         koi_serve::ServeConfig {
+            host: host.clone(),
             bind_ip: http_bind_ip.unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
             http_port: config.http_port,
             no_http: config.no_http,
@@ -89,7 +80,6 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
             no_mcp_http: config.no_mcp_http,
             pipe_path: config.pipe_path.clone(),
             local_operator,
-            local_endpoint,
             data_root: config.data_dir.clone(),
             config_path: config.config_path.clone(),
             mtls_port: config.mtls_port,
@@ -100,13 +90,40 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
             dashboard: true,
             mode: "daemon",
             dat_token: dat_token.clone(),
-            webhooks: config.webhook_sinks(),
+            webhooks: webhook_sinks,
             no_mgmt_mcp: config.no_mgmt_mcp,
             ui_dir: Some(config.data_dir.join("ui")),
         },
         &cancel,
-        &mut tasks,
-    );
+    )
+    .await
+    {
+        Ok(ready) => ready,
+        Err(error) => {
+            koi_compose::cores::ordered_shutdown(
+                &cancel,
+                &cores,
+                crate::SHUTDOWN_TIMEOUT,
+                crate::SHUTDOWN_DRAIN,
+            )
+            .await;
+            return Err(error.context("starting Koi serving stack"));
+        }
+    };
+
+    // A breadcrumb is a publication of an acquired resource, never a startup intention.
+    if let Some(endpoint) = &serving.local_endpoint {
+        if let Err(error) = koi_config::breadcrumb::write_breadcrumb(endpoint, &dat_token) {
+            koi_compose::cores::ordered_shutdown(
+                &cancel,
+                &cores,
+                crate::SHUTDOWN_TIMEOUT,
+                crate::SHUTDOWN_DRAIN,
+            )
+            .await;
+            return Err(error).context("publishing the local daemon ownership breadcrumb");
+        }
+    }
 
     // ── Enrollment-approval pump ──
     // The certmesh role loops are spawned by build_cores (shared with the Windows service).
@@ -114,12 +131,22 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
     // foreground daemon prompts on stdin; consoleless hosts use `deny_and_log_decider`.
     if let Some(ref certmesh) = cores.certmesh {
         let decider: koi_compose::certmesh::ApprovalDecider = Arc::new(prompt_enrollment_approval);
-        koi_compose::certmesh::spawn_enrollment_approval(certmesh, decider, &cancel, &mut tasks)
-            .await;
+        koi_compose::certmesh::spawn_enrollment_approval(certmesh, decider, &cancel, &cores).await;
     }
 
-    if let Err(e) = platform::register_service() {
-        tracing::warn!(error = %e, "Platform service registration failed");
+    if let Err(error) = platform::register_service() {
+        koi_compose::cores::ordered_shutdown(
+            &cancel,
+            &cores,
+            crate::SHUTDOWN_TIMEOUT,
+            crate::SHUTDOWN_DRAIN,
+        )
+        .await;
+        if serving.local_endpoint.is_some() {
+            koi_config::breadcrumb::delete_breadcrumb()
+                .context("rolling back the local daemon ownership breadcrumb")?;
+        }
+        return Err(error).context("publishing daemon readiness to the service manager");
     }
 
     tracing::info!("Ready.");
@@ -127,23 +154,11 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
     // ── L0 welcome (ADR-031): exactly three lines, once per data root ──
     {
         let zone = &config.dns_zone;
-        let hostname = hostname::get()
-            .map(|h| h.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| "localhost".to_string());
-        let lan_name = format!("{hostname}.{zone}");
-        let host_for_url = if config.http_bind == "loopback" || config.http_bind.is_empty() {
-            "127.0.0.1".to_string()
-        } else if let Some(lan_ip) = if_addrs::get_if_addrs().ok().and_then(|addrs| {
-            addrs.into_iter().find_map(|a| match a.addr {
-                if_addrs::IfAddr::V4(v4) if !v4.ip.is_loopback() => Some(v4.ip),
-                _ => None,
-            })
-        }) {
-            lan_ip.to_string()
-        } else {
-            "127.0.0.1".to_string()
-        };
-        let dashboard = format!("http://{host_for_url}:{}/v1/dashboard", config.http_port);
+        let lan_name = format!("{}.{zone}", host.hostname());
+        let dashboard = serving.local_endpoint.as_ref().map_or_else(
+            || "disabled (--no-http)".to_string(),
+            |endpoint| format!("{endpoint}/v1/dashboard"),
+        );
         let next = if config.no_certmesh {
             "koi status"
         } else {
@@ -159,14 +174,14 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
     // Ordered shutdown with hard timeout (shared with the Windows service via koi-compose).
     koi_compose::cores::ordered_shutdown(
         &cancel,
-        tasks,
         &cores,
         crate::SHUTDOWN_TIMEOUT,
         crate::SHUTDOWN_DRAIN,
     )
     .await;
 
-    koi_config::breadcrumb::delete_breadcrumb();
+    koi_config::breadcrumb::delete_breadcrumb()
+        .context("removing the local daemon ownership breadcrumb")?;
 
     Ok(())
 }

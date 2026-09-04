@@ -19,7 +19,9 @@
 //! ```
 
 use std::collections::HashMap;
+use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
@@ -29,6 +31,9 @@ use zeroize::Zeroizing;
 
 const VAULT_DIR: &str = "vault";
 const SECRETS_FILE: &str = "secrets.json";
+const TRANSACTION_LOCK_FILE: &str = ".transaction.lock";
+const TRANSACTION_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
+const TRANSACTION_LOCK_POLL: Duration = Duration::from_millis(10);
 const KEYRING_LABEL: &str = "koi-vault-master";
 const NONCE_LEN: usize = 12;
 const MASTER_KEY_LEN: usize = 32;
@@ -47,6 +52,57 @@ pub enum VaultError {
     Decryption(String),
     #[error("vault master key error: {0}")]
     MasterKey(String),
+    #[error("vault at '{path}' remained busy for {timeout_ms} ms")]
+    Busy { path: PathBuf, timeout_ms: u128 },
+}
+
+/// One cross-process Vault transaction fence.
+///
+/// The lock lives beside, rather than inside, `secrets.json` because the
+/// secrets file is atomically replaced on every commit. All cooperating Vault
+/// instances lock this stable sidecar before master-key initialization or a
+/// read-modify-write mutation. `File` locking maps to `flock` on Unix and
+/// `LockFileEx` on Windows; dropping the handle releases the lock.
+struct VaultTransactionLock {
+    _file: File,
+}
+
+impl VaultTransactionLock {
+    fn acquire(vault_dir: &Path) -> Result<Self, VaultError> {
+        Self::acquire_with_timeout(vault_dir, TRANSACTION_LOCK_TIMEOUT)
+    }
+
+    fn acquire_with_timeout(vault_dir: &Path, timeout: Duration) -> Result<Self, VaultError> {
+        std::fs::create_dir_all(vault_dir)?;
+        let path = vault_dir.join(TRANSACTION_LOCK_FILE);
+        // Windows requires a writable or readable+writable handle for locking;
+        // this shape also works with Unix advisory locks.
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)?;
+        let started = Instant::now();
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(Self { _file: file }),
+                Err(TryLockError::WouldBlock) if started.elapsed() < timeout => {
+                    let remaining = timeout.saturating_sub(started.elapsed());
+                    std::thread::sleep(TRANSACTION_LOCK_POLL.min(remaining));
+                }
+                Err(TryLockError::WouldBlock) => {
+                    return Err(VaultError::Busy {
+                        path,
+                        timeout_ms: timeout.as_millis(),
+                    });
+                }
+                Err(TryLockError::Error(error))
+                    if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(TryLockError::Error(error)) => return Err(error.into()),
+            }
+        }
+    }
 }
 
 /// Encrypted key-value vault with platform-adaptive master key protection.
@@ -64,6 +120,7 @@ impl Vault {
     pub fn open(data_dir: &Path) -> Result<Self, VaultError> {
         let vault_dir = data_dir.join(VAULT_DIR);
         std::fs::create_dir_all(&vault_dir)?;
+        let _transaction = VaultTransactionLock::acquire(&vault_dir)?;
 
         let (master_key, backend_name) = if crate::tpm::is_available() {
             match Self::load_or_create_keyring_master() {
@@ -91,11 +148,12 @@ impl Vault {
 
     /// Store a secret value under `key`. Overwrites if exists.
     pub fn store(&self, key: &str, value: &str) -> Result<(), VaultError> {
-        let mut secrets = self.load_secrets()?;
-        secrets
-            .entries
-            .insert(key.to_string(), self.encrypt(value)?);
-        self.save_secrets(&secrets)
+        self.update_secrets(|secrets| {
+            secrets
+                .entries
+                .insert(key.to_string(), self.encrypt(value)?);
+            Ok(())
+        })
     }
 
     /// Retrieve a secret by key. Returns `None` if not found.
@@ -109,9 +167,33 @@ impl Vault {
 
     /// Delete a secret by key.
     pub fn delete(&self, key: &str) -> Result<(), VaultError> {
-        let mut secrets = self.load_secrets()?;
-        secrets.entries.remove(key);
-        self.save_secrets(&secrets)
+        self.update_secrets(|secrets| {
+            secrets.entries.remove(key);
+            Ok(())
+        })
+    }
+
+    /// Idempotently delete one persisted entry without opening the vault or
+    /// creating a platform master credential. This is the recovery-safe cleanup
+    /// surface for a domain outbox: ciphertext metadata is sufficient to remove
+    /// an owned key, and unrelated encrypted entries remain logically intact.
+    pub fn delete_persisted_entry(data_dir: &Path, key: &str) -> Result<bool, VaultError> {
+        let vault_dir = data_dir.join(VAULT_DIR);
+        let _transaction = VaultTransactionLock::acquire(&vault_dir)?;
+        let path = vault_dir.join(SECRETS_FILE);
+        let data = match std::fs::read(&path) {
+            Ok(data) => data,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error.into()),
+        };
+        let mut secrets: SecretsFile = serde_json::from_slice(&data)?;
+        if secrets.entries.remove(key).is_none() {
+            return Ok(false);
+        }
+        let data = serde_json::to_vec_pretty(&secrets)?;
+        crate::keys::write_secret_file(&path, &data)
+            .map_err(|error| VaultError::Io(std::io::Error::other(error.to_string())))?;
+        Ok(true)
     }
 
     /// List all stored keys (not values).
@@ -230,6 +312,16 @@ impl Vault {
             .map_err(|e| VaultError::Io(std::io::Error::other(e.to_string())))?;
         Ok(())
     }
+
+    fn update_secrets(
+        &self,
+        update: impl FnOnce(&mut SecretsFile) -> Result<(), VaultError>,
+    ) -> Result<(), VaultError> {
+        let _transaction = VaultTransactionLock::acquire(&self.vault_dir)?;
+        let mut secrets = self.load_secrets()?;
+        update(&mut secrets)?;
+        self.save_secrets(&secrets)
+    }
 }
 
 // ── File Structures ──────────────────────────────────────────────────
@@ -320,6 +412,8 @@ pub fn machine_fingerprint() -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{mpsc, Arc, Barrier};
+
     use super::*;
 
     #[test]
@@ -377,5 +471,112 @@ mod tests {
                 Some("hello".to_string())
             );
         }
+    }
+
+    #[test]
+    fn independent_instances_serialize_store_and_delete_without_lost_entries() {
+        let _ = koi_common::test::ensure_data_dir("koi-vault-concurrency-tests");
+        let tmp = tempfile::tempdir().unwrap();
+        let first = Arc::new(Vault::open(tmp.path()).unwrap());
+        let second = Arc::new(Vault::open(tmp.path()).unwrap());
+        first.store("keep", "stable").unwrap();
+        first.store("remove", "obsolete").unwrap();
+
+        // Hold the same cross-process fence so both independent handles reach
+        // their mutation concurrently and neither can read a stale snapshot.
+        let held = VaultTransactionLock::acquire(&first.vault_dir).unwrap();
+        let start = Arc::new(Barrier::new(3));
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let delete = std::thread::spawn({
+            let first = Arc::clone(&first);
+            let start = Arc::clone(&start);
+            let finished_tx = finished_tx.clone();
+            move || {
+                start.wait();
+                first.delete("remove").unwrap();
+                finished_tx.send(()).unwrap();
+            }
+        });
+        let store = std::thread::spawn({
+            let second = Arc::clone(&second);
+            let start = Arc::clone(&start);
+            move || {
+                start.wait();
+                second.store("added", "new").unwrap();
+                finished_tx.send(()).unwrap();
+            }
+        });
+        start.wait();
+        assert!(matches!(
+            finished_rx.recv_timeout(Duration::from_millis(30)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        drop(held);
+        delete.join().unwrap();
+        store.join().unwrap();
+
+        let reopened = Vault::open(tmp.path()).unwrap();
+        assert_eq!(
+            reopened.retrieve("keep").unwrap().as_deref(),
+            Some("stable")
+        );
+        assert_eq!(reopened.retrieve("added").unwrap().as_deref(), Some("new"));
+        assert_eq!(reopened.retrieve("remove").unwrap(), None);
+    }
+
+    #[test]
+    fn independent_instances_preserve_both_concurrent_writes() {
+        let _ = koi_common::test::ensure_data_dir("koi-vault-concurrency-tests");
+        let tmp = tempfile::tempdir().unwrap();
+        let first = Arc::new(Vault::open(tmp.path()).unwrap());
+        let second = Arc::new(Vault::open(tmp.path()).unwrap());
+        first.store("existing", "stable").unwrap();
+
+        let held = VaultTransactionLock::acquire(&first.vault_dir).unwrap();
+        let start = Arc::new(Barrier::new(3));
+        let first_write = std::thread::spawn({
+            let first = Arc::clone(&first);
+            let start = Arc::clone(&start);
+            move || {
+                start.wait();
+                first.store("first", "one").unwrap();
+            }
+        });
+        let second_write = std::thread::spawn({
+            let second = Arc::clone(&second);
+            let start = Arc::clone(&start);
+            move || {
+                start.wait();
+                second.store("second", "two").unwrap();
+            }
+        });
+        start.wait();
+        drop(held);
+        first_write.join().unwrap();
+        second_write.join().unwrap();
+
+        let reopened = Vault::open(tmp.path()).unwrap();
+        assert_eq!(
+            reopened.retrieve("existing").unwrap().as_deref(),
+            Some("stable")
+        );
+        assert_eq!(reopened.retrieve("first").unwrap().as_deref(), Some("one"));
+        assert_eq!(reopened.retrieve("second").unwrap().as_deref(), Some("two"));
+    }
+
+    #[test]
+    fn lock_contention_is_bounded_and_actionable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let vault_dir = tmp.path().join(VAULT_DIR);
+        let _held = VaultTransactionLock::acquire(&vault_dir).unwrap();
+        let error = std::thread::spawn(move || {
+            VaultTransactionLock::acquire_with_timeout(&vault_dir, Duration::from_millis(25))
+                .err()
+                .expect("the competing transaction must time out")
+        })
+        .join()
+        .unwrap();
+        assert!(matches!(error, VaultError::Busy { timeout_ms: 25, .. }));
+        assert!(error.to_string().contains("remained busy for 25 ms"));
     }
 }

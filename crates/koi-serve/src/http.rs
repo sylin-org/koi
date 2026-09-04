@@ -35,8 +35,14 @@ const DAT_HEADER: &str = "x-koi-token";
 pub mod paths {
     pub const HEALTHZ: &str = "/healthz";
     pub const UNIFIED_STATUS: &str = "/v1/status";
+    /// One coherent aggregate revision projected for automation inventory reads.
+    pub const INVENTORY: &str = "/v1/inventory";
     pub const SHUTDOWN: &str = "/v1/admin/shutdown";
     pub const HOST: &str = "/v1/host";
+    /// Aggregate dashboard snapshot. Loopback-readable; DAT required remotely.
+    pub const DASHBOARD_SNAPSHOT: &str = "/v1/dashboard/snapshot";
+    /// Dashboard activity SSE. Loopback-readable; DAT required remotely.
+    pub const DASHBOARD_EVENTS: &str = "/v1/dashboard/events";
     /// Prometheus HTTP service discovery (their format — see Door 1 / integrations.md).
     pub const PROMETHEUS_SD: &str = "/v1/sd/prometheus";
     /// In-process MCP server (Streamable HTTP / JSON-RPC). Token-authenticated for
@@ -54,22 +60,14 @@ pub mod paths {
 
 #[derive(Clone)]
 struct AppState {
-    mdns: Option<Arc<koi_mdns::MdnsCore>>,
-    certmesh: Option<Arc<koi_certmesh::CertmeshCore>>,
-    dns: Option<Arc<koi_dns::DnsRuntime>>,
-    health: Option<Arc<koi_health::HealthRuntime>>,
-    proxy: Option<Arc<koi_proxy::ProxyRuntime>>,
-    udp: Option<Arc<koi_udp::UdpRuntime>>,
-    runtime: Option<Arc<koi_runtime::RuntimeCore>>,
+    system_status: Arc<koi_compose::status::KoiStatusRuntime>,
+    host: koi_compose::host::HostIdentity,
     started_at: std::time::Instant,
     cancel: CancellationToken,
     http_bind: String,
     /// Lazy mDNS meta-browse controller (when mDNS is enabled), so `/v1/status` can
     /// report whether LAN-wide browsing is currently active.
     mdns_browse: Option<Arc<LazyMetaBrowse>>,
-    /// Cached-mDNS snapshot used only by the Prometheus `?include=discovered` slice.
-    /// `None` when mDNS is disabled — the managed slice never touches it.
-    mdns_snapshot: Option<Arc<dyn koi_common::integration::MdnsSnapshot>>,
     /// Whether the in-process MCP HTTP transport (`/v1/mcp`) is mounted. Reported
     /// on `/v1/status` as a field (MCP-HTTP is a transport, not a domain rung).
     mcp_http_enabled: bool,
@@ -86,10 +84,8 @@ struct AppState {
 /// and an embedded host (loopback bind, optional auth, no MCP) — one implementation, so
 /// their `/v1/status` shapes and route sets cannot drift.
 pub struct HttpConfig {
-    /// Resolved bind address (loopback by default — the caller owns the bind policy).
-    pub bind_ip: std::net::IpAddr,
-    pub port: u16,
     pub started_at: std::time::Instant,
+    pub host: koi_compose::host::HostIdentity,
     /// Dashboard state — `Some` mounts the dashboard SPA + snapshot/events routes.
     pub dashboard: Option<DashboardState>,
     /// Browser state — `Some` mounts the mDNS browser page + routes (else a 503 fallback).
@@ -97,8 +93,6 @@ pub struct HttpConfig {
     /// DAT for mutation auth — `Some` enforces the `x-koi-token` middleware; `None` leaves
     /// mutations unauthenticated (only safe behind a loopback bind).
     pub auth: Option<String>,
-    /// Cached mDNS snapshot for the Prometheus `?include=discovered` slice.
-    pub mdns_snapshot: Option<Arc<dyn koi_common::integration::MdnsSnapshot>>,
     /// Mount the in-process MCP HTTP transport at `/v1/mcp`.
     pub mcp_http: bool,
     /// Outbound webhook sinks (ADR-028). Reported on `/v1/status`; the fan-out
@@ -113,51 +107,43 @@ pub struct HttpConfig {
     /// In-process Pond desired-state adapter. `Some` mounts only its authenticated
     /// publish/control routes here; its read-only LAN router owns a separate socket.
     pub pond: Option<crate::pond::PondRuntime>,
-    /// One-shot to report the actually-bound `SocketAddr` once the listener is up.
-    /// Lets an embedded host that passed `port: 0` learn the OS-assigned port. The
-    /// daemon leaves this `None` — it already knows its fixed port.
-    pub ready: Option<tokio::sync::oneshot::Sender<std::net::SocketAddr>>,
 }
 
-/// Build the router for `cores` per `cfg`, bind `bind_ip:port`, and serve until `cancel`
-/// fires. The single HTTP entry point shared by the daemon and the Windows service (both
-/// via [`crate::serve()`]) and by koi-embedded.
-pub async fn start(
+/// Serve a previously bound HTTP listener until `cancel` fires.
+///
+/// Socket acquisition is deliberately separate from task admission: callers can prove the
+/// real address (including an OS-assigned port), construct dependent adapters such as Pond and
+/// local control from that fact, and fail startup before publishing readiness or discovery.
+pub async fn serve(
+    listener: tokio::net::TcpListener,
     cores: DaemonCores,
     cfg: HttpConfig,
     cancel: CancellationToken,
 ) -> anyhow::Result<()> {
+    let local_addr = listener.local_addr()?;
+    let bind_ip = local_addr.ip();
     let HttpConfig {
-        bind_ip,
-        port,
         started_at,
+        host,
         dashboard: dashboard_state,
         browser: browser_state,
         auth,
-        mdns_snapshot,
         mcp_http: mcp_http_enabled,
         webhooks,
         admin_shutdown,
         api_docs,
         daemon,
         pond,
-        ready,
     } = cfg;
     let webhook_sinks = webhooks.len();
 
     let app_state = AppState {
-        mdns: cores.mdns.clone(),
-        certmesh: cores.certmesh.clone(),
-        dns: cores.dns.clone(),
-        health: cores.health.clone(),
-        proxy: cores.proxy.clone(),
-        udp: cores.udp.clone(),
-        runtime: cores.runtime.clone(),
+        system_status: Arc::clone(&cores.system_status),
+        host,
         started_at,
         cancel: cancel.clone(),
-        http_bind: bind_ip.to_string(),
+        http_bind: local_addr.ip().to_string(),
         mdns_browse: browser_state.as_ref().map(|b| b.meta.clone()),
-        mdns_snapshot,
         mcp_http_enabled,
         webhook_sinks,
         daemon,
@@ -167,6 +153,7 @@ pub async fn start(
     let mut app = Router::new()
         .route(paths::HEALTHZ, get(health))
         .route(paths::UNIFIED_STATUS, get(unified_status_handler))
+        .route(paths::INVENTORY, get(inventory_handler))
         .route(paths::HOST, get(host_handler))
         .route(paths::PROMETHEUS_SD, get(prometheus_sd_handler))
         .route(paths::MCP_SERVER_CARD, get(mcp_server_card_handler));
@@ -187,11 +174,11 @@ pub async fn start(
         app = app
             .route("/", get(koi_dashboard::dashboard::get_dashboard))
             .route(
-                "/v1/dashboard/snapshot",
+                paths::DASHBOARD_SNAPSHOT,
                 get(koi_dashboard::dashboard::get_snapshot),
             )
             .route(
-                "/v1/dashboard/events",
+                paths::DASHBOARD_EVENTS,
                 get(koi_dashboard::dashboard::get_events),
             );
     }
@@ -230,6 +217,15 @@ pub async fn start(
         );
     }
 
+    if let Some(ref trust_core) = cores.trust {
+        app = app.nest(koi_trust::http::paths::PREFIX, trust_core.routes());
+    } else {
+        app = app.nest(
+            koi_trust::http::paths::PREFIX,
+            disabled_fallback_router("trust"),
+        );
+    }
+
     if let Some(ref dns_runtime) = cores.dns {
         app = app.nest(
             koi_dns::http::paths::PREFIX,
@@ -245,7 +241,7 @@ pub async fn start(
     if let Some(ref health_runtime) = cores.health {
         app = app.nest(
             koi_health::http::paths::PREFIX,
-            koi_health::http::routes(health_runtime.core()),
+            koi_health::http::routes(health_runtime.clone()),
         );
     } else {
         app = app.nest(
@@ -290,6 +286,7 @@ pub async fn start(
     // ── MCP over Streamable HTTP (in-process, mounted on this adapter) ──
     // A tower Service (rmcp), so use nest_service. Token-authenticated for all
     // methods via the dat_auth_middleware carve-out below. Not in /openapi.json.
+    let mut mcp_source = None;
     if mcp_http_enabled {
         let source = Arc::new(crate::mcp_http::CoreSource::new(
             cores.clone(),
@@ -311,8 +308,9 @@ pub async fn start(
         };
         app = app.nest_service(
             paths::MCP,
-            koi_mcp::streamable_http_service(source, allowed_hosts),
+            koi_mcp::streamable_http_service(source.clone(), allowed_hosts),
         );
+        mcp_source = Some(source);
     } else {
         app = app.nest(paths::MCP, disabled_fallback_router("mcp-http"));
     }
@@ -377,27 +375,23 @@ pub async fn start(
         }));
     app = app.layer(cors);
 
-    // Bind to the resolved address (loopback by default; see --http-bind).
-    // Exposure does not relax auth — mutations still require the DAT token.
-    let listener = tokio::net::TcpListener::bind((bind_ip, port)).await?;
-    let local_addr = listener.local_addr()?;
     tracing::info!("HTTP adapter listening on {local_addr}");
-    // Report the bound address to a caller that asked (e.g. an embedded host that
-    // passed port 0 and needs the OS-assigned port). Ignore a dropped receiver.
-    if let Some(tx) = ready {
-        let _ = tx.send(local_addr);
-    }
 
     // ConnectInfo carries the peer address so the auth middleware can keep the
     // trust/zone reads token-free for loopback callers but gated for remote peers.
-    axum::serve(
+    let result = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(async move {
         cancel.cancelled().await;
     })
-    .await?;
+    .await;
+
+    if let Some(source) = mcp_source {
+        source.shutdown().await;
+    }
+    result?;
 
     tracing::debug!("HTTP adapter stopped");
     Ok(())
@@ -410,6 +404,7 @@ struct UnifiedStatusResponse {
     version: String,
     platform: String,
     uptime_secs: u64,
+    revision: u64,
     daemon: bool,
     /// The HTTP adapter's bind address (e.g. "127.0.0.1" or "0.0.0.0").
     http_bind: String,
@@ -465,6 +460,7 @@ struct NetworkInterface {
     paths(
         health,
         unified_status_handler,
+        inventory_handler,
         shutdown_handler,
         host_handler,
         prometheus_sd_handler
@@ -505,6 +501,10 @@ fn build_openapi_for(include_pond: bool) -> utoipa::openapi::OpenApi {
         .nest(
             koi_certmesh::http::paths::PREFIX,
             koi_certmesh::http::CertmeshApiDoc::openapi(),
+        )
+        .nest(
+            koi_trust::http::paths::PREFIX,
+            koi_trust::http::TrustApiDoc::openapi(),
         )
         .nest(
             koi_dns::http::paths::PREFIX,
@@ -657,8 +657,9 @@ fn is_loopback_origin(origin: &str) -> bool {
 /// GET, HEAD, and OPTIONS requests are exempt (read-only, CORS preflight) —
 /// except for `/v1/mcp` and `/v1/certmesh/log` (token required even on GET), the
 /// `/v1/udp/` surface, and the protected zone/posture reads
-/// (`/v1/certmesh/diagnose`, `/v1/dns/{list,zone}`) which stay exempt only for a
-/// loopback peer and require the token from a remote one. Pond control is also
+/// (`/v1/certmesh/{status,diagnose}`, `/v1/dns/{list,zone}`, and the dashboard's
+/// aggregate snapshot/activity stream) which stay exempt only for a loopback peer and
+/// require the token from a remote one. Pond control is also
 /// token-gated on every method. All other methods require a valid
 /// `x-koi-token` header. Uses constant-time comparison to
 /// prevent timing attacks.
@@ -679,8 +680,9 @@ pub(crate) async fn dat_auth_middleware(
     // narrates the full trust history (member joins/revocations, auth rotations,
     // failed unlock attempts, backup/restore). Carve it out of the GET exemption
     // so reading it requires the daemon token — exactly like /v1/mcp, on every
-    // peer. status and trust-bundle stay GET-exempt on every peer (load-bearing in
-    // the unauthenticated cross-host protocol); diagnose is loopback-gated below.
+    // peer. The trust bundle remains public for its self-verifying protocol role;
+    // full status and diagnosis are loopback-gated below, while `/bootstrap` is
+    // the intentionally small public preflight.
     // The `koi certmesh log` CLI already sends the token (require_daemon → auth_get).
     let is_audit_log = path == koi_certmesh::http::paths::LOG;
     // `/v1/certmesh/posture` is the live trust-posture endpoint (ADR-020 reactive
@@ -707,22 +709,25 @@ pub(crate) async fn dat_auth_middleware(
     // join handler enforces that auth + the enrollment policy itself, so the DAT
     // middleware must let the request reach it.
     let is_enrollment = path == koi_certmesh::http::paths::JOIN;
-    // These reads expose the DNS zone (every resolvable name) and the full trust
-    // posture (the diagnose / trust-doctor report). Fine on loopback — local
-    // tooling like the CLI and dashboard — but not safe to leave world-readable
-    // to a remote LAN peer when the adapter is bound to a routable address. So
-    // they stay GET-exempt only for a loopback peer; a non-loopback peer must
-    // present the token. When the peer address is unknown we fail closed.
+    // These reads expose the DNS zone, full trust posture, or an aggregate/SSE
+    // carrying that same detail. Fine on loopback — local tooling and dashboard
+    // UX — but not safe to leave world-readable when the adapter is routable. They
+    // stay GET-exempt only for a loopback peer; a non-loopback peer must present
+    // the token. When the peer address is unknown we fail closed.
     //
-    // NOT gated, deliberately: `/v1/certmesh/status` and `/v1/certmesh/trust-bundle`
-    // are load-bearing in the *unauthenticated* cross-host protocol — a joining
-    // node reads `status.ca_fingerprint` to pin the CA before it holds any
-    // credential, and members pull the trust-bundle (an ES256-signed, self-
-    // verifying document) over plain HTTP. Gating either breaks enrollment / sync.
+    // NOT gated, deliberately: `/v1/certmesh/bootstrap` and
+    // `/v1/certmesh/trust-bundle` are load-bearing in the unauthenticated
+    // cross-host protocol. Bootstrap exposes only the CA pin/enrollment preflight;
+    // the bundle is self-verifying. Full status contains roster and diagnosis.
     let is_protected_read = path == koi_certmesh::http::paths::DIAGNOSE
+        || path == koi_certmesh::http::paths::STATUS
+        || path == koi_trust::http::paths::STATUS
         || path == "/v1/dns/list"
         || path == "/v1/dns/zone"
-        || path == "/v1/dns/entries";
+        || path == "/v1/dns/entries"
+        || path == paths::INVENTORY
+        || path == paths::DASHBOARD_SNAPSHOT
+        || path == paths::DASHBOARD_EVENTS;
     let peer_is_loopback = req
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
@@ -796,38 +801,23 @@ async fn health() -> &'static str {
     summary = "Unified capability status",
     responses((status = 200, body = UnifiedStatusResponse)))]
 async fn unified_status_handler(Extension(state): Extension<AppState>) -> Json<serde_json::Value> {
-    // The capability ladder is assembled once in koi-compose, shared with the dashboard and
-    // embedded snapshots. `/v1/status` emits just the status (no `enabled` field).
-    let cores = DaemonCores {
-        mdns: state.mdns.clone(),
-        certmesh: state.certmesh.clone(),
-        dns: state.dns.clone(),
-        health: state.health.clone(),
-        proxy: state.proxy.clone(),
-        udp: state.udp.clone(),
-        runtime: state.runtime.clone(),
-        // Capability assembly does not read the snapshot bridge.
-        mdns_snapshot: None,
-    };
-    let capabilities: Vec<koi_common::capability::CapabilityStatus> =
-        koi_compose::status::assemble_capabilities(&cores)
-            .await
-            .into_iter()
-            .map(|c| c.status)
-            .collect();
+    let status = state.system_status.status();
+    let capabilities: Vec<koi_common::capability::CapabilityStatus> = status
+        .capabilities
+        .iter()
+        .map(|capability| capability.status.clone())
+        .collect();
 
     let uptime_secs = state.started_at.elapsed().as_secs();
     // The confidentiality `seal()` currently produces (ADR-020 §4) — `passthrough`
     // until the group-key rung lands. Reported only when certmesh is present (sealing
     // needs the identity infra); makes the un-encrypted state observable, not silent.
-    let seal = state
-        .certmesh
-        .as_ref()
-        .map(|_| koi_common::sealed::CURRENT_CONFIDENTIALITY.as_wire());
+    let seal = seal_projection(status.as_ref());
     Json(serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
         "platform": std::env::consts::OS,
         "uptime_secs": uptime_secs,
+        "revision": status.revision,
         "daemon": state.daemon,
         "http_bind": state.http_bind,
         "mdns_browse_active": state.mdns_browse.as_ref().map(|m| m.is_active()),
@@ -841,38 +831,92 @@ async fn unified_status_handler(Extension(state): Extension<AppState>) -> Json<s
     }))
 }
 
+fn seal_projection(status: &koi_compose::status::KoiStatus) -> Option<&'static str> {
+    status
+        .domains
+        .certmesh
+        .as_ref()
+        .map(|_| koi_common::sealed::CURRENT_CONFIDENTIALITY.as_wire())
+}
+
+/// `GET /v1/inventory` — one coherent product revision for transport-backed MCP.
+///
+/// The handler captures the aggregate exactly once. Health and DNS details are
+/// projected from that same immutable value; the client must never join separate
+/// domain endpoint reads into a second product model.
+#[utoipa::path(get, path = "/v1/inventory", tag = "system",
+    summary = "Coherent aggregate inventory snapshot",
+    responses((status = 200, description = "Capability, health, and DNS inventory from one revision")))]
+async fn inventory_handler(Extension(state): Extension<AppState>) -> Response {
+    let status = state.system_status.status();
+    match crate::inventory::project(
+        status.as_ref(),
+        None,
+        state.started_at.elapsed().as_secs(),
+        &state.http_bind,
+        state.daemon,
+    ) {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => {
+            tracing::error!(error = %error, "aggregate inventory serialization failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "serialization_failed",
+                    "message": "Could not serialize the aggregate inventory",
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
 /// LAN interfaces for the `/v1/host` response: the interface that owns the
 /// default route (matched by its source IP), or — failing that — every
 /// non-loopback, non-link-local IPv4 interface.
-fn default_lan_interfaces() -> Vec<NetworkInterface> {
-    crate::network::lan_ipv4_interfaces()
+fn default_lan_interfaces() -> std::io::Result<Vec<NetworkInterface>> {
+    Ok(crate::network::lan_ipv4_interfaces()?
         .into_iter()
         .map(|interface| NetworkInterface {
             name: interface.name,
             ip: interface.address.to_string(),
         })
-        .collect()
+        .collect())
 }
 
 #[utoipa::path(get, path = "/v1/host", tag = "system",
     summary = "Host identity and network interfaces",
-    responses((status = 200, body = HostInfoResponse)))]
-async fn host_handler() -> Json<HostInfoResponse> {
-    let raw = hostname::get()
-        .ok()
-        .and_then(|os| os.into_string().ok())
-        .unwrap_or_else(|| "unknown".to_string());
-    let fqdn = format!("{}.local", raw);
+    responses(
+        (status = 200, body = HostInfoResponse),
+        (status = 500, description = "Host observation failed")
+    ))]
+async fn host_handler(Extension(state): Extension<AppState>) -> Response {
+    match observe_host(&state.host) {
+        Ok(host) => Json(host).into_response(),
+        Err(error) => {
+            tracing::error!(%error, "host observation failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "host_observation_failed",
+                    "message": error.to_string(),
+                })),
+            )
+                .into_response()
+        }
+    }
+}
 
+fn observe_host(host: &koi_compose::host::HostIdentity) -> anyhow::Result<HostInfoResponse> {
     // Identify the interface that owns the default route — the real LAN adapter
     // even on Windows, where virtual switches (vEthernet) share the physical
     // Ethernet IfType. We use the kernel's own route selection rather than a
     // network-enumeration crate (see `default_lan_interfaces`).
-    let lan = default_lan_interfaces();
+    let lan = default_lan_interfaces()?;
 
-    Json(HostInfoResponse {
-        hostname: raw,
-        hostname_fqdn: fqdn,
+    Ok(HostInfoResponse {
+        hostname: host.hostname().to_string(),
+        hostname_fqdn: host.local_fqdn().to_string(),
         os: std::env::consts::OS.to_string(),
         arch: std::env::consts::ARCH.to_string(),
         interfaces: HostInterfaces { lan },
@@ -900,36 +944,10 @@ async fn prometheus_sd_handler(
 
     let slice = Slice::from_query(params.include.as_deref());
 
-    // Snapshot each source (no locks held across await beyond the core's own).
-    let health = match &state.health {
-        Some(rt) => rt.core().snapshot().await.services,
-        None => Vec::new(),
-    };
-    let instances = match &state.runtime {
-        Some(rt) => rt.list_instances().await.unwrap_or_default(),
-        None => Vec::new(),
-    };
-    // The certmesh roster is read from disk via the bridge — cheap and lock-free.
-    let members = match &state.certmesh {
-        Some(core) => {
-            use koi_common::integration::CertmeshSnapshot;
-            koi_compose::bridges::CertmeshBridge::new(core.clone()).active_members()
-        }
-        None => Vec::new(),
-    };
-    let discovered = match (slice, &state.mdns_snapshot) {
-        (Slice::WithDiscovered, Some(snap)) => snap.cached_records(),
-        _ => Vec::new(),
-    };
-
-    let groups = build_target_groups(
-        &health,
-        &instances,
-        &members,
-        &discovered,
-        slice,
-        chrono::Utc::now(),
-    );
+    // One immutable product revision is the complete input. Presentation never
+    // rereads individual domains, performs I/O, or assembles a torn view.
+    let status = state.system_status.status();
+    let groups = build_target_groups(status.as_ref(), slice, chrono::Utc::now());
 
     // Prometheus http_sd requires a 200 with Content-Type: application/json and a
     // JSON array body. Build it explicitly so the content type is exact even on the
@@ -983,13 +1001,7 @@ fn build_server_card(version: &str, mcp_enabled: bool) -> serde_json::Value {
 /// `GET /.well-known/mcp/server-card.json` — unauthenticated discovery (the Door).
 async fn mcp_server_card_handler(Extension(state): Extension<AppState>) -> Response {
     let card = build_server_card(env!("CARGO_PKG_VERSION"), state.mcp_http_enabled);
-    let body = serde_json::to_string(&card).unwrap_or_else(|_| "{}".to_string());
-    (
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/json")],
-        body,
-    )
-        .into_response()
+    Json(card).into_response()
 }
 
 /// Returns a router that responds 503 for any request to a disabled capability.
@@ -1012,9 +1024,41 @@ fn disabled_fallback_router(capability_name: &'static str) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use axum::body::Body;
     use axum::http::Request;
+    use koi_runtime::{RuntimeBackend, RuntimeError, RuntimeObservation};
     use tower::ServiceExt;
+
+    struct FixedRuntimeBackend {
+        initial: Vec<koi_runtime::Instance>,
+    }
+
+    #[async_trait]
+    impl RuntimeBackend for FixedRuntimeBackend {
+        fn name(&self) -> &'static str {
+            "fixed-test-provider"
+        }
+
+        async fn connect(&mut self) -> Result<(), RuntimeError> {
+            Ok(())
+        }
+
+        async fn list_instances(&self) -> Result<Vec<koi_runtime::Instance>, RuntimeError> {
+            Ok(self.initial.clone())
+        }
+
+        async fn begin_observation(
+            self: Arc<Self>,
+            _tx: tokio::sync::mpsc::Sender<koi_runtime::RuntimeEvent>,
+            cancel: CancellationToken,
+        ) -> Result<RuntimeObservation, RuntimeError> {
+            Ok(RuntimeObservation::new(self.initial.clone(), async move {
+                cancel.cancelled().await;
+                Ok(())
+            }))
+        }
+    }
 
     /// Agent-Door conformance vector (V1-11): the served card must match the
     /// pinned shape in docs/reference/vectors/agent-door-card.json exactly
@@ -1216,6 +1260,7 @@ mod tests {
             .route("/healthz", get(|| async { "ok" }))
             .route(koi_certmesh::http::paths::LOG, get(|| async { "ok" }))
             .route("/v1/certmesh/status", get(|| async { "ok" }))
+            .route("/v1/certmesh/bootstrap", get(|| async { "ok" }))
             .layer(middleware::from_fn(move |req, next| {
                 let expected = expected.clone();
                 dat_auth_middleware(req, next, expected)
@@ -1244,12 +1289,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn certmesh_sibling_read_get_stays_exempt() {
-        // The audit-log carve-out is surgical: it gates LOG specifically.
-        // /v1/certmesh/status stays token-free on every peer (it is load-bearing
-        // in the unauthenticated cross-host enrollment preflight).
+    async fn certmesh_bootstrap_read_stays_exempt() {
+        // Bootstrap is the deliberately small public enrollment preflight.
         let app = audit_log_test_router("secret-token");
-        let req = Request::get("/v1/certmesh/status")
+        let req = Request::get("/v1/certmesh/bootstrap")
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -1338,16 +1381,21 @@ mod tests {
     }
 
     // ── Protected zone/posture reads: loopback-exempt, remote-gated ──
-    // /v1/certmesh/diagnose and /v1/dns/{list,zone,entries} carry zone + trust-posture
-    // info: token-free for a loopback peer (local tooling), token-required from a
-    // remote peer, and fail-closed when the peer is unknown. (status + trust-bundle
-    // are deliberately NOT here — they are part of the unauthenticated protocol.)
+    // Full trust/DNS reads and dashboard projections carrying the same data are
+    // token-free for a loopback peer (local tooling), token-required from a remote
+    // peer, and fail-closed when the peer is unknown. Bootstrap and the signed
+    // trust bundle remain part of the unauthenticated protocol.
 
-    const PROTECTED_READS: [&str; 4] = [
+    const PROTECTED_READS: [&str; 9] = [
         "/v1/dns/list",
         "/v1/dns/zone",
         "/v1/dns/entries",
+        koi_certmesh::http::paths::STATUS,
         koi_certmesh::http::paths::DIAGNOSE,
+        koi_trust::http::paths::STATUS,
+        paths::INVENTORY,
+        paths::DASHBOARD_SNAPSHOT,
+        paths::DASHBOARD_EVENTS,
     ];
 
     fn protected_read_test_router(token: &str) -> Router {
@@ -1412,12 +1460,69 @@ mod tests {
     #[tokio::test]
     async fn protected_read_fails_closed_without_peer_info() {
         // No ConnectInfo extension (peer unknown) → require the token.
-        let app = protected_read_test_router("secret-token");
-        let req = Request::get("/v1/dns/list").body(Body::empty()).unwrap();
-        assert_eq!(
-            app.oneshot(req).await.unwrap().status(),
-            axum::http::StatusCode::UNAUTHORIZED
-        );
+        for path in PROTECTED_READS {
+            let app = protected_read_test_router("secret-token");
+            let req = Request::get(path).body(Body::empty()).unwrap();
+            assert_eq!(
+                app.oneshot(req).await.unwrap().status(),
+                axum::http::StatusCode::UNAUTHORIZED,
+                "{path} must fail closed without peer identity"
+            );
+        }
+    }
+
+    fn trust_auth_test_router(token: &str) -> Router {
+        let expected = Arc::new(token.to_string());
+        Router::new()
+            .route(koi_trust::http::paths::INSTALL, post(|| async { "ok" }))
+            .route(koi_trust::http::paths::ENSURE, post(|| async { "ok" }))
+            .route(
+                koi_trust::http::paths::REMOVE,
+                axum::routing::delete(|| async { "ok" }),
+            )
+            .route(koi_trust::http::paths::INSPECT, post(|| async { "ok" }))
+            .route(koi_trust::http::paths::RECONCILE, post(|| async { "ok" }))
+            .layer(middleware::from_fn(move |req, next| {
+                let expected = expected.clone();
+                dat_auth_middleware(req, next, expected)
+            }))
+    }
+
+    #[tokio::test]
+    async fn every_trust_command_and_platform_query_requires_the_daemon_token() {
+        let routes = [
+            (axum::http::Method::POST, koi_trust::http::paths::INSTALL),
+            (axum::http::Method::POST, koi_trust::http::paths::ENSURE),
+            (axum::http::Method::DELETE, koi_trust::http::paths::REMOVE),
+            (axum::http::Method::POST, koi_trust::http::paths::INSPECT),
+            (axum::http::Method::POST, koi_trust::http::paths::RECONCILE),
+        ];
+        for (method, path) in routes {
+            let response = trust_auth_test_router("secret-token")
+                .oneshot(
+                    Request::builder()
+                        .method(method.clone())
+                        .uri(path)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
+
+            let response = trust_auth_test_router("secret-token")
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(path)
+                        .header(DAT_HEADER, "secret-token")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+        }
     }
 
     // ── CORS loopback-origin check is an exact host-authority match ──
@@ -1565,12 +1670,20 @@ mod tests {
             "missing /v1/health/status: {paths:?}"
         );
         assert!(
+            paths.contains(&"/v1/health/log"),
+            "missing /v1/health/log: {paths:?}"
+        );
+        assert!(
             paths.contains(&"/v1/proxy/status"),
             "missing /v1/proxy/status: {paths:?}"
         );
         assert!(
             paths.contains(&"/v1/certmesh/status"),
             "missing /v1/certmesh/status: {paths:?}"
+        );
+        assert!(
+            paths.contains(&"/v1/trust/status"),
+            "missing /v1/trust/status: {paths:?}"
         );
         assert!(
             paths.contains(&"/v1/udp/status"),
@@ -1587,28 +1700,75 @@ mod tests {
     /// AppState with every capability absent — the empty-daemon fixture.
     fn empty_app_state() -> AppState {
         AppState {
-            mdns: None,
-            certmesh: None,
-            dns: None,
-            health: None,
-            proxy: None,
-            udp: None,
-            runtime: None,
+            system_status: Arc::new(koi_compose::status::KoiStatusRuntime::default()),
+            host: koi_compose::host::HostIdentity::from_hostname("test-host").unwrap(),
             started_at: std::time::Instant::now(),
             cancel: CancellationToken::new(),
             http_bind: "127.0.0.1".to_string(),
             mdns_browse: None,
-            mdns_snapshot: None,
             mcp_http_enabled: false,
             webhook_sinks: 0,
             daemon: true,
         }
     }
 
+    #[test]
+    fn seal_presence_follows_the_captured_product_snapshot() {
+        let status = koi_compose::status::KoiStatusRuntime::default().status();
+        assert_eq!(seal_projection(status.as_ref()), None);
+
+        let mut with_certmesh = status.as_ref().clone();
+        with_certmesh.domains.certmesh = Some(Arc::new(koi_certmesh::CertmeshStatus {
+            revision: 0,
+            role: koi_certmesh::CertmeshRole::Open,
+            posture: koi_common::posture::Posture::OPEN,
+            identity: koi_certmesh::CertmeshIdentityStatus {
+                condition: koi_certmesh::IdentityCondition::Absent,
+                info: None,
+                reason: None,
+            },
+            diagnosis: koi_common::diagnosis::TrustDiagnosis::from_checks(
+                koi_common::posture::Posture::OPEN,
+                Vec::new(),
+            ),
+            authority: None,
+            reload: None,
+            renewal: koi_certmesh::CertmeshRenewalStatus::default(),
+        }));
+        assert_eq!(
+            seal_projection(&with_certmesh),
+            Some(koi_common::sealed::CURRENT_CONFIDENTIALITY.as_wire())
+        );
+    }
+
     fn prometheus_test_router(state: AppState) -> Router {
         Router::new()
             .route(paths::PROMETHEUS_SD, get(prometheus_sd_handler))
             .layer(Extension(state))
+    }
+
+    #[tokio::test]
+    async fn inventory_endpoint_projects_one_cached_product_revision() {
+        let state = empty_app_state();
+        let expected = state.system_status.status();
+        let system_status = Arc::clone(&state.system_status);
+        let app = Router::new()
+            .route(paths::INVENTORY, get(inventory_handler))
+            .layer(Extension(state));
+
+        let response = app
+            .oneshot(Request::get(paths::INVENTORY).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let inventory: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(inventory["status"]["revision"], expected.revision);
+        assert_eq!(inventory["health"], serde_json::Value::Null);
+        assert_eq!(inventory["dns"], serde_json::Value::Null);
+        assert!(Arc::ptr_eq(&expected, &system_status.status()));
     }
 
     #[tokio::test]
@@ -1647,6 +1807,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn prometheus_sd_projects_the_captured_product_snapshot() {
+        let runtime = Arc::new(koi_runtime::RuntimeCore::new(
+            koi_runtime::RuntimeConfig::default(),
+        ));
+        let cancel = CancellationToken::new();
+        let instance = koi_runtime::Instance {
+            id: "aggregate-instance".to_string(),
+            name: "aggregate-service".to_string(),
+            ports: vec![koi_runtime::PortMapping {
+                host_port: 9464,
+                container_port: 9464,
+                protocol: koi_runtime::instance::PortProtocol::Tcp,
+                host_ip: "127.0.0.1".to_string(),
+            }],
+            ips: Vec::new(),
+            metadata: koi_runtime::KoiMetadata::default(),
+            backend: "test".to_string(),
+            state: koi_runtime::InstanceState::Running,
+            discovered_at: chrono::Utc::now(),
+            image: None,
+        };
+        runtime
+            .start_with_backend(
+                cancel.clone(),
+                Box::new(FixedRuntimeBackend {
+                    initial: vec![instance],
+                }),
+            )
+            .await
+            .expect("runtime provider startup");
+        let cores = DaemonCores {
+            runtime: Some(Arc::clone(&runtime)),
+            ..DaemonCores::default()
+        };
+        cores.system_status.reconcile(&cores);
+        let expected_revision = cores.system_status.status().revision;
+
+        let mut state = empty_app_state();
+        state.system_status = Arc::clone(&cores.system_status);
+        let app = prometheus_test_router(state);
+        let response = app
+            .oneshot(
+                Request::get(paths::PROMETHEUS_SD)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        cancel.cancel();
+        runtime.shutdown().await.expect("Runtime shutdown");
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let groups: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(groups[0]["targets"][0], "127.0.0.1:9464");
+        assert_eq!(groups[0]["labels"]["__meta_koi_name"], "aggregate-service");
+        assert_eq!(
+            cores.system_status.status().revision,
+            expected_revision,
+            "a presentation read must not reconcile or mutate product status"
+        );
+    }
+
+    #[tokio::test]
     async fn prometheus_sd_get_is_unauthenticated() {
         // The endpoint must be reachable without the DAT token (like /healthz).
         // GET is exempt from the auth middleware; this guards that it stays a GET.
@@ -1675,13 +1899,10 @@ mod tests {
 
     #[tokio::test]
     async fn host_handler_returns_default_interface_only() {
-        let Json(resp) = host_handler().await;
-        assert!(!resp.hostname.is_empty(), "hostname should not be empty");
-        assert!(
-            resp.hostname_fqdn.ends_with(".local"),
-            "FQDN should end with .local: {}",
-            resp.hostname_fqdn
-        );
+        let host = koi_compose::host::HostIdentity::from_hostname("accepted-host").unwrap();
+        let resp = observe_host(&host).expect("observe local host");
+        assert_eq!(resp.hostname, "accepted-host");
+        assert_eq!(resp.hostname_fqdn, "accepted-host.local");
         // The LAN list should contain exactly the default-route interface
         // (not virtual switches, Docker bridges, etc.)
         assert!(

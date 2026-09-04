@@ -27,7 +27,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use tokio::sync::{mpsc as tokio_mpsc, watch};
+use tokio::sync::{mpsc as tokio_mpsc, oneshot, watch};
 
 use crate::adapter::{
     failed_assessment, MdnsAdapter, MdnsCapabilities, MdnsProviderReport, ProbeFact, ProviderApi,
@@ -36,7 +36,7 @@ use crate::adapter::{
 use crate::error::{MdnsError, ProviderFailure, ProviderOperation};
 use crate::provider::{
     provider_error, Announcement, BrowseLease, ProviderAddress, ProviderBrowse, ProviderEvent,
-    ProviderService, ProviderSession, PublicationLease,
+    ProviderService, ProviderSession, ProviderTask, PublicationLease,
 };
 use crate::Result;
 
@@ -418,6 +418,135 @@ impl ConnectionControl {
     }
 }
 
+/// One Bonjour callback thread and the connection/context confined to it.
+///
+/// The registry and the operation lease share this owner, but the native
+/// thread handle itself has exactly one slot. `finished` is signalled only
+/// after deallocation (or deliberate daemon-death quarantine), so joining is
+/// a non-blocking completion proof once that barrier is observed.
+struct NativeThreadOwner {
+    control: ConnectionControl,
+    worker: Mutex<NativeThreadState>,
+}
+
+enum NativeThreadState {
+    Starting,
+    Running(std::thread::JoinHandle<()>),
+    Reaped,
+}
+
+impl NativeThreadOwner {
+    fn new() -> Self {
+        Self {
+            control: ConnectionControl::new(),
+            worker: Mutex::new(NativeThreadState::Starting),
+        }
+    }
+
+    fn attach(&self, worker: std::thread::JoinHandle<()>) {
+        let mut state = self
+            .worker
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match &*state {
+            NativeThreadState::Starting => *state = NativeThreadState::Running(worker),
+            NativeThreadState::Reaped => drop(worker),
+            NativeThreadState::Running(_) => {
+                debug_assert!(false, "Bonjour callback owner attached twice");
+                drop(worker);
+            }
+        }
+    }
+
+    fn start_failed(&self) {
+        self.control.finish();
+        *self
+            .worker
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = NativeThreadState::Reaped;
+    }
+
+    fn request_close(&self) {
+        self.control.request_close();
+    }
+
+    fn close_requested(&self) -> bool {
+        self.control.close_requested()
+    }
+
+    fn finish(&self) {
+        self.control.finish();
+    }
+
+    fn is_finished(&self) -> bool {
+        self.control.is_finished()
+    }
+
+    fn is_worker_ready(&self) -> bool {
+        !matches!(
+            &*self
+                .worker
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            NativeThreadState::Starting
+        )
+    }
+
+    fn wait_finished(&self, wait: Duration) -> bool {
+        self.control.wait_finished(wait)
+    }
+
+    fn join_finished(&self) -> std::result::Result<(), String> {
+        if !self.is_finished() {
+            return Err("Bonjour owner has not crossed its release barrier".to_string());
+        }
+        let state = {
+            let mut state = self
+                .worker
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            std::mem::replace(&mut *state, NativeThreadState::Reaped)
+        };
+        match state {
+            NativeThreadState::Running(worker) => worker
+                .join()
+                .map_err(|_| "Bonjour callback owner panicked".to_string()),
+            NativeThreadState::Reaped => Ok(()),
+            NativeThreadState::Starting => {
+                *self
+                    .worker
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = NativeThreadState::Starting;
+                Err("Bonjour callback owner has not attached its thread".to_string())
+            }
+        }
+    }
+
+    fn quarantine(&self) {
+        self.request_close();
+        self.control.finish();
+        let state = {
+            let mut state = self
+                .worker
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            std::mem::replace(&mut *state, NativeThreadState::Reaped)
+        };
+        if let NativeThreadState::Running(worker) = state {
+            // The stopped responder can strand vendor teardown. Detaching that
+            // native owner is an explicit quarantine: its callback context
+            // remains on the same thread and cannot enter a new provider epoch.
+            drop(worker);
+        }
+    }
+}
+
+impl Drop for NativeThreadOwner {
+    fn drop(&mut self) {
+        self.control.request_close();
+    }
+}
+
 #[derive(Clone, Default)]
 struct ConnectionRegistry {
     inner: Arc<Mutex<ConnectionRegistryState>>,
@@ -426,44 +555,46 @@ struct ConnectionRegistry {
 #[derive(Default)]
 struct ConnectionRegistryState {
     shutting_down: bool,
-    connections: Vec<ConnectionControl>,
+    connections: Vec<Arc<NativeThreadOwner>>,
 }
 
 impl ConnectionRegistry {
-    fn track(&self, control: ConnectionControl) {
+    fn track(&self, owner: Arc<NativeThreadOwner>) {
         let request_close = {
             let mut state = self
                 .inner
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            state
-                .connections
-                .retain(|connection| !connection.is_finished());
             let request_close = state.shutting_down;
-            state.connections.push(control.clone());
+            state.connections.push(Arc::clone(&owner));
             request_close
         };
         if request_close {
-            control.request_close();
+            owner.request_close();
         }
     }
 
-    fn begin_shutdown(&self) -> Vec<ConnectionControl> {
+    fn begin_shutdown(&self) -> Vec<Arc<NativeThreadOwner>> {
         let connections = {
             let mut state = self
                 .inner
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             state.shutting_down = true;
-            state
-                .connections
-                .retain(|connection| !connection.is_finished());
             state.connections.clone()
         };
         for connection in &connections {
             connection.request_close();
         }
         connections
+    }
+
+    fn clear(&self) {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .connections
+            .clear();
     }
 }
 
@@ -553,7 +684,7 @@ fn mark_publication_lost(
 /// the responder is gone, calling its teardown path is both unnecessary and
 /// known to hang on some Bonjour builds; the tiny callback context is then
 /// deliberately quarantined instead of being freed under native code.
-fn retire_owned<T>(api: &DnssdApi, reference: SdRef, runtime: Box<T>, control: &ConnectionControl) {
+fn retire_owned<T>(api: &DnssdApi, reference: SdRef, runtime: Box<T>, owner: &NativeThreadOwner) {
     if reference.is_null() {
         drop(runtime);
     } else if crate::windows_dnsapi::service_running("Bonjour Service") {
@@ -566,27 +697,32 @@ fn retire_owned<T>(api: &DnssdApi, reference: SdRef, runtime: Box<T>, control: &
         );
         std::mem::forget(runtime);
     }
-    control.finish();
+    owner.finish();
 }
 
 async fn retire_connection(
-    control: &ConnectionControl,
+    owner: &NativeThreadOwner,
     state: &watch::Sender<ProviderSessionState>,
     operation: ProviderOperation,
+    wait: Duration,
 ) -> Result<()> {
-    control.request_close();
-    let waiter = control.clone();
-    let finished = tokio::task::spawn_blocking(move || waiter.wait_finished(CALL_WAIT))
-        .await
-        .unwrap_or(false);
-    if finished {
-        return Ok(());
+    owner.request_close();
+    let deadline = tokio::time::Instant::now() + wait;
+    while (!owner.is_finished() || !owner.is_worker_ready())
+        && tokio::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(SOCKET_POLL_SLICE).await;
+    }
+    if owner.is_finished() && owner.is_worker_ready() {
+        return owner.join_finished().map_err(|detail| {
+            provider_error(DESCRIPTOR.name, operation, ProviderFailure::Lost, detail)
+        });
     }
     if !crate::windows_dnsapi::service_running("Bonjour Service") {
         // A daemon-loss race may strand the owner inside vendor teardown. It
         // still owns the ref and context, so detach that safe quarantine from
         // the new provider generation instead of blocking failover.
-        control.finish();
+        owner.quarantine();
         return Ok(());
     }
     if *state.borrow() != ProviderSessionState::Lost {
@@ -596,8 +732,32 @@ async fn retire_connection(
         DESCRIPTOR.name,
         operation,
         ProviderFailure::Timeout,
-        format!("Bonjour connection retirement exceeded {CALL_WAIT:?}"),
+        format!("Bonjour connection retirement exceeded {wait:?}"),
     ))
+}
+
+fn finish_native_call<T>(
+    owner: &NativeThreadOwner,
+    operation: ProviderOperation,
+    outcome: Result<T>,
+    wait: Duration,
+) -> Result<T> {
+    owner.request_close();
+    if owner.wait_finished(wait) {
+        owner.join_finished().map_err(|detail| {
+            provider_error(DESCRIPTOR.name, operation, ProviderFailure::Lost, detail)
+        })?;
+    } else if !crate::windows_dnsapi::service_running("Bonjour Service") {
+        owner.quarantine();
+    } else {
+        return Err(provider_error(
+            DESCRIPTOR.name,
+            operation,
+            ProviderFailure::Timeout,
+            format!("Bonjour connection retirement exceeded {wait:?}"),
+        ));
+    }
+    outcome
 }
 
 struct BonjourSession {
@@ -605,7 +765,7 @@ struct BonjourSession {
     state_rx: watch::Receiver<ProviderSessionState>,
     capabilities: MdnsCapabilities,
     connections: ConnectionRegistry,
-    workers: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    workers: BonjourWorkerRegistry,
 }
 
 impl BonjourSession {
@@ -616,7 +776,7 @@ impl BonjourSession {
             state_rx,
             capabilities,
             connections: ConnectionRegistry::default(),
-            workers: Mutex::new(Vec::new()),
+            workers: BonjourWorkerRegistry::default(),
         }
     }
 }
@@ -660,11 +820,12 @@ impl ProviderSession for BonjourSession {
             Ok(registered) => registered,
             Err(error) => return Err(error),
         };
+        let (owner, final_name) = registered.into_parts();
         Ok(Box::new(BonjourPublicationLease {
             id: announcement.id.clone(),
-            control: registered.control,
+            owner,
             state_tx: self.state_tx.clone(),
-            final_name: registered.final_name,
+            final_name,
             active: true,
         }))
     }
@@ -690,10 +851,16 @@ impl ProviderSession for BonjourSession {
             Ok(pair) => pair,
             Err(error) => return Err(error),
         };
-        self.workers
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push(worker);
+        if !self.workers.track(Arc::clone(&worker)) {
+            let _ = browse.close().await;
+            let _ = worker.join(CALL_WAIT).await;
+            return Err(provider_error(
+                DESCRIPTOR.name,
+                ProviderOperation::Browse,
+                ProviderFailure::Lost,
+                "session shutdown began during browse startup",
+            ));
+        }
         Ok(browse)
     }
 
@@ -727,30 +894,39 @@ impl ProviderSession for BonjourSession {
 
     async fn shutdown(&self) -> Result<()> {
         self.state_tx.send_replace(ProviderSessionState::Lost);
-        let _ = self.connections.begin_shutdown();
-        let workers = self
-            .workers
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .drain(..)
-            .collect::<Vec<_>>();
-        for worker in workers {
-            let _ = worker.await;
-        }
         let connections = self.connections.begin_shutdown();
-        let waiting = connections.clone();
-        let retired = tokio::task::spawn_blocking(move || {
-            let deadline = Instant::now() + CALL_WAIT;
-            waiting.into_iter().all(|connection| {
-                let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-                    return connection.is_finished();
-                };
-                connection.wait_finished(remaining)
-            })
-        })
-        .await
-        .unwrap_or(false);
-        if retired {
+        let workers = self.workers.begin_shutdown();
+        let deadline = tokio::time::Instant::now() + CALL_WAIT;
+        let mut first_error = None;
+        for worker in &workers {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if let Err(detail) = worker.join(remaining).await {
+                first_error.get_or_insert_with(|| {
+                    provider_error(
+                        DESCRIPTOR.name,
+                        ProviderOperation::Shutdown,
+                        ProviderFailure::Timeout,
+                        detail,
+                    )
+                });
+            }
+        }
+        for connection in &connections {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if let Err(error) = retire_connection(
+                connection,
+                &self.state_tx,
+                ProviderOperation::Shutdown,
+                remaining,
+            )
+            .await
+            {
+                first_error.get_or_insert(error);
+            }
+        }
+        if first_error.is_none() {
+            self.workers.clear();
+            self.connections.clear();
             return Ok(());
         }
         if !crate::windows_dnsapi::service_running("Bonjour Service") {
@@ -758,16 +934,65 @@ impl ProviderSession for BonjourSession {
             // callback context; acknowledge that quarantine so failover can
             // continue with the newly selected provider generation.
             for connection in connections {
-                connection.finish();
+                connection.quarantine();
             }
+            self.workers.clear();
+            self.connections.clear();
             return Ok(());
         }
-        Err(provider_error(
-            DESCRIPTOR.name,
-            ProviderOperation::Shutdown,
-            ProviderFailure::Timeout,
-            format!("Bonjour session retirement exceeded {CALL_WAIT:?}"),
-        ))
+        Err(first_error.expect("failed session retirement records an error"))
+    }
+}
+
+impl Drop for BonjourSession {
+    fn drop(&mut self) {
+        self.state_tx.send_replace(ProviderSessionState::Lost);
+        let _ = self.connections.begin_shutdown();
+        for worker in self.workers.begin_shutdown() {
+            worker.abort();
+        }
+    }
+}
+
+#[derive(Default)]
+struct BonjourWorkerRegistry {
+    state: Mutex<BonjourWorkerRegistryState>,
+}
+
+#[derive(Default)]
+struct BonjourWorkerRegistryState {
+    shutting_down: bool,
+    workers: Vec<Arc<ProviderTask>>,
+}
+
+impl BonjourWorkerRegistry {
+    fn track(&self, worker: Arc<ProviderTask>) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.shutting_down {
+            return false;
+        }
+        state.workers.push(worker);
+        true
+    }
+
+    fn begin_shutdown(&self) -> Vec<Arc<ProviderTask>> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.shutting_down = true;
+        state.workers.clone()
+    }
+
+    fn clear(&self) {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .workers
+            .clear();
     }
 }
 
@@ -781,8 +1006,25 @@ struct RegisterRequest {
 }
 
 struct RegisteredNative {
-    control: ConnectionControl,
+    owner: Option<Arc<NativeThreadOwner>>,
     final_name: String,
+}
+
+impl RegisteredNative {
+    fn into_parts(mut self) -> (Arc<NativeThreadOwner>, String) {
+        (
+            self.owner.take().expect("registered owner"),
+            std::mem::take(&mut self.final_name),
+        )
+    }
+}
+
+impl Drop for RegisteredNative {
+    fn drop(&mut self) {
+        if let Some(owner) = &self.owner {
+            owner.request_close();
+        }
+    }
 }
 
 /// Register through `DNSServiceRegister` and wait for the completion reply.
@@ -821,9 +1063,9 @@ fn register_native(
         Err(missing) => return Err(dnssd_missing(ProviderOperation::Publish, &missing)),
     };
     let fallback_name = request.name.clone();
-    let control = ConnectionControl::new();
-    connections.track(control.clone());
-    let owner = control.clone();
+    let owner = Arc::new(NativeThreadOwner::new());
+    connections.track(Arc::clone(&owner));
+    let thread_owner = Arc::clone(&owner);
     let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<String>>(1);
     let thread = std::thread::Builder::new()
         .name("koi-mdns-bonjour-publish".to_string())
@@ -859,14 +1101,14 @@ fn register_native(
                     error,
                     "DNSServiceRegister",
                 )));
-                retire_owned(api, reference, runtime, &owner);
+                retire_owned(api, reference, runtime, &thread_owner);
                 return;
             }
 
             let deadline = Instant::now() + CALL_WAIT;
             let mut acknowledged = false;
             loop {
-                if owner.close_requested() {
+                if thread_owner.close_requested() {
                     if !acknowledged {
                         let _ = ready_tx.send(Err(provider_error(
                             DESCRIPTOR.name,
@@ -888,7 +1130,7 @@ fn register_native(
                                 status,
                                 "DNSServiceRegister reply",
                             )));
-                            owner.request_close();
+                            thread_owner.request_close();
                         }
                     } else if status != K_DNSSERVICE_ERR_NO_ERROR {
                         mark_publication_lost(
@@ -896,10 +1138,10 @@ fn register_native(
                             ProviderOperation::Publish,
                             &DriveFailure::Dnssd(status),
                         );
-                        owner.request_close();
+                        thread_owner.request_close();
                     }
                 }
-                if owner.close_requested() {
+                if thread_owner.close_requested() {
                     continue;
                 }
                 let wait = if acknowledged {
@@ -929,21 +1171,24 @@ fn register_native(
                     break;
                 }
             }
-            retire_owned(api, reference, runtime, &owner);
+            retire_owned(api, reference, runtime, &thread_owner);
         });
-    if let Err(error) = thread {
-        control.finish();
-        return Err(provider_error(
-            DESCRIPTOR.name,
-            ProviderOperation::Publish,
-            ProviderFailure::Lost,
-            format!("could not start Bonjour connection owner: {error}"),
-        ));
+    match thread {
+        Ok(thread) => owner.attach(thread),
+        Err(error) => {
+            owner.start_failed();
+            return Err(provider_error(
+                DESCRIPTOR.name,
+                ProviderOperation::Publish,
+                ProviderFailure::Lost,
+                format!("could not start Bonjour connection owner: {error}"),
+            ));
+        }
     }
     let final_name = match ready_rx.recv_timeout(CALL_WAIT + SOCKET_POLL_SLICE) {
         Ok(result) => result?,
         Err(_) => {
-            control.request_close();
+            owner.request_close();
             return Err(provider_error(
                 DESCRIPTOR.name,
                 ProviderOperation::Publish,
@@ -953,7 +1198,7 @@ fn register_native(
         }
     };
     Ok(RegisteredNative {
-        control,
+        owner: Some(owner),
         final_name: if final_name.is_empty() {
             fallback_name
         } else {
@@ -964,7 +1209,7 @@ fn register_native(
 
 struct BonjourPublicationLease {
     id: String,
-    control: ConnectionControl,
+    owner: Arc<NativeThreadOwner>,
     state_tx: watch::Sender<ProviderSessionState>,
     final_name: String,
     active: bool,
@@ -982,7 +1227,13 @@ impl PublicationLease for BonjourPublicationLease {
 
     async fn withdraw(&mut self) -> Result<()> {
         if self.active {
-            retire_connection(&self.control, &self.state_tx, ProviderOperation::Withdraw).await?;
+            retire_connection(
+                &self.owner,
+                &self.state_tx,
+                ProviderOperation::Withdraw,
+                CALL_WAIT,
+            )
+            .await?;
             self.active = false;
             tracing::debug!(
                 provider = DESCRIPTOR.name,
@@ -998,7 +1249,7 @@ impl PublicationLease for BonjourPublicationLease {
 impl Drop for BonjourPublicationLease {
     fn drop(&mut self) {
         if self.active {
-            self.control.request_close();
+            self.owner.request_close();
         }
     }
 }
@@ -1032,7 +1283,7 @@ async fn open_bonjour_browse(
     is_meta: bool,
     connections: ConnectionRegistry,
     state_tx: watch::Sender<ProviderSessionState>,
-) -> Result<(ProviderBrowse, tokio::task::JoinHandle<()>)> {
+) -> Result<(ProviderBrowse, Arc<ProviderTask>)> {
     let (event_tx, event_rx) = tokio_mpsc::channel(BROWSE_CHANNEL_CAPACITY);
     let (observation_tx, observation_rx) = mpsc::channel::<BrowseObservation>();
 
@@ -1084,11 +1335,11 @@ async fn open_bonjour_browse(
         Ok(api) => api,
         Err(missing) => return Err(dnssd_missing(ProviderOperation::Browse, &missing)),
     };
-    let control = ConnectionControl::new();
-    connections.track(control.clone());
-    let owner = control.clone();
+    let owner = Arc::new(NativeThreadOwner::new());
+    connections.track(Arc::clone(&owner));
+    let thread_owner = Arc::clone(&owner);
     let owner_regtype = regtype.to_string();
-    let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<()>>(1);
+    let (ready_tx, ready_rx) = oneshot::channel::<Result<()>>();
     let callback_thread = std::thread::Builder::new()
         .name(format!("koi-mdns-bonjour-browse-{regtype}"))
         .spawn(move || {
@@ -1115,13 +1366,13 @@ async fn open_bonjour_browse(
                     error,
                     "DNSServiceBrowse",
                 )));
-                retire_owned(api, reference, runtime, &owner);
+                retire_owned(api, reference, runtime, &thread_owner);
                 return;
             }
             if ready_tx.send(Ok(())).is_err() {
-                owner.request_close();
+                thread_owner.request_close();
             }
-            while !owner.close_requested() {
+            while !thread_owner.close_requested() {
                 if let Err(error) = drive_once(api, reference, SOCKET_POLL_SLICE) {
                     tracing::debug!(
                         provider = DESCRIPTOR.name,
@@ -1142,32 +1393,34 @@ async fn open_bonjour_browse(
                     break;
                 }
             }
-            retire_owned(api, reference, runtime, &owner);
+            retire_owned(api, reference, runtime, &thread_owner);
         });
-    if let Err(error) = callback_thread {
-        control.finish();
-        return Err(provider_error(
-            DESCRIPTOR.name,
-            ProviderOperation::Browse,
-            ProviderFailure::Lost,
-            format!("could not start Bonjour connection owner: {error}"),
-        ));
+    match callback_thread {
+        Ok(thread) => owner.attach(thread),
+        Err(error) => {
+            owner.start_failed();
+            return Err(provider_error(
+                DESCRIPTOR.name,
+                ProviderOperation::Browse,
+                ProviderFailure::Lost,
+                format!("could not start Bonjour connection owner: {error}"),
+            ));
+        }
     }
-    let startup =
-        tokio::task::spawn_blocking(move || ready_rx.recv_timeout(CALL_WAIT + SOCKET_POLL_SLICE))
-            .await
-            .map_err(|error| {
-                provider_error(
-                    DESCRIPTOR.name,
-                    ProviderOperation::Browse,
-                    ProviderFailure::Lost,
-                    format!("browse startup wait failed: {error}"),
-                )
-            })?;
+    let startup = tokio::time::timeout(CALL_WAIT + SOCKET_POLL_SLICE, ready_rx).await;
     match startup {
-        Ok(result) => result?,
+        Ok(Ok(result)) => result?,
+        Ok(Err(_)) => {
+            owner.request_close();
+            return Err(provider_error(
+                DESCRIPTOR.name,
+                ProviderOperation::Browse,
+                ProviderFailure::Lost,
+                "Bonjour browse owner dropped its readiness reply",
+            ));
+        }
         Err(_) => {
-            control.request_close();
+            owner.request_close();
             return Err(provider_error(
                 DESCRIPTOR.name,
                 ProviderOperation::Browse,
@@ -1177,11 +1430,11 @@ async fn open_bonjour_browse(
         }
     }
 
-    let worker_control = control.clone();
+    let worker_owner = Arc::clone(&owner);
     let worker_connections = connections.clone();
-    let worker = tokio::task::spawn_blocking(move || {
+    let worker = Arc::new(ProviderTask::new(tokio::task::spawn_blocking(move || {
         loop {
-            if worker_control.close_requested() || worker_control.is_finished() {
+            if worker_owner.close_requested() || worker_owner.is_finished() {
                 break;
             }
             let observation = match observation_rx.recv_timeout(SOCKET_POLL_SLICE) {
@@ -1255,14 +1508,15 @@ async fn open_bonjour_browse(
                 break;
             }
         }
-        worker_control.request_close();
-    });
+        worker_owner.request_close();
+    })));
 
     Ok((
         ProviderBrowse::new(
             event_rx,
             Box::new(BonjourBrowseLease {
-                control: control.clone(),
+                owner,
+                worker: Arc::clone(&worker),
                 state_tx: state_tx.clone(),
                 active: true,
             }),
@@ -1272,7 +1526,8 @@ async fn open_bonjour_browse(
 }
 
 struct BonjourBrowseLease {
-    control: ConnectionControl,
+    owner: Arc<NativeThreadOwner>,
+    worker: Arc<ProviderTask>,
     state_tx: watch::Sender<ProviderSessionState>,
     active: bool,
 }
@@ -1285,7 +1540,21 @@ impl BrowseLease for BonjourBrowseLease {
 
     async fn close(&mut self) -> Result<()> {
         if self.active {
-            retire_connection(&self.control, &self.state_tx, ProviderOperation::Browse).await?;
+            retire_connection(
+                &self.owner,
+                &self.state_tx,
+                ProviderOperation::Browse,
+                CALL_WAIT,
+            )
+            .await?;
+            self.worker.join(CALL_WAIT).await.map_err(|detail| {
+                provider_error(
+                    DESCRIPTOR.name,
+                    ProviderOperation::Browse,
+                    ProviderFailure::Lost,
+                    detail,
+                )
+            })?;
             self.active = false;
         }
         Ok(())
@@ -1295,7 +1564,8 @@ impl BrowseLease for BonjourBrowseLease {
 impl Drop for BonjourBrowseLease {
     fn drop(&mut self) {
         if self.active {
-            self.control.request_close();
+            self.owner.request_close();
+            self.worker.abort();
         }
     }
 }
@@ -1374,9 +1644,9 @@ fn resolve_native(
     let owner_name = name.to_string();
     let owner_regtype = regtype.to_string();
     let owner_domain = domain.to_string();
-    let control = ConnectionControl::new();
-    connections.track(control.clone());
-    let owner = control.clone();
+    let owner = Arc::new(NativeThreadOwner::new());
+    connections.track(Arc::clone(&owner));
+    let thread_owner = Arc::clone(&owner);
     let (result_tx, result_rx) = mpsc::sync_channel::<Result<ResolveOutcome>>(1);
     let thread = std::thread::Builder::new()
         .name("koi-mdns-bonjour-resolve".to_string())
@@ -1405,7 +1675,7 @@ fn resolve_native(
                     error,
                     "DNSServiceResolve",
                 )));
-                retire_owned(api, reference, runtime, &owner);
+                retire_owned(api, reference, runtime, &thread_owner);
                 return;
             }
 
@@ -1424,7 +1694,7 @@ fn resolve_native(
                     let _ = result_tx.send(result);
                     break;
                 }
-                if owner.close_requested() {
+                if thread_owner.close_requested() {
                     break;
                 }
                 let Some(wait) = remaining_slice(deadline) else {
@@ -1446,29 +1716,30 @@ fn resolve_native(
                     break;
                 }
             }
-            retire_owned(api, reference, runtime, &owner);
+            retire_owned(api, reference, runtime, &thread_owner);
         });
-    if let Err(error) = thread {
-        control.finish();
-        return Err(provider_error(
-            DESCRIPTOR.name,
-            ProviderOperation::Resolve,
-            ProviderFailure::Lost,
-            format!("could not start Bonjour connection owner: {error}"),
-        ));
-    }
-    let outcome = match result_rx.recv_timeout(RESOLVE_WAIT + SOCKET_POLL_SLICE) {
-        Ok(result) => result?,
-        Err(_) => {
-            control.request_close();
+    match thread {
+        Ok(thread) => owner.attach(thread),
+        Err(error) => {
+            owner.start_failed();
             return Err(provider_error(
                 DESCRIPTOR.name,
                 ProviderOperation::Resolve,
-                ProviderFailure::Timeout,
-                format!("Bonjour resolve owner exceeded {RESOLVE_WAIT:?}"),
+                ProviderFailure::Lost,
+                format!("could not start Bonjour connection owner: {error}"),
             ));
         }
+    }
+    let outcome = match result_rx.recv_timeout(RESOLVE_WAIT + SOCKET_POLL_SLICE) {
+        Ok(result) => result,
+        Err(_) => Err(provider_error(
+            DESCRIPTOR.name,
+            ProviderOperation::Resolve,
+            ProviderFailure::Timeout,
+            format!("Bonjour resolve owner exceeded {RESOLVE_WAIT:?}"),
+        )),
     };
+    let outcome = finish_native_call(&owner, ProviderOperation::Resolve, outcome, CALL_WAIT)?;
     let instance = instance_label(&outcome.fullname)
         .map(|label| unescape_dnssd_label(&label))
         .unwrap_or_else(|| unescape_dnssd_label(name));
@@ -1555,9 +1826,9 @@ fn get_addr_info_native(
         Ok(api) => api,
         Err(missing) => return Err(dnssd_missing(ProviderOperation::Resolve, &missing)),
     };
-    let control = ConnectionControl::new();
-    connections.track(control.clone());
-    let owner = control.clone();
+    let owner = Arc::new(NativeThreadOwner::new());
+    connections.track(Arc::clone(&owner));
+    let thread_owner = Arc::clone(&owner);
     let (result_tx, result_rx) = mpsc::sync_channel::<Result<Vec<ProviderAddress>>>(1);
     let owner_host = hostname.to_string();
     let thread = std::thread::Builder::new()
@@ -1584,7 +1855,7 @@ fn get_addr_info_native(
                     error,
                     "DNSServiceGetAddrInfo",
                 )));
-                retire_owned(api, reference, runtime, &owner);
+                retire_owned(api, reference, runtime, &thread_owner);
                 return;
             }
 
@@ -1621,7 +1892,7 @@ fn get_addr_info_native(
                     }
                     continue;
                 }
-                if owner.close_requested() {
+                if thread_owner.close_requested() {
                     let _ = result_tx.send(Err(provider_error(
                         DESCRIPTOR.name,
                         ProviderOperation::Resolve,
@@ -1654,29 +1925,30 @@ fn get_addr_info_native(
                     break;
                 }
             }
-            retire_owned(api, reference, runtime, &owner);
+            retire_owned(api, reference, runtime, &thread_owner);
         });
-    if let Err(error) = thread {
-        control.finish();
-        return Err(provider_error(
-            DESCRIPTOR.name,
-            ProviderOperation::Resolve,
-            ProviderFailure::Lost,
-            format!("could not start Bonjour connection owner: {error}"),
-        ));
-    }
-    match result_rx.recv_timeout(RESOLVE_WAIT + SOCKET_POLL_SLICE) {
-        Ok(result) => result,
-        Err(_) => {
-            control.request_close();
-            Err(provider_error(
+    match thread {
+        Ok(thread) => owner.attach(thread),
+        Err(error) => {
+            owner.start_failed();
+            return Err(provider_error(
                 DESCRIPTOR.name,
                 ProviderOperation::Resolve,
-                ProviderFailure::Timeout,
-                format!("Bonjour address completion exceeded {RESOLVE_WAIT:?}"),
-            ))
+                ProviderFailure::Lost,
+                format!("could not start Bonjour connection owner: {error}"),
+            ));
         }
     }
+    let outcome = match result_rx.recv_timeout(RESOLVE_WAIT + SOCKET_POLL_SLICE) {
+        Ok(result) => result,
+        Err(_) => Err(provider_error(
+            DESCRIPTOR.name,
+            ProviderOperation::Resolve,
+            ProviderFailure::Timeout,
+            format!("Bonjour address completion exceeded {RESOLVE_WAIT:?}"),
+        )),
+    };
+    finish_native_call(&owner, ProviderOperation::Resolve, outcome, CALL_WAIT)
 }
 
 /// Project a Winsock sockaddr onto a provider-neutral address.
@@ -2006,22 +2278,23 @@ mod tests {
 
     #[test]
     fn lease_signals_owner_and_waits_for_owner_acknowledgement() {
-        let control = ConnectionControl::new();
-        let owner = control.clone();
+        let owner = Arc::new(NativeThreadOwner::new());
+        let thread_owner = Arc::clone(&owner);
         let (started_tx, started_rx) = mpsc::sync_channel(1);
         let owner_thread = std::thread::spawn(move || {
             started_tx.send(()).unwrap();
-            while !owner.close_requested() {
+            while !thread_owner.close_requested() {
                 std::thread::park_timeout(Duration::from_millis(5));
             }
-            owner.finish();
+            thread_owner.finish();
         });
+        owner.attach(owner_thread);
 
         started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        assert!(!control.is_finished());
-        control.request_close();
-        assert!(control.wait_finished(Duration::from_secs(1)));
-        owner_thread.join().unwrap();
+        assert!(!owner.is_finished());
+        owner.request_close();
+        assert!(owner.wait_finished(Duration::from_secs(1)));
+        owner.join_finished().unwrap();
     }
 
     #[test]
@@ -2029,12 +2302,52 @@ mod tests {
         let registry = ConnectionRegistry::default();
         assert!(registry.begin_shutdown().is_empty());
 
-        let late = ConnectionControl::new();
-        registry.track(late.clone());
+        let late = Arc::new(NativeThreadOwner::new());
+        registry.track(Arc::clone(&late));
+        let thread_owner = Arc::clone(&late);
+        late.attach(std::thread::spawn(move || {
+            while !thread_owner.close_requested() {
+                std::thread::park_timeout(Duration::from_millis(5));
+            }
+            thread_owner.finish();
+        }));
 
         assert!(late.close_requested());
-        late.finish();
+        assert!(late.wait_finished(Duration::from_secs(1)));
+        late.join_finished().unwrap();
+        assert_eq!(registry.begin_shutdown().len(), 1);
+        registry.clear();
         assert!(registry.begin_shutdown().is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancelled_retirement_keeps_callback_owner_joinable() {
+        let owner = Arc::new(NativeThreadOwner::new());
+        let thread_owner = Arc::clone(&owner);
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+        owner.attach(std::thread::spawn(move || {
+            while !thread_owner.close_requested() {
+                std::thread::park_timeout(Duration::from_millis(5));
+            }
+            release_rx.recv().expect("release callback owner");
+            thread_owner.finish();
+        }));
+        let (state_tx, _) = watch::channel(ProviderSessionState::Ready);
+        let first = {
+            let owner = Arc::clone(&owner);
+            let state_tx = state_tx.clone();
+            tokio::spawn(async move {
+                retire_connection(&owner, &state_tx, ProviderOperation::Shutdown, CALL_WAIT).await
+            })
+        };
+        tokio::task::yield_now().await;
+        first.abort();
+        first.await.expect_err("cancel first shutdown waiter");
+
+        release_tx.send(()).expect("release callback owner");
+        retire_connection(&owner, &state_tx, ProviderOperation::Shutdown, CALL_WAIT)
+            .await
+            .expect("retry reaps the same callback owner");
     }
 
     #[test]

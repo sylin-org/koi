@@ -27,7 +27,7 @@ use crate::adapter::{
 use crate::error::{MdnsError, ProviderFailure, ProviderOperation};
 use crate::provider::{
     provider_error, Announcement, ProviderAddress, ProviderBrowse, ProviderService,
-    ProviderSession, PublicationLease,
+    ProviderSession, ProviderTask, PublicationLease,
 };
 use crate::Result;
 
@@ -44,6 +44,7 @@ const RECONCILE_INTERVAL: Duration = Duration::from_secs(2);
 /// resolve1 accepts `RegisterService` before mDNS conflict probing completes.
 /// Its object emits `Conflicted` and is withdrawn if that later probe loses.
 const PUBLICATION_SETTLE_INTERVAL: Duration = Duration::from_secs(5);
+const SESSION_TASK_TIMEOUT: Duration = Duration::from_secs(2);
 
 const DESCRIPTOR: ProviderDescriptor = ProviderDescriptor::new(
     "systemd-resolved",
@@ -372,6 +373,7 @@ struct ResolvedSession {
     command_tx: mpsc::Sender<ResolvedCommand>,
     state_rx: watch::Receiver<ProviderSessionState>,
     capabilities: MdnsCapabilities,
+    actor_task: ProviderTask,
 }
 
 impl ResolvedSession {
@@ -390,24 +392,24 @@ impl ResolvedSession {
         };
         let (command_tx, command_rx) = mpsc::channel(COMMAND_CAPACITY);
         let (state_tx, state_rx) = watch::channel(ProviderSessionState::Ready);
-        tokio::spawn(
+        let actor_task = ProviderTask::new(tokio::spawn(
             ResolvedActor {
                 connection: connection.clone(),
                 command_rx,
                 state_tx,
                 capabilities,
-                owner: Some(owner),
                 definitions: HashMap::new(),
-                paths: HashMap::new(),
+                ownership: ResolvedOwnership::new(owner),
                 conflicts,
             }
             .run(),
-        );
+        ));
         Ok(Self {
             connection,
             command_tx,
             state_rx,
             capabilities,
+            actor_task,
         })
     }
 }
@@ -487,14 +489,29 @@ impl ProviderSession for ResolvedSession {
     }
 
     async fn shutdown(&self) -> Result<()> {
+        if self.actor_task.is_reaped().await {
+            return Ok(());
+        }
         let (reply_tx, reply_rx) = oneshot::channel();
-        self.command_tx
+        if self
+            .command_tx
             .send(ResolvedCommand::Shutdown(reply_tx))
             .await
-            .map_err(|_| resolved_lost(ProviderOperation::Shutdown, "session actor stopped"))?;
+            .is_err()
+        {
+            return self
+                .actor_task
+                .join(SESSION_TASK_TIMEOUT)
+                .await
+                .map_err(|detail| resolved_lost(ProviderOperation::Shutdown, detail));
+        }
         reply_rx
             .await
-            .map_err(|_| resolved_lost(ProviderOperation::Shutdown, "actor dropped reply"))?
+            .map_err(|_| resolved_lost(ProviderOperation::Shutdown, "actor dropped reply"))??;
+        self.actor_task
+            .join(SESSION_TASK_TIMEOUT)
+            .await
+            .map_err(|detail| resolved_lost(ProviderOperation::Shutdown, detail))
     }
 }
 
@@ -541,6 +558,19 @@ impl PublicationLease for ResolvedPublicationLease {
     }
 }
 
+impl Drop for ResolvedPublicationLease {
+    fn drop(&mut self) {
+        if self.withdrawn {
+            return;
+        }
+        let (reply, _) = oneshot::channel();
+        let _ = self.command_tx.try_send(ResolvedCommand::Withdraw {
+            key: self.id.clone(),
+            reply,
+        });
+    }
+}
+
 enum ResolvedCommand {
     Publish {
         definition: ResolvedRegistration,
@@ -560,6 +590,79 @@ struct ResolvedRegistration {
     service_type: String,
     port: u16,
     txt: HashMap<String, Vec<u8>>,
+}
+
+/// resolve1 object paths are meaningful only within the positively observed
+/// D-Bus owner epoch that created them. An unavailable owner query must leave
+/// this value untouched: uncertainty is not evidence that native ownership
+/// disappeared.
+struct ResolvedOwnership {
+    owner: Option<String>,
+    paths: HashMap<String, OwnedObjectPath>,
+}
+
+impl ResolvedOwnership {
+    fn new(owner: String) -> Self {
+        Self {
+            owner: Some(owner),
+            paths: HashMap::new(),
+        }
+    }
+
+    /// Apply one owner observation atomically. A changed or absent owner is a
+    /// positive epoch transition and invalidates every old object path. A
+    /// failed observation returns a typed retryable error without mutation.
+    fn observe_epoch(
+        &mut self,
+        observation: std::result::Result<Option<String>, String>,
+        operation: ProviderOperation,
+        context: &str,
+    ) -> Result<bool> {
+        let observed = observation.map_err(|error| {
+            resolved_recovering(
+                operation,
+                format!(
+                    "{context}: {error}; retaining {} resolve1 object path(s) for retry",
+                    self.paths.len()
+                ),
+            )
+        })?;
+        if observed == self.owner {
+            return Ok(false);
+        }
+        self.owner = observed;
+        self.paths.clear();
+        Ok(true)
+    }
+
+    /// Resolve an unacknowledged `UnregisterService` using a fresh owner
+    /// observation. Only a confirmed epoch transition proves the old object
+    /// can no longer be owned by this client. Every other failure retains the
+    /// path so withdrawal or shutdown can retry it.
+    fn finish_failed_unregister(
+        &mut self,
+        key: &str,
+        unregister_error: &str,
+        owner_observation: std::result::Result<Option<String>, String>,
+    ) -> Result<()> {
+        let changed = self.observe_epoch(
+            owner_observation,
+            ProviderOperation::Withdraw,
+            &format!(
+                "resolve1 UnregisterService failed for publication {key} ({unregister_error}) and the owner epoch could not be confirmed"
+            ),
+        )?;
+        if changed {
+            Ok(())
+        } else {
+            Err(resolved_protocol(
+                ProviderOperation::Withdraw,
+                format!(
+                    "resolve1 UnregisterService failed for publication {key}: {unregister_error}"
+                ),
+            ))
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -582,9 +685,8 @@ struct ResolvedActor {
     command_rx: mpsc::Receiver<ResolvedCommand>,
     state_tx: watch::Sender<ProviderSessionState>,
     capabilities: MdnsCapabilities,
-    owner: Option<String>,
     definitions: HashMap<String, ResolvedRegistration>,
-    paths: HashMap<String, OwnedObjectPath>,
+    ownership: ResolvedOwnership,
     conflicts: Option<MessageStream>,
 }
 
@@ -606,7 +708,11 @@ impl ResolvedActor {
                 signal = next_conflict_signal(&mut self.conflicts) => {
                     self.handle_conflict_signal(signal).await;
                 }
-                _ = reconcile.tick() => self.reconcile().await,
+                _ = reconcile.tick() => {
+                    if let Err(error) = self.reconcile().await {
+                        tracing::debug!(provider = DESCRIPTOR.name, %error, "resolve1 reconciliation deferred");
+                    }
+                },
             }
         }
         self.state_tx.send_replace(ProviderSessionState::Lost);
@@ -665,49 +771,84 @@ impl ResolvedActor {
         true
     }
 
-    async fn reconcile(&mut self) {
+    async fn reconcile(&mut self) -> Result<()> {
         let (owner, _mode, live_capabilities, _authorization) = match inspect_live(&self.connection)
             .await
         {
             Ok(live) => live,
             Err(error) => {
-                let observed_owner = current_owner(&self.connection).await.ok().flatten();
-                if observed_owner != self.owner {
-                    self.paths.clear();
-                    self.conflicts = None;
-                    self.owner = observed_owner;
-                }
                 self.state_tx.send_replace(ProviderSessionState::Recovering);
-                tracing::debug!(provider = DESCRIPTOR.name, %error, "resolve1 recovery probe failed");
-                return;
+                let previous_owner = self.ownership.owner.clone();
+                if self.ownership.observe_epoch(
+                    current_owner(&self.connection).await,
+                    ProviderOperation::Inspect,
+                    &format!("resolve1 live API inspection failed ({error}) and owner observation failed"),
+                )? {
+                    self.conflicts = None;
+                    tracing::info!(
+                        provider = DESCRIPTOR.name,
+                        old = ?previous_owner,
+                        new = ?self.ownership.owner,
+                        "D-Bus owner epoch changed during recovery"
+                    );
+                }
+                return Err(resolved_recovering(
+                    ProviderOperation::Inspect,
+                    format!("resolve1 live API inspection failed: {error}"),
+                ));
             }
         };
-        if self.owner.as_deref() != Some(owner.as_str()) {
-            tracing::info!(provider = DESCRIPTOR.name, old = ?self.owner, new = %owner, "D-Bus owner epoch changed");
-            self.paths.clear();
+        let previous_owner = self.ownership.owner.clone();
+        if self.ownership.observe_epoch(
+            Ok(Some(owner.clone())),
+            ProviderOperation::Inspect,
+            "resolve1 owner observation failed",
+        )? {
+            tracing::info!(provider = DESCRIPTOR.name, old = ?previous_owner, new = %owner, "D-Bus owner epoch changed");
             self.conflicts = None;
-            self.owner = Some(owner.clone());
         }
         if !live_capabilities.supports(self.capabilities) {
             self.state_tx.send_replace(ProviderSessionState::Lost);
-            return;
+            return Ok(());
         }
 
         self.state_tx.send_replace(ProviderSessionState::Recovering);
         let observes_publications = self.capabilities.publish && self.capabilities.withdraw;
         if observes_publications && self.conflicts.is_none() {
-            match open_conflict_stream(&self.connection, &owner, ProviderOperation::Publish).await {
-                Ok(conflicts) => self.conflicts = Some(conflicts),
-                Err(error) => {
-                    tracing::warn!(provider = DESCRIPTOR.name, %error, "conflict observation recovery failed");
-                    return;
+            let conflicts = open_conflict_stream(
+                &self.connection,
+                &owner,
+                ProviderOperation::Publish,
+            )
+            .await
+            .inspect_err(|error| {
+                tracing::warn!(provider = DESCRIPTOR.name, %error, "conflict observation recovery failed");
+            })?;
+
+            // A gap in conflict observation makes every retained path
+            // uncertain. Retire each one through the acknowledged release
+            // path while the replacement signal stream is already buffering,
+            // then rebuild desired definitions. Failed cleanup stays tracked
+            // and keeps the session Recovering for the next retry.
+            let uncertain = self.ownership.paths.keys().cloned().collect::<Vec<_>>();
+            for key in uncertain {
+                if let Err(error) = self.release(&key).await {
+                    tracing::warn!(provider = DESCRIPTOR.name, publication = %key, %error, "uncertain publication retirement deferred");
+                    return Err(error);
                 }
             }
+            if self.ownership.owner.as_deref() != Some(owner.as_str()) {
+                return Err(resolved_recovering(
+                    ProviderOperation::Inspect,
+                    "resolve1 owner epoch changed while conflict observation was being recovered",
+                ));
+            }
+            self.conflicts = Some(conflicts);
         }
         let missing = self
             .definitions
             .keys()
-            .filter(|key| !self.paths.contains_key(*key))
+            .filter(|key| !self.ownership.paths.contains_key(*key))
             .cloned()
             .collect::<Vec<_>>();
         for key in missing {
@@ -716,9 +857,10 @@ impl ResolvedActor {
             }
         }
         let observation_ready = !observes_publications || self.conflicts.is_some();
-        if observation_ready && self.paths.len() == self.definitions.len() {
+        if observation_ready && self.ownership.paths.len() == self.definitions.len() {
             self.state_tx.send_replace(ProviderSessionState::Ready);
         }
+        Ok(())
     }
 
     async fn establish(&mut self, key: &str) -> Result<()> {
@@ -728,7 +870,7 @@ impl ResolvedActor {
                 format!("publication definition {key} disappeared"),
             )
         })?;
-        if self.paths.contains_key(key) {
+        if self.ownership.paths.contains_key(key) {
             return Ok(());
         }
         let manager = ResolveManagerProxy::new(&self.connection)
@@ -750,7 +892,7 @@ impl ResolvedActor {
             .map_err(|error| resolved_protocol(ProviderOperation::Publish, error))?;
         self.await_publication_settlement(&manager, &path, &definition)
             .await?;
-        self.paths.insert(key.to_string(), path);
+        self.ownership.paths.insert(key.to_string(), path);
         Ok(())
     }
 
@@ -776,7 +918,7 @@ impl ResolvedActor {
                     let Some(conflicted_path) = conflict_signal_path(&message) else {
                         continue;
                     };
-                    match classify_conflict(&self.paths, Some(path), &conflicted_path) {
+                    match classify_conflict(&self.ownership.paths, Some(path), &conflicted_path) {
                         ConflictScope::Establishing => {
                             // resolve1 has already withdrawn the conflicted
                             // record. Explicit cleanup makes a later retry
@@ -808,8 +950,7 @@ impl ResolvedActor {
                     let _ = manager.unregister_service(path).await;
                     self.lose_conflict_observation(format!(
                         "resolve1 conflict signal stream failed: {error}"
-                    ))
-                    .await;
+                    ));
                     return Err(resolved_recovering(
                         ProviderOperation::Publish,
                         "resolve1 conflict observation failed during publication",
@@ -819,8 +960,7 @@ impl ResolvedActor {
                     let _ = manager.unregister_service(path).await;
                     self.lose_conflict_observation(
                         "resolve1 conflict signal stream ended".to_string(),
-                    )
-                    .await;
+                    );
                     return Err(resolved_recovering(
                         ProviderOperation::Publish,
                         "resolve1 conflict observation ended during publication",
@@ -837,7 +977,7 @@ impl ResolvedActor {
                 let Some(path) = conflict_signal_path(&message) else {
                     return;
                 };
-                match classify_conflict(&self.paths, None, &path) {
+                match classify_conflict(&self.ownership.paths, None, &path) {
                     ConflictScope::Established(key) => {
                         tracing::warn!(
                             provider = DESCRIPTOR.name,
@@ -859,18 +999,16 @@ impl ResolvedActor {
             Some(Err(error)) => {
                 self.lose_conflict_observation(format!(
                     "resolve1 conflict signal stream failed: {error}"
-                ))
-                .await;
+                ));
             }
             None => {
-                self.lose_conflict_observation("resolve1 conflict signal stream ended".to_string())
-                    .await;
+                self.lose_conflict_observation("resolve1 conflict signal stream ended".to_string());
             }
         }
     }
 
     async fn invalidate_conflicted_publication(&mut self, key: &str) {
-        let Some(path) = self.paths.remove(key) else {
+        let Some(path) = self.ownership.paths.remove(key) else {
             return;
         };
         self.state_tx.send_replace(ProviderSessionState::Recovering);
@@ -886,58 +1024,54 @@ impl ResolvedActor {
         }
     }
 
-    async fn lose_conflict_observation(&mut self, detail: String) {
+    fn lose_conflict_observation(&mut self, detail: String) {
         self.conflicts = None;
         self.state_tx.send_replace(ProviderSessionState::Recovering);
         tracing::warn!(provider = DESCRIPTOR.name, %detail, "publication ownership observation lost");
 
-        // Without the signal stream, an object may have been withdrawn without
-        // our seeing it. Retire every materialization best-effort and let the
-        // adapter's existing desired-definition reconciliation rebuild them
-        // only after observation is armed again.
-        let paths = std::mem::take(&mut self.paths);
-        if let Ok(manager) = ResolveManagerProxy::new(&self.connection).await {
-            for (key, path) in paths {
-                if let Err(error) = manager.unregister_service(&path).await {
-                    tracing::debug!(
-                        provider = DESCRIPTOR.name,
-                        publication = %key,
-                        %error,
-                        "resolve1 object cleanup after observer loss was not acknowledged"
-                    );
-                }
-            }
-        }
+        // Do not discard paths merely because observation failed. Reconcile
+        // first arms a replacement stream, then retires these objects through
+        // the acknowledged release path and rebuilds the desired definitions.
     }
 
     async fn release(&mut self, key: &str) -> Result<()> {
-        let Some(path) = self.paths.get(key).cloned() else {
+        let Some(path) = self.ownership.paths.get(key).cloned() else {
             return Ok(());
         };
         let manager = ResolveManagerProxy::new(&self.connection)
             .await
-            .map_err(|error| resolved_protocol(ProviderOperation::Withdraw, error))?;
+            .map_err(|error| {
+                self.state_tx.send_replace(ProviderSessionState::Recovering);
+                resolved_protocol(ProviderOperation::Withdraw, error)
+            })?;
         match manager.unregister_service(&path).await {
             Ok(()) => {
-                self.paths.remove(key);
+                self.ownership.paths.remove(key);
                 Ok(())
             }
             Err(error) => {
-                let owner = current_owner(&self.connection).await.ok().flatten();
-                if owner != self.owner {
-                    self.paths.clear();
-                    self.conflicts = None;
-                    self.owner = owner;
-                    Ok(())
-                } else {
-                    Err(resolved_protocol(ProviderOperation::Withdraw, error))
-                }
+                self.state_tx.send_replace(ProviderSessionState::Recovering);
+                let previous_owner = self.ownership.owner.clone();
+                let owner_observation = current_owner(&self.connection).await;
+                self.ownership.finish_failed_unregister(
+                    key,
+                    &error.to_string(),
+                    owner_observation,
+                )?;
+                self.conflicts = None;
+                tracing::info!(
+                    provider = DESCRIPTOR.name,
+                    old = ?previous_owner,
+                    new = ?self.ownership.owner,
+                    "D-Bus owner epoch changed after failed publication release"
+                );
+                Ok(())
             }
         }
     }
 
     async fn release_all(&mut self) -> Result<()> {
-        let keys = self.paths.keys().cloned().collect::<Vec<_>>();
+        let keys = self.ownership.paths.keys().cloned().collect::<Vec<_>>();
         let mut first_error = None;
         for key in keys {
             if let Err(error) = self.release(&key).await {
@@ -1179,6 +1313,114 @@ fn resolved_protocol(operation: ProviderOperation, error: impl std::fmt::Display
 mod tests {
     use super::*;
     use futures_util::stream;
+
+    fn ownership_with_path() -> ResolvedOwnership {
+        let mut ownership = ResolvedOwnership::new(":1.41".to_string());
+        ownership.paths.insert(
+            "publication".to_string(),
+            OwnedObjectPath::try_from("/org/freedesktop/resolve1/dnssd/publication")
+                .expect("valid fixture path"),
+        );
+        ownership
+    }
+
+    fn assert_provider_failure(
+        error: MdnsError,
+        operation: ProviderOperation,
+        failure: ProviderFailure,
+    ) -> String {
+        match error {
+            MdnsError::Provider {
+                provider,
+                operation: observed_operation,
+                failure: observed_failure,
+                detail,
+            } => {
+                assert_eq!(provider, DESCRIPTOR.name);
+                assert_eq!(observed_operation, operation);
+                assert_eq!(observed_failure, failure);
+                detail
+            }
+            other => panic!("expected typed provider error, got {other}"),
+        }
+    }
+
+    #[test]
+    fn reconcile_owner_query_error_preserves_paths_and_returns_recovering() {
+        let mut ownership = ownership_with_path();
+
+        let error = ownership
+            .observe_epoch(
+                Err("system bus timed out".to_string()),
+                ProviderOperation::Inspect,
+                "resolve1 recovery probe could not confirm the owner epoch",
+            )
+            .expect_err("owner-query uncertainty must be visible");
+
+        let detail = assert_provider_failure(
+            error,
+            ProviderOperation::Inspect,
+            ProviderFailure::Recovering,
+        );
+        assert!(detail.contains("system bus timed out"));
+        assert!(detail.contains("retaining 1 resolve1 object path"));
+        assert_eq!(ownership.owner.as_deref(), Some(":1.41"));
+        assert!(ownership.paths.contains_key("publication"));
+    }
+
+    #[test]
+    fn failed_unregister_and_owner_query_error_retain_path_and_return_recovering() {
+        let mut ownership = ownership_with_path();
+
+        let error = ownership
+            .finish_failed_unregister(
+                "publication",
+                "D-Bus method failed",
+                Err("owner query disconnected".to_string()),
+            )
+            .expect_err("unconfirmed unregister must remain retryable");
+
+        let detail = assert_provider_failure(
+            error,
+            ProviderOperation::Withdraw,
+            ProviderFailure::Recovering,
+        );
+        assert!(detail.contains("D-Bus method failed"));
+        assert!(detail.contains("owner query disconnected"));
+        assert_eq!(ownership.owner.as_deref(), Some(":1.41"));
+        assert!(ownership.paths.contains_key("publication"));
+    }
+
+    #[test]
+    fn failed_unregister_is_safe_after_confirmed_owner_epoch_change() {
+        let mut ownership = ownership_with_path();
+
+        ownership
+            .finish_failed_unregister(
+                "publication",
+                "object vanished",
+                Ok(Some(":1.42".to_string())),
+            )
+            .expect("a positively observed new owner invalidates old paths");
+
+        assert_eq!(ownership.owner.as_deref(), Some(":1.42"));
+        assert!(ownership.paths.is_empty());
+    }
+
+    #[tokio::test]
+    async fn dropped_publication_lease_enqueues_retirement() {
+        let (command_tx, mut command_rx) = mpsc::channel(1);
+        drop(ResolvedPublicationLease {
+            id: "publication".to_string(),
+            command_tx,
+            withdrawn: false,
+        });
+
+        assert!(matches!(
+            command_rx.recv().await,
+            Some(ResolvedCommand::Withdraw { key, .. }) if key == "publication"
+        ));
+    }
 
     #[test]
     fn live_api_shape_remains_a_partial_collaborator() {

@@ -18,9 +18,10 @@
 //! episode, never generated *for* `webhook.*` events (no recursion).
 //!
 //! Delivery semantics: best-effort with bounded retry (3 attempts per event,
-//! exponential backoff with id-derived jitter), blocking `ureq` calls confined to
-//! `spawn_blocking` (the house-sanctioned blocking client). No durable queue:
-//! process exit drops in-flight deliveries by design.
+//! exponential backoff with id-derived jitter). Each sink owns one joinable
+//! blocking actor, so synchronous `ureq` calls never occupy an async executor
+//! worker and admitted calls are reaped before the sink task can finish. There
+//! is no durable queue.
 
 use std::time::Duration;
 
@@ -61,13 +62,10 @@ pub struct WebhookProvenance {
 }
 
 impl WebhookProvenance {
-    /// Resolve this host's provenance once at fan-out start (`node` from the OS
-    /// hostname, `zone` from the configured DNS zone).
-    pub fn local(zone: String) -> Self {
+    /// Build provenance from the composition's already accepted host identity.
+    pub fn from_host(host: &crate::host::HostIdentity, zone: String) -> Self {
         Self {
-            node: hostname::get()
-                .map(|h| h.to_string_lossy().into_owned())
-                .unwrap_or_else(|_| "unknown".to_string()),
+            node: host.hostname().to_string(),
             zone,
         }
     }
@@ -112,7 +110,10 @@ fn mask_url(url: &str) -> String {
 
 /// Serialize the delivery body: `{v:1, event:{id,type,data}, provenance:{node,zone,seen_at}}`.
 /// The inner `event` object is the SSE event verbatim (one wire contract, two transports).
-pub fn envelope_bytes(ev: &DashboardSseEvent, provenance: &WebhookProvenance) -> Vec<u8> {
+pub fn envelope_bytes(
+    ev: &DashboardSseEvent,
+    provenance: &WebhookProvenance,
+) -> serde_json::Result<Vec<u8>> {
     let body = serde_json::json!({
         "v": 1,
         "event": {
@@ -126,7 +127,7 @@ pub fn envelope_bytes(ev: &DashboardSseEvent, provenance: &WebhookProvenance) ->
             "seen_at": chrono::Utc::now().to_rfc3339(),
         },
     });
-    serde_json::to_vec(&body).unwrap_or_default()
+    serde_json::to_vec(&body)
 }
 
 /// The `x-koi-signature` header value: `sha256=<hex HMAC-SHA256(body, secret)>`.
@@ -151,6 +152,94 @@ fn backoff_delay(attempt: usize, event_id: &str) -> Duration {
 
 fn build_agent() -> ureq::Agent {
     ureq::AgentBuilder::new().timeout(DELIVERY_TIMEOUT).build()
+}
+
+#[derive(Debug)]
+enum DeliveryOutcome {
+    Delivered,
+    Failed(String),
+    Panicked,
+}
+
+struct DeliveryJob {
+    event_id: String,
+    signature: String,
+    body: Vec<u8>,
+    reply: tokio::sync::oneshot::Sender<DeliveryOutcome>,
+}
+
+/// One joinable blocking owner per sink.
+///
+/// The capacity-one queue bounds accepted work to the request currently in the
+/// platform client plus one sender waiting for admission. Dropping the async
+/// sink worker closes the queue and joins this thread, so an admitted HTTP call
+/// can never continue after its lifecycle owner has reported completion.
+struct DeliveryActor {
+    sender: Option<tokio::sync::mpsc::Sender<DeliveryJob>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl DeliveryActor {
+    fn start(url: String) -> std::io::Result<Self> {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel::<DeliveryJob>(1);
+        let thread = std::thread::Builder::new()
+            .name("koi-webhook-delivery".to_string())
+            .spawn(move || {
+                let agent = build_agent();
+                while let Some(job) = receiver.blocking_recv() {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        agent
+                            .post(&url)
+                            .set("content-type", "application/json")
+                            .set("x-koi-event-id", &job.event_id)
+                            .set("x-koi-signature", &job.signature)
+                            .send_bytes(&job.body)
+                            .map(|_| ())
+                            .map_err(|error| error.to_string())
+                    }));
+                    let outcome = match result {
+                        Ok(Ok(())) => DeliveryOutcome::Delivered,
+                        Ok(Err(error)) => DeliveryOutcome::Failed(error),
+                        Err(_) => DeliveryOutcome::Panicked,
+                    };
+                    let _ = job.reply.send(outcome);
+                }
+            })?;
+        Ok(Self {
+            sender: Some(sender),
+            thread: Some(thread),
+        })
+    }
+
+    async fn deliver(&self, pending: &PendingDelivery) -> DeliveryOutcome {
+        let (reply, response) = tokio::sync::oneshot::channel();
+        let job = DeliveryJob {
+            event_id: pending.event_id.clone(),
+            signature: pending.signature.clone(),
+            body: pending.body.clone(),
+            reply,
+        };
+        let Some(sender) = self.sender.as_ref() else {
+            return DeliveryOutcome::Failed("delivery actor has shut down".to_string());
+        };
+        if sender.send(job).await.is_err() {
+            return DeliveryOutcome::Failed("delivery actor stopped before admission".to_string());
+        }
+        response.await.unwrap_or_else(|_| {
+            DeliveryOutcome::Failed("delivery actor stopped before acknowledgement".to_string())
+        })
+    }
+}
+
+impl Drop for DeliveryActor {
+    fn drop(&mut self) {
+        self.sender.take();
+        if let Some(thread) = self.thread.take() {
+            if thread.join().is_err() {
+                tracing::warn!("webhook delivery actor panicked during shutdown");
+            }
+        }
+    }
 }
 
 // ── Fan-out engine ──────────────────────────────────────────────────
@@ -192,7 +281,13 @@ pub fn spawn_webhook_fanout(
 }
 
 async fn sink_worker(mut worker: SinkWorker) {
-    let agent = build_agent();
+    let actor = match DeliveryActor::start(worker.sink.url.clone()) {
+        Ok(actor) => actor,
+        Err(error) => {
+            tracing::warn!(%error, url = %mask_url(&worker.sink.url), "could not start webhook delivery actor");
+            return;
+        }
+    };
     // An overflow episode opens on Lagged and closes on the next successful
     // delivery, so sustained saturation warns once instead of spamming.
     let mut episode_open = false;
@@ -218,19 +313,34 @@ async fn sink_worker(mut worker: SinkWorker) {
             },
         };
 
+        if worker.cancel.is_cancelled() {
+            break;
+        }
+
         // Recursion guard: diagnostics are never generated *for* webhook.* events.
         if ev.event_type.starts_with("webhook.") {
             continue;
         }
 
-        let body = envelope_bytes(&ev, &worker.provenance);
+        let body = match envelope_bytes(&ev, &worker.provenance) {
+            Ok(body) => body,
+            Err(error) => {
+                emit_diagnostic(
+                    worker.diagnostics_tx.as_ref(),
+                    &worker.provenance,
+                    "webhook.serialization_failed",
+                    serde_json::json!({ "error": error.to_string() }),
+                );
+                continue;
+            }
+        };
         let pending = PendingDelivery {
             event_id: ev.id.clone(),
             signature: signature_header(&worker.sink.secret, &body),
             body,
         };
 
-        if deliver_with_retries(&agent, &worker.sink, &pending).await {
+        if deliver_with_retries(&actor, &worker.sink, &pending, &worker.cancel).await {
             episode_open = false;
         }
     }
@@ -243,46 +353,35 @@ struct PendingDelivery {
 }
 
 async fn deliver_with_retries(
-    agent: &ureq::Agent,
+    actor: &DeliveryActor,
     sink: &WebhookSink,
     p: &PendingDelivery,
+    cancel: &CancellationToken,
 ) -> bool {
     for attempt in 1..=MAX_ATTEMPTS {
-        let agent = agent.clone();
-        let url = sink.url.clone();
-        let body = p.body.clone();
-        let sig = p.signature.clone();
-        let event_id = p.event_id.clone();
-
-        // Blocking client confined to the blocking pool (house rule: ureq is the
-        // intentional exception to no-blocking-in-async, behind spawn_blocking).
-        // The error is stringified in-pool: ureq::Error is large, and only its
-        // display crosses back into the async task.
-        let result = tokio::task::spawn_blocking(move || {
-            agent
-                .post(&url)
-                .set("content-type", "application/json")
-                .set("x-koi-event-id", &event_id)
-                .set("x-koi-signature", &sig)
-                .send_bytes(&body)
-                .map(|_| ())
-                .map_err(|e| e.to_string())
-        })
-        .await;
-
-        match result {
-            Ok(Ok(())) => return true,
-            Ok(Err(e)) => {
-                tracing::debug!(attempt, error = %e, url = %mask_url(&sink.url), "webhook delivery failed");
+        if cancel.is_cancelled() {
+            return false;
+        }
+        match actor.deliver(p).await {
+            DeliveryOutcome::Delivered => return true,
+            DeliveryOutcome::Failed(error) => {
+                tracing::debug!(attempt, %error, url = %mask_url(&sink.url), "webhook delivery failed");
             }
-            Err(join_err) => {
-                tracing::warn!(%join_err, "webhook delivery task panicked");
+            DeliveryOutcome::Panicked => {
+                tracing::warn!("webhook delivery panicked");
                 return false;
             }
         }
 
+        if cancel.is_cancelled() {
+            return false;
+        }
+
         if attempt < MAX_ATTEMPTS {
-            tokio::time::sleep(backoff_delay(attempt, &p.event_id)).await;
+            tokio::select! {
+                _ = cancel.cancelled() => return false,
+                _ = tokio::time::sleep(backoff_delay(attempt, &p.event_id)) => {}
+            }
         }
     }
     false
@@ -313,6 +412,9 @@ fn emit_diagnostic(
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::io::Write as _;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
 
     fn provenance() -> WebhookProvenance {
         WebhookProvenance {
@@ -329,13 +431,72 @@ mod tests {
         }
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn aborting_a_sink_worker_joins_its_admitted_http_call() {
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .expect("test HTTP listener");
+        let address = listener.local_addr().expect("test HTTP address");
+        let entered = Arc::new(AtomicBool::new(false));
+        let release = Arc::new(AtomicBool::new(false));
+        let completed = Arc::new(AtomicBool::new(false));
+        let server = std::thread::spawn({
+            let entered = Arc::clone(&entered);
+            let release = Arc::clone(&release);
+            let completed = Arc::clone(&completed);
+            move || {
+                let (mut stream, _) = listener.accept().expect("accept webhook request");
+                entered.store(true, Ordering::Release);
+                while !release.load(Ordering::Acquire) {
+                    std::thread::yield_now();
+                }
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+                    .expect("complete webhook response");
+                completed.store(true, Ordering::Release);
+            }
+        });
+        let pending = PendingDelivery {
+            event_id: "owned-request".to_string(),
+            signature: "sha256=test".to_string(),
+            body: b"{}".to_vec(),
+        };
+        let mut task = tokio::spawn(async move {
+            let actor =
+                DeliveryActor::start(format!("http://{address}/hook")).expect("delivery actor");
+            actor.deliver(&pending).await
+        });
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !entered.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("blocking actor admitted the real HTTP request");
+
+        task.abort();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut task)
+                .await
+                .is_err(),
+            "task cancellation must wait for the actor's admitted call"
+        );
+        release.store(true, Ordering::Release);
+        let result = tokio::time::timeout(Duration::from_secs(2), &mut task)
+            .await
+            .expect("sink owner joined after the HTTP call completed");
+        assert!(result.expect_err("task was aborted").is_cancelled());
+        server.join().expect("test HTTP server");
+        assert!(completed.load(Ordering::Acquire));
+    }
+
     #[test]
     fn envelope_carries_event_verbatim_plus_provenance() {
         let ev = sse(
             "health.changed",
             json!({ "name": "grafana", "status": "down" }),
         );
-        let body = envelope_bytes(&ev, &provenance());
+        let body = envelope_bytes(&ev, &provenance()).unwrap();
         let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(parsed["v"], 1);
@@ -399,7 +560,7 @@ mod tests {
             "certmesh.enrolled",
             json!({ "hostname": "granite", "fingerprint": "deadbeef" }),
         );
-        let body = envelope_bytes(&ev, &provenance());
+        let body = envelope_bytes(&ev, &provenance()).unwrap();
         let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
         fn collect_keys(v: &serde_json::Value, out: &mut Vec<String>) {

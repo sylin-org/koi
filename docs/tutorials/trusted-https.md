@@ -111,7 +111,7 @@ NAME  LISTEN  BACKEND          TLS       STATE
 app   :9443   127.0.0.1:3000   certmesh  running
 ```
 
-The `TLS: certmesh` column is the win — the proxy found `certs/host-b/fullchain.pem` and is terminating TLS with the **member certificate**, the one every mesh member already trusts. (How the proxy resolves its cert, and the `self-signed` fallback, are in the [proxy guide](../guides/proxy.md).)
+The `TLS: certmesh` column is the win — Certmesh supplied its healthy local identity through Koi's live domain boundary, and Proxy is terminating TLS with that **member certificate**, the one every mesh member already trusts. Proxy never reaches into Certmesh's private files. (How the proxy resolves its cert, including explicit overrides and the `self-signed` fallback, is in the [proxy guide](../guides/proxy.md).)
 
 > **The name has to match the cert.** A browser only stays green if the URL's hostname is a **SAN on the served certificate**. The member cert covers `host-b` and `host-b.local`. So in Step 5 the no-warning URL is **`https://host-b.local:9443`** (or `https://host-b:9443`), served by the member cert. If you want a *zone-named* vanity URL like `https://app.internal` with no warning, see [Want `app.internal` instead?](#want-applan-instead) below — that needs a cert that lists `app.internal`, which the member cert does not.
 

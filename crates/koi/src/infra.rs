@@ -1,4 +1,4 @@
-//! Infrastructure helpers — stdin/tty checks, help rendering, the shutdown signal, startup
+//! Infrastructure helpers — help rendering, the shutdown signal, startup
 //! diagnostics, HTTP-bind resolution, the breadcrumb endpoint, and logging setup. Moved from
 //! main.rs (P07 step 6b).
 
@@ -9,12 +9,6 @@ use crate::cli::{Cli, Config};
 use crate::help;
 
 // ── Infrastructure helpers ──────────────────────────────────────────
-
-/// Check if stdin is piped (not a terminal).
-pub(crate) fn is_piped_stdin() -> bool {
-    use std::io::IsTerminal;
-    !std::io::stdin().is_terminal()
-}
 
 /// Print the top-level help (command list) without exiting with an error.
 pub(crate) fn print_top_level_help(api_endpoint: &str) {
@@ -106,14 +100,15 @@ pub(crate) fn mint_dat() -> String {
 
 // ── Daemon startup diagnostics ──────────────────────────────────────
 
-pub(crate) fn startup_diagnostics(config: &Config, http_bind_ip: Option<std::net::IpAddr>) {
+pub(crate) fn startup_diagnostics(
+    config: &Config,
+    http_bind_ip: Option<std::net::IpAddr>,
+    host: &koi_compose::host::HostIdentity,
+) {
     tracing::info!("Koi v{} starting", env!("CARGO_PKG_VERSION"));
     tracing::info!("Platform: {}", std::env::consts::OS);
 
-    match hostname::get() {
-        Ok(h) => tracing::info!("Hostname: {}", h.to_string_lossy()),
-        Err(e) => tracing::warn!(error = %e, "Could not determine hostname"),
-    }
+    tracing::info!("Hostname: {}", host.hostname());
 
     if config.no_mdns {
         tracing::info!("mDNS capability: disabled");
@@ -195,15 +190,6 @@ fn log_http_bind(config: &Config, bind_ip: std::net::IpAddr) {
         tracing::info!("HTTP: {bind_ip}:{port} (exposed) — mutations require x-koi-token");
     }
     tracing::info!("hint: containers read the token from a mounted secret; see `koi token --help`");
-}
-
-/// Builds the breadcrumb endpoint clients connect to. An unspecified bind
-/// (0.0.0.0) is advertised as loopback since clients need a routable address.
-pub(crate) fn breadcrumb_endpoint(http_bind_ip: Option<std::net::IpAddr>, port: u16) -> String {
-    match http_bind_ip {
-        Some(ip) if !ip.is_unspecified() => format!("http://{ip}:{port}"),
-        _ => format!("http://127.0.0.1:{port}"),
-    }
 }
 
 // `announce_mcp_endpoint` moved to `koi_compose::announce::mcp_record` and is now owned by the
@@ -312,7 +298,7 @@ pub(crate) fn init_logging(
 
 #[cfg(test)]
 mod http_bind_tests {
-    use super::{breadcrumb_endpoint, resolve_http_bind_ip};
+    use super::resolve_http_bind_ip;
     use std::net::{IpAddr, Ipv4Addr};
 
     #[test]
@@ -351,22 +337,5 @@ mod http_bind_tests {
     fn garbage_is_rejected() {
         assert!(resolve_http_bind_ip("not-an-ip").is_err());
         assert!(resolve_http_bind_ip("999.999.999.999").is_err());
-    }
-
-    #[test]
-    fn breadcrumb_advertises_loopback_for_unspecified() {
-        assert_eq!(
-            breadcrumb_endpoint(Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED)), 5641),
-            "http://127.0.0.1:5641"
-        );
-    }
-
-    #[test]
-    fn breadcrumb_uses_specific_bind_ip() {
-        let ip: IpAddr = "172.17.0.1".parse().unwrap();
-        assert_eq!(
-            breadcrumb_endpoint(Some(ip), 5641),
-            "http://172.17.0.1:5641"
-        );
     }
 }

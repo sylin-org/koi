@@ -45,19 +45,29 @@ use crate::profiles::preset_bools;
 
 /// Ceremony rules for certmesh operations (init, join, invite, unlock).
 ///
-/// Session state lives in the bag; the only instance state is the resolved
-/// data `paths`, injected once at the composition root (the CLI entry) so the
-/// unlock ceremony reads the slot table from the right place with no ambient
-/// default. The host (and the HTTP handler above it) hold the `CertmeshCore`
-/// needed to execute the terminal action.
+/// Session state lives in the bag. Initialization needs no storage owner;
+/// ceremonies that inspect local state receive explicit resolved paths so they
+/// cannot fall back to ambient or remote-owner persistence. The host (and the
+/// HTTP handler above it) holds the `CertmeshCore` needed to execute the
+/// terminal action.
 pub struct InitCeremonyRules {
-    paths: crate::CertmeshPaths,
+    local_paths: Option<crate::CertmeshPaths>,
 }
 
 impl InitCeremonyRules {
-    /// Construct the rules with the resolved data paths.
-    pub fn new(paths: crate::CertmeshPaths) -> Self {
-        Self { paths }
+    /// Construct pure input-orchestration rules for initialization. This form
+    /// cannot inspect local Certmesh persistence and is therefore safe when the
+    /// ceremony will create an authority owned by a remote daemon.
+    pub fn for_init() -> Self {
+        Self { local_paths: None }
+    }
+
+    /// Construct rules for ceremonies that explicitly operate on this
+    /// machine's resolved Certmesh storage owner (currently unlock).
+    pub fn with_local_paths(paths: crate::CertmeshPaths) -> Self {
+        Self {
+            local_paths: Some(paths),
+        }
     }
 }
 
@@ -79,7 +89,12 @@ impl CeremonyRules for InitCeremonyRules {
             "init" => eval_init(bag, render),
             "join" => eval_join(bag, render),
             "invite" => eval_invite(bag, render),
-            "unlock" => eval_unlock(bag, render, &self.paths),
+            "unlock" => match self.local_paths.as_ref() {
+                Some(paths) => eval_unlock(bag, render, paths),
+                None => EvalResult::Fatal(
+                    "unlock ceremony requires an explicitly selected local Certmesh owner".into(),
+                ),
+            },
             _ => EvalResult::Fatal(format!("unhandled ceremony: {ceremony_type}")),
         }
     }
@@ -1117,7 +1132,7 @@ mod tests {
         let paths = crate::CertmeshPaths::with_data_dir(koi_common::test::ensure_data_dir(
             "koi-certmesh-ceremony-tests",
         ));
-        CeremonyHost::new(InitCeremonyRules::new(paths))
+        CeremonyHost::new(InitCeremonyRules::with_local_paths(paths))
     }
 
     #[test]
@@ -1138,6 +1153,27 @@ mod tests {
         assert_eq!(resp.prompts[0].input_type, InputType::SelectOne);
         // 4 options now: just_me, my_team, my_organization, custom
         assert_eq!(resp.prompts[0].options.len(), 4);
+    }
+
+    #[test]
+    fn pure_init_rules_cannot_inspect_a_local_storage_owner() {
+        let rules = InitCeremonyRules::for_init();
+        assert!(rules.local_paths.is_none());
+
+        let host = CeremonyHost::new(rules);
+        let response = host
+            .step(CeremonyRequest {
+                session_id: None,
+                ceremony: Some("unlock".into()),
+                data: serde_json::Map::new(),
+                render: None,
+            })
+            .unwrap();
+        assert!(response.complete);
+        assert!(response
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("explicitly selected local Certmesh owner")));
     }
 
     #[test]

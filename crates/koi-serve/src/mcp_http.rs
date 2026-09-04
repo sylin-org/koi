@@ -2,11 +2,11 @@
 //! transport.
 //!
 //! Unlike the stdio path (which speaks to the daemon over the blocking HTTP
-//! client), this source holds the live domain cores directly and calls their
-//! async facades — no HTTP self-call, no `spawn_blocking`. It reproduces the same
-//! JSON shapes the REST endpoints return so tool output is identical across
-//! transports. Cross-domain wiring lives here in koi-serve, never in koi-mcp
-//! (which stays free of domain-crate deps).
+//! client), this source executes commands against live domain cores and serves
+//! presentations from one cached product aggregate — no HTTP self-call or
+//! `spawn_blocking`. It reproduces the REST shapes across transports. Cross-domain
+//! wiring lives here in koi-serve, never in koi-mcp (which stays free of domain
+//! crate dependencies).
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use hickory_proto::rr::RecordType;
 use koi_common::mdns_protocol::{RegisterPayload, RegistrationResult};
-use koi_common::types::{ServiceRecord, META_QUERY};
+use koi_common::types::{ServiceRecord, ServiceType, META_QUERY};
 use koi_mcp::{KoiSource, ResourceChange, SourceError};
 use koi_mdns::{LeasePolicy, MdnsEvent};
 use serde_json::{json, Value};
@@ -23,6 +23,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use koi_compose::cores::Cores as DaemonCores;
+use koi_compose::status::{KoiStatus, KoiStatusRuntime};
 
 /// Capacity of the resource-change fan-out channel (one sender, many MCP subscribers).
 const CHANGE_CHANNEL_CAPACITY: usize = 256;
@@ -41,11 +42,15 @@ pub struct CoreSource {
     http_bind: String,
     /// Fan-out of resource-change signals for MCP `resources/updated` deltas.
     changes: broadcast::Sender<ResourceChange>,
+    /// This adapter owns its aggregate projection task. Retaining the handle
+    /// prevents an HTTP bind/serve failure from detaching the pump.
+    change_pump: tokio::sync::Mutex<Option<JoinHandle<()>>>,
+    change_pump_cancel: CancellationToken,
 }
 
 impl CoreSource {
-    /// Build the source and start the change pump (domain broadcast events →
-    /// `ResourceChange`), which runs until `cancel` fires.
+    /// Build the source and start the aggregate-status change pump, which runs
+    /// until `cancel` fires.
     pub fn new(
         cores: DaemonCores,
         started_at: Instant,
@@ -53,12 +58,53 @@ impl CoreSource {
         cancel: CancellationToken,
     ) -> Self {
         let (changes, _) = broadcast::channel(CHANGE_CHANNEL_CAPACITY);
-        spawn_change_pump(&cores, changes.clone(), cancel);
+        let change_pump_cancel = cancel.child_token();
+        let change_pump = spawn_change_pump(
+            cores.system_status.clone(),
+            changes.clone(),
+            change_pump_cancel.clone(),
+        );
         Self {
             cores,
             started_at,
             http_bind,
             changes,
+            change_pump: tokio::sync::Mutex::new(Some(change_pump)),
+            change_pump_cancel,
+        }
+    }
+
+    /// Stop and reap the source-owned aggregate projection task.
+    pub async fn shutdown(&self) {
+        self.change_pump_cancel.cancel();
+        // Borrow the handle in its owner until completion. If this waiter is
+        // cancelled, dropping the mutex guard leaves the task owned for a later
+        // shutdown or CoreSource::drop instead of detaching it.
+        let mut slot = self.change_pump.lock().await;
+        let Some(task) = slot.as_mut() else {
+            return;
+        };
+        if tokio::time::timeout(Duration::from_secs(2), &mut *task)
+            .await
+            .is_err()
+        {
+            task.abort();
+            let _ = (&mut *task).await;
+        }
+        slot.take();
+    }
+}
+
+impl Drop for CoreSource {
+    fn drop(&mut self) {
+        // Explicit shutdown is used by both serving adapters. This synchronous
+        // fallback covers construction/bind failures without spawning a detached
+        // async finalizer.
+        self.change_pump_cancel.cancel();
+        if let Ok(mut slot) = self.change_pump.try_lock() {
+            if let Some(task) = slot.take() {
+                task.abort();
+            }
         }
     }
 }
@@ -92,14 +138,26 @@ impl KoiSource for CoreSource {
         let mut seen: HashMap<String, ServiceRecord> = HashMap::new();
         loop {
             match tokio::time::timeout_at(deadline, sub.recv()).await {
-                Ok(Some(MdnsEvent::Found(record) | MdnsEvent::Resolved(record))) => {
+                Ok(Ok(MdnsEvent::Found(record) | MdnsEvent::Resolved(record))) => {
                     seen.insert(record.name.clone(), record);
                 }
-                Ok(Some(MdnsEvent::Removed { .. })) => {}
-                Ok(None) => break, // browse closed
-                Err(_) => break,   // window elapsed
+                Ok(Ok(MdnsEvent::Removed { name, .. })) => {
+                    seen.remove(&name);
+                }
+                Ok(Err(koi_mdns::BrowseRecvError::Lagged { dropped })) => {
+                    tracing::warn!(
+                        dropped,
+                        "MCP mDNS browse lagged; reconciling current discovery state"
+                    );
+                    reconcile_browse_snapshot(&mut seen, mdns, ty)?;
+                }
+                Ok(Err(koi_mdns::BrowseRecvError::Closed)) => break,
+                Err(_) => break, // window elapsed
             }
         }
+        // Events make the timed browse responsive; the final answer is always
+        // reconciled from the domain's current state.
+        reconcile_browse_snapshot(&mut seen, mdns, ty)?;
         Ok(seen.into_values().collect())
     }
 
@@ -139,40 +197,41 @@ impl KoiSource for CoreSource {
     async fn heartbeat(&self, id: String) -> Result<(), SourceError> {
         let mdns = self.cores.mdns.as_ref().ok_or_else(|| disabled("mdns"))?;
         mdns.heartbeat(&id)
+            .await
             .map(|_| ())
             .map_err(|e| SourceError(e.to_string()))
     }
 
-    async fn unified_status(&self) -> Result<Value, SourceError> {
-        let capabilities: Vec<_> = koi_compose::status::assemble_capabilities(&self.cores)
-            .await
-            .into_iter()
-            .map(|c| c.status)
-            .collect();
-        Ok(json!({
-            "version": env!("CARGO_PKG_VERSION"),
-            "platform": std::env::consts::OS,
-            "uptime_secs": self.started_at.elapsed().as_secs(),
-            "daemon": true,
-            "http_bind": self.http_bind,
-            "capabilities": capabilities,
-        }))
-    }
-
     async fn health_status(&self) -> Result<Value, SourceError> {
-        let health = self
-            .cores
+        let status = self.cores.system_status.status();
+        let health = status
+            .domains
             .health
             .as_ref()
             .ok_or_else(|| disabled("health"))?;
-        let snapshot = health.core().snapshot().await;
-        serde_json::to_value(snapshot).map_err(|e| SourceError(e.to_string()))
+        serde_json::to_value(health).map_err(|e| SourceError(e.to_string()))
     }
 
     async fn dns_list(&self) -> Result<Value, SourceError> {
-        let dns = self.cores.dns.as_ref().ok_or_else(|| disabled("dns"))?;
-        let names = dns.core().list_names();
-        Ok(json!({ "names": names }))
+        let status = self.cores.system_status.status();
+        let names = status
+            .domains
+            .dns_catalog
+            .as_ref()
+            .ok_or_else(|| disabled("dns"))?;
+        Ok(json!({ "names": &names.names }))
+    }
+
+    async fn inventory_snapshot(&self, include: Option<Vec<String>>) -> Result<Value, SourceError> {
+        let status = self.cores.system_status.status();
+        crate::inventory::project(
+            status.as_ref(),
+            include.as_deref(),
+            self.started_at.elapsed().as_secs(),
+            &self.http_bind,
+            true,
+        )
+        .map_err(|error| SourceError(error.to_string()))
     }
 
     async fn dns_lookup(
@@ -181,11 +240,12 @@ impl KoiSource for CoreSource {
         record_type: RecordType,
     ) -> Result<Value, SourceError> {
         let dns = self.cores.dns.as_ref().ok_or_else(|| disabled("dns"))?;
-        match dns.core().lookup(&name, record_type).await {
-            Some(result) => {
-                let ips: Vec<String> = result.ips.into_iter().map(|ip| ip.to_string()).collect();
-                Ok(json!({ "name": result.name, "ips": ips, "source": result.source }))
-            }
+        match dns
+            .lookup(&name, record_type)
+            .await
+            .map_err(|error| SourceError(error.to_string()))?
+        {
+            Some(result) => Ok(json!(result)),
             None => Err(SourceError("record_not_found".into())),
         }
     }
@@ -197,21 +257,18 @@ impl KoiSource for CoreSource {
         ttl: Option<u32>,
     ) -> Result<Value, SourceError> {
         let dns = self.cores.dns.as_ref().ok_or_else(|| disabled("dns"))?;
-        let core = dns.core();
-        let zone =
-            koi_dns::DnsZone::new(&core.config().zone).map_err(|e| SourceError(e.to_string()))?;
-        let normalized = zone
+        let normalized = dns
             .normalize_name(&name)
             .ok_or_else(|| SourceError(format!("name '{name}' is outside the zone")))?;
         if ip.parse::<std::net::IpAddr>().is_err() {
             return Err(SourceError(format!("invalid IP address: {ip}")));
         }
-        let entry = koi_config::state::DnsEntry {
+        let entry = koi_dns::DnsEntry {
             name: normalized,
             ip,
             ttl,
         };
-        let entries = core
+        let entries = dns
             .add_entry(entry)
             .map_err(|e| SourceError(e.to_string()))?;
         Ok(json!({ "entries": entries }))
@@ -219,13 +276,10 @@ impl KoiSource for CoreSource {
 
     async fn dns_remove(&self, name: String) -> Result<Value, SourceError> {
         let dns = self.cores.dns.as_ref().ok_or_else(|| disabled("dns"))?;
-        let core = dns.core();
-        let zone =
-            koi_dns::DnsZone::new(&core.config().zone).map_err(|e| SourceError(e.to_string()))?;
-        let normalized = zone
+        let normalized = dns
             .normalize_name(&name)
             .ok_or_else(|| SourceError(format!("name '{name}' is outside the zone")))?;
-        match core
+        match dns
             .remove_entry(&normalized)
             .map_err(|e| SourceError(e.to_string()))?
         {
@@ -235,27 +289,23 @@ impl KoiSource for CoreSource {
     }
 
     async fn runtime_instances(&self) -> Result<Value, SourceError> {
-        let runtime = self
-            .cores
+        let status = self.cores.system_status.status();
+        let runtime = status
+            .domains
             .runtime
             .as_ref()
             .ok_or_else(|| disabled("runtime"))?;
-        let instances = runtime
-            .list_instances()
-            .await
-            .map_err(|e| SourceError(e.to_string()))?;
-        serde_json::to_value(instances).map_err(|e| SourceError(e.to_string()))
+        serde_json::to_value(&runtime.instances).map_err(|e| SourceError(e.to_string()))
     }
 
     async fn mdns_snapshot(&self) -> Result<Value, SourceError> {
-        // Lock-free cached records (not a timed browse) — `None` when mDNS is disabled.
-        let records = self
-            .cores
-            .mdns_snapshot
+        let status = self.cores.system_status.status();
+        let discovery = status
+            .domains
+            .mdns_discovery
             .as_ref()
-            .map(|s| s.cached_records())
-            .unwrap_or_default();
-        Ok(json!({ "services": records }))
+            .ok_or_else(|| disabled("mdns"))?;
+        Ok(json!({ "services": &discovery.records }))
     }
 
     fn change_stream(&self) -> Option<broadcast::Receiver<ResourceChange>> {
@@ -263,44 +313,97 @@ impl KoiSource for CoreSource {
     }
 }
 
-/// Bridge the domains' broadcast events into `ResourceChange` signals for MCP
-/// resource subscriptions (mirrors `koi_dashboard::forward::spawn_event_forwarder`).
-/// Runs until `cancel` fires.
+/// Diff the authoritative aggregate feed into MCP resource invalidations.
+/// `watch` coalescing is sufficient because subscribers always reread current
+/// state; there is no event history or lag-recovery model here.
 fn spawn_change_pump(
-    cores: &DaemonCores,
+    status: std::sync::Arc<KoiStatusRuntime>,
     tx: broadcast::Sender<ResourceChange>,
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
-    let mut mdns_rx = cores.mdns.as_ref().map(|c| c.subscribe());
-    let mut health_rx = cores.health.as_ref().map(|r| r.core().subscribe());
-    let mut dns_rx = cores.dns.as_ref().map(|r| r.core().subscribe());
-    let mut runtime_rx = cores.runtime.as_ref().map(|r| r.subscribe());
+    let mut snapshots = status.watch_status();
+    let mut previous = snapshots.borrow_and_update().clone();
     tokio::spawn(async move {
         loop {
-            let change: Option<ResourceChange> = tokio::select! {
+            let changed = tokio::select! {
                 _ = cancel.cancelled() => break,
-                Some(Ok(_)) = recv_opt(&mut mdns_rx) => Some(ResourceChange::Mdns),
-                Some(Ok(_)) = recv_opt(&mut health_rx) => Some(ResourceChange::Health),
-                Some(Ok(_)) = recv_opt(&mut dns_rx) => Some(ResourceChange::Dns),
-                Some(Ok(_)) = recv_opt(&mut runtime_rx) => Some(ResourceChange::Inventory),
+                changed = snapshots.changed() => changed,
             };
-            if let Some(change) = change {
-                // Ignore send errors: no current subscribers is normal.
+            if changed.is_err() {
+                break;
+            }
+            let current = snapshots.borrow_and_update().clone();
+            for change in resource_changes(previous.as_ref(), current.as_ref()) {
                 let _ = tx.send(change);
             }
+            previous = current;
         }
     })
 }
 
-/// Await an optional broadcast receiver; `None` (capability absent) leaves its
-/// select arm permanently disabled.
-async fn recv_opt<T: Clone>(
-    rx: &mut Option<broadcast::Receiver<T>>,
-) -> Option<Result<T, broadcast::error::RecvError>> {
-    match rx.as_mut() {
-        Some(rx) => Some(rx.recv().await),
-        None => None,
+fn resource_changes(previous: &KoiStatus, current: &KoiStatus) -> Vec<ResourceChange> {
+    if previous == current {
+        return Vec::new();
     }
+    let mut changes = vec![ResourceChange::Inventory];
+    if previous.domains.health != current.domains.health {
+        changes.push(ResourceChange::Health);
+    }
+    if previous
+        .domains
+        .dns_catalog
+        .as_ref()
+        .map(|catalog| &catalog.names)
+        != current
+            .domains
+            .dns_catalog
+            .as_ref()
+            .map(|catalog| &catalog.names)
+    {
+        changes.push(ResourceChange::Dns);
+    }
+    if previous.domains.mdns_discovery != current.domains.mdns_discovery {
+        changes.push(ResourceChange::Mdns);
+    }
+    changes
+}
+
+fn reconcile_browse_snapshot(
+    seen: &mut HashMap<String, ServiceRecord>,
+    mdns: &koi_mdns::MdnsCore,
+    service_type: &str,
+) -> Result<(), SourceError> {
+    let snapshot = mdns.discovery_snapshot();
+    seen.clear();
+    if service_type == META_QUERY {
+        for discovered in &snapshot.service_types {
+            seen.insert(
+                discovered.clone(),
+                ServiceRecord {
+                    name: discovered.clone(),
+                    service_type: META_QUERY.to_string(),
+                    host: None,
+                    ip: None,
+                    port: None,
+                    txt: HashMap::new(),
+                },
+            );
+        }
+        return Ok(());
+    }
+
+    let canonical = ServiceType::parse(service_type)
+        .map_err(|error| SourceError(error.to_string()))?
+        .as_str()
+        .to_string();
+    for record in snapshot
+        .records
+        .iter()
+        .filter(|record| record.service_type == canonical)
+    {
+        seen.insert(record.name.clone(), record.clone());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -309,6 +412,160 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn core_source_owns_and_idempotently_reaps_its_change_pump() {
+        let source = CoreSource::new(
+            DaemonCores::default(),
+            Instant::now(),
+            "127.0.0.1".to_string(),
+            CancellationToken::new(),
+        );
+        assert!(source.change_pump.lock().await.is_some());
+
+        source.shutdown().await;
+        source.shutdown().await;
+
+        assert!(source.change_pump.lock().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn cancelled_shutdown_waiter_does_not_detach_the_change_pump() {
+        let source = std::sync::Arc::new(CoreSource::new(
+            DaemonCores::default(),
+            Instant::now(),
+            "127.0.0.1".to_string(),
+            CancellationToken::new(),
+        ));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let blocking = tokio::task::spawn_blocking(move || {
+            let _ = started_tx.send(());
+            let _ = release_rx.recv();
+        });
+        started_rx.await.expect("blocking projection started");
+        {
+            let mut slot = source.change_pump.lock().await;
+            if let Some(task) = slot.take() {
+                task.abort();
+                let _ = task.await;
+            }
+            *slot = Some(blocking);
+        }
+
+        let waiter = tokio::spawn({
+            let source = std::sync::Arc::clone(&source);
+            async move { source.shutdown().await }
+        });
+        for _ in 0..32 {
+            if source.change_pump.try_lock().is_err() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            source.change_pump.try_lock().is_err(),
+            "shutdown waiter never borrowed the owned task"
+        );
+        waiter.abort();
+        assert!(waiter.await.unwrap_err().is_cancelled());
+        assert!(
+            source.change_pump.lock().await.is_some(),
+            "cancelled waiter detached the projection task"
+        );
+
+        release_tx.send(()).expect("release blocking projection");
+        source.shutdown().await;
+        source.shutdown().await;
+        assert!(source.change_pump.lock().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn disabled_domain_resources_are_not_faked_as_empty_snapshots() {
+        let source = CoreSource::new(
+            DaemonCores::default(),
+            Instant::now(),
+            "127.0.0.1".to_string(),
+            CancellationToken::new(),
+        );
+
+        assert!(source.health_status().await.is_err());
+        assert!(source.dns_list().await.is_err());
+        assert!(source.mdns_snapshot().await.is_err());
+        source.shutdown().await;
+    }
+
+    #[test]
+    fn aggregate_diff_emits_exact_resource_invalidations() {
+        let before = KoiStatus {
+            revision: 0,
+            capabilities: Vec::new(),
+            domains: koi_compose::status::DomainStatuses::default(),
+        };
+        assert!(resource_changes(&before, &before).is_empty());
+
+        let mut dns = before.clone();
+        dns.revision = 1;
+        dns.domains.dns_catalog = Some(
+            koi_dns::DnsCatalogSnapshot {
+                revision: 1,
+                names: vec!["api.internal.".to_string()],
+                entries: Vec::new(),
+            }
+            .into(),
+        );
+        assert_eq!(
+            resource_changes(&before, &dns),
+            [ResourceChange::Inventory, ResourceChange::Dns]
+        );
+
+        let mut mdns = dns.clone();
+        mdns.revision = 2;
+        mdns.domains.mdns_discovery = Some(Default::default());
+        assert_eq!(
+            resource_changes(&dns, &mdns),
+            [ResourceChange::Inventory, ResourceChange::Mdns]
+        );
+
+        let mut aggregate_only = mdns.clone();
+        aggregate_only.revision = 3;
+        assert_eq!(
+            resource_changes(&mdns, &aggregate_only),
+            [ResourceChange::Inventory]
+        );
+    }
+
+    #[test]
+    fn joined_inventory_is_projected_from_one_product_snapshot() {
+        let status = KoiStatus {
+            revision: 41,
+            capabilities: Vec::new(),
+            domains: koi_compose::status::DomainStatuses {
+                health: Some(
+                    koi_health::HealthSnapshot {
+                        revision: 7,
+                        ..Default::default()
+                    }
+                    .into(),
+                ),
+                dns_catalog: Some(
+                    koi_dns::DnsCatalogSnapshot {
+                        revision: 5,
+                        names: vec!["api.internal.".to_string()],
+                        entries: Vec::new(),
+                    }
+                    .into(),
+                ),
+                ..Default::default()
+            },
+        };
+
+        let inventory =
+            crate::inventory::project(&status, None, 12, "127.0.0.1", true).expect("inventory");
+        assert_eq!(inventory["status"]["revision"], 41);
+        assert_eq!(inventory["health"]["revision"], 7);
+        assert_eq!(inventory["dns"]["names"][0], "api.internal.");
+    }
 
     /// A trivial `KoiSource` — `tools/list` and `initialize` never touch it, so the
     /// reads return empty and the writes error. This proves the HTTP transport wiring
@@ -342,14 +599,17 @@ mod tests {
         async fn heartbeat(&self, _id: String) -> Result<(), SourceError> {
             Ok(())
         }
-        async fn unified_status(&self) -> Result<Value, SourceError> {
-            Ok(json!({}))
-        }
         async fn health_status(&self) -> Result<Value, SourceError> {
             Ok(json!({}))
         }
         async fn dns_list(&self) -> Result<Value, SourceError> {
             Ok(json!({ "names": [] }))
+        }
+        async fn inventory_snapshot(
+            &self,
+            _include: Option<Vec<String>>,
+        ) -> Result<Value, SourceError> {
+            Ok(json!({ "status": {}, "health": null, "dns": { "names": [] } }))
         }
         async fn dns_lookup(
             &self,

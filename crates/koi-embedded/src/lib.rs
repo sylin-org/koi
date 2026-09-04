@@ -15,8 +15,8 @@ use koi_client::KoiClient;
 pub use config::{DnsConfigBuilder, KoiConfig, ServiceMode};
 pub use events::KoiEvent;
 pub use handle::{
-    CertmeshHandle, DnsHandle, HealthHandle, KoiHandle, MdnsHandle, ProxyHandle,
-    DEFAULT_DISCOVER_WINDOW,
+    CertmeshHandle, DnsHandle, HealthHandle, KoiBrowseHandle, KoiBrowseItem, KoiHandle, MdnsHandle,
+    ProxyHandle, DEFAULT_DISCOVER_WINDOW,
 };
 
 // Re-export types needed by downstream consumers (registration, discovery, DNS, proxy, health)
@@ -28,13 +28,11 @@ pub use koi_common::peer::Peer;
 pub use koi_common::posture::{Posture, PostureLevel};
 pub use koi_common::sealed::{Confidentiality, Opened, Sealed};
 pub use koi_common::types::ServiceRecord;
-pub use koi_config::state::DnsEntry;
+pub use koi_dns::DnsEntry;
 pub use koi_health::{HealthCheck, HealthSnapshot, ServiceCheckKind};
 pub use koi_mdns::protocol::{RegisterPayload, RegistrationResult};
 pub use koi_mdns::MdnsEvent;
 pub use koi_proxy::ProxyEntry;
-// Same-port posture dial (ADR-020 §5): plain↔mTLS on one socket, live-flipping.
-pub use serve::serve_adaptive;
 
 // Vault: general-purpose encrypted secret storage
 pub use koi_crypto::vault::{Vault, VaultError};
@@ -60,6 +58,8 @@ pub enum KoiError {
     Proxy(#[from] koi_proxy::ProxyError),
     #[error("certmesh error: {0}")]
     Certmesh(#[from] koi_certmesh::CertmeshError),
+    #[error("trust error: {0}")]
+    Trust(#[from] koi_trust::TrustError),
     #[error("runtime error: {0}")]
     Runtime(#[from] koi_runtime::RuntimeError),
     #[error("client error: {0}")]
@@ -68,16 +68,24 @@ pub enum KoiError {
     Io(#[from] std::io::Error),
     #[error("insecure configuration: {0}")]
     InsecureConfig(String),
+    #[error("host identity: {0}")]
+    HostIdentity(#[from] koi_compose::host::HostIdentityError),
 }
 
 impl From<koi_compose::cores::BuildCoresError> for KoiError {
     fn from(e: koi_compose::cores::BuildCoresError) -> Self {
         use koi_compose::cores::BuildCoresError as B;
         match e {
+            B::Cancelled => KoiError::Io(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "core composition was cancelled",
+            )),
             B::Mdns(e) => KoiError::Mdns(e),
             B::Dns(e) => KoiError::Dns(e),
             B::Proxy(e) => KoiError::Proxy(e),
             B::Health(e) => KoiError::Health(e),
+            B::Trust(e) => KoiError::Trust(e),
+            B::Runtime(e) => KoiError::Runtime(e),
             B::CertmeshInit(s) => KoiError::Io(std::io::Error::other(s)),
         }
     }
@@ -340,7 +348,7 @@ impl KoiEmbedded {
     pub async fn start(self) -> Result<KoiHandle> {
         let cancel = CancellationToken::new();
         let (event_tx, _) = broadcast::channel(256);
-        let mut tasks: Vec<JoinHandle<()>> = Vec::new();
+        let tasks: Vec<JoinHandle<()>> = Vec::new();
 
         if self.config.service_mode != ServiceMode::EmbeddedOnly {
             let client = Arc::new(build_remote_client(&self.config));
@@ -382,13 +390,14 @@ impl KoiEmbedded {
             ));
         }
 
+        let host = koi_compose::host::HostIdentity::observe()?;
+
         // Build every domain core + cross-domain bridge + the domain background tasks
         // (orchestrator, certmesh role loops) through the one shared composition root the
         // daemon and the Windows service use, so the three boot paths construct an identical
         // graph. `fail_fast` is the only embedded-specific knob: a library surfaces a failed
         // capability as an error rather than logging it and dropping the capability.
-        let mut capability_notes = Vec::new();
-        let cores = koi_compose::cores::build_cores(
+        let running = koi_compose::cores::build_cores(
             &koi_compose::cores::CoreSpec {
                 runtime_scope: None,
                 no_mdns: !self.config.mdns_enabled,
@@ -402,14 +411,6 @@ impl KoiEmbedded {
                 dns_config: self.config.dns_config.clone(),
                 runtime: self.config.runtime_backend.to_string(),
                 http_port: self.config.http_port,
-                // Pin the DNS state path to the data dir captured at construction time so it is
-                // immune to KOI_DATA_DIR env-var races in parallel tests.
-                dns_state_path: self
-                    .config
-                    .data_dir
-                    .as_ref()
-                    .map(|dir| dir.join("state").join("dns.json")),
-                proxy_data_dir: self.config.data_dir.clone(),
                 dns_auto_start: self.config.dns_auto_start,
                 health_auto_start: self.config.health_auto_start,
                 proxy_auto_start: self.config.proxy_auto_start,
@@ -417,43 +418,33 @@ impl KoiEmbedded {
                 spawn_certmesh_loops: self.config.certmesh_managed,
                 fail_fast: true,
             },
+            &host,
             &cancel,
-            &mut tasks,
-            &mut capability_notes,
         )
         .await?;
-        koi_common::capability::record_notes(capability_notes);
         let koi_compose::cores::Cores {
             mdns,
             certmesh,
+            trust,
             dns,
             health,
             proxy,
             udp,
             runtime,
+            system_status,
             mdns_snapshot: mdns_bridge,
-        } = cores;
+        } = running.cores().clone();
 
         // Build dashboard state if enabled
         let dashboard_state = if self.config.dashboard_enabled && self.config.http_enabled {
             let started_at = std::time::Instant::now();
-            let snap_mdns = mdns.clone();
-            let snap_certmesh = certmesh.clone();
-            let snap_dns = dns.clone();
-            let snap_health = health.clone();
-            let snap_proxy = proxy.clone();
-            let snap_udp = udp.clone();
-            let snap_runtime = runtime.clone();
+            let snap_system_status = Arc::clone(&system_status);
 
             let snapshot_fn: koi_dashboard::dashboard::SnapshotFn = Arc::new(move || {
-                let m = snap_mdns.clone();
-                let cm = snap_certmesh.clone();
-                let d = snap_dns.clone();
-                let h = snap_health.clone();
-                let p = snap_proxy.clone();
-                let u = snap_udp.clone();
-                let rt = snap_runtime.clone();
-                Box::pin(async move { build_embedded_snapshot(m, cm, d, h, p, u, rt).await })
+                let status = snap_system_status.status();
+                Box::pin(
+                    async move { koi_compose::snapshot::build_dashboard_snapshot(status.as_ref()) },
+                )
             });
 
             let (dash_event_tx, _) = broadcast::channel(256);
@@ -465,6 +456,8 @@ impl KoiEmbedded {
                 identity: koi_dashboard::dashboard::DashboardIdentity {
                     version: env!("CARGO_PKG_VERSION").to_string(),
                     platform: std::env::consts::OS.to_string(),
+                    hostname: host.hostname().to_string(),
+                    hostname_fqdn: host.local_fqdn().to_string(),
                 },
                 mode: "embedded",
                 snapshot_fn,
@@ -474,14 +467,16 @@ impl KoiEmbedded {
 
             // Spawn the single unified event forwarder (superset incl. runtime),
             // shared with the daemon — no more inline copy here.
-            tasks.push(koi_dashboard::forward::spawn_event_forwarder(
+            running.own_task(koi_dashboard::forward::spawn_event_forwarder(
                 koi_dashboard::forward::ForwarderCores {
                     mdns: mdns.clone(),
                     certmesh: certmesh.clone(),
+                    trust: trust.clone(),
                     dns: dns.clone(),
                     health: health.clone(),
                     proxy: proxy.clone(),
                     runtime: runtime.clone(),
+                    udp: udp.clone(),
                 },
                 dash_event_tx,
                 cancel.clone(),
@@ -491,10 +486,11 @@ impl KoiEmbedded {
             // daemon's serve() path — one subscription per enabled sink on this
             // merged stream, diagnostics delivered back onto it.
             if !self.config.webhooks.is_empty() {
-                tasks.extend(koi_compose::webhook::spawn_webhook_fanout(
+                running.own_tasks(koi_compose::webhook::spawn_webhook_fanout(
                     &webhook_event_tx,
                     self.config.webhooks.clone(),
-                    koi_compose::webhook::WebhookProvenance::local(
+                    koi_compose::webhook::WebhookProvenance::from_host(
+                        &host,
                         self.config.dns_config.zone.clone(),
                     ),
                     Some(webhook_event_tx.clone()),
@@ -545,11 +541,13 @@ impl KoiEmbedded {
             let http_cores = koi_compose::cores::Cores {
                 mdns: mdns.clone(),
                 certmesh: certmesh.clone(),
+                trust: trust.clone(),
                 dns: dns.clone(),
                 health: health.clone(),
                 proxy: proxy.clone(),
                 udp: udp.clone(),
                 runtime: runtime.clone(),
+                system_status: Arc::clone(&system_status),
                 mdns_snapshot: mdns_bridge.clone(),
             };
             // Exposure is gated at the top of start(): announce_http without a token
@@ -560,32 +558,33 @@ impl KoiEmbedded {
             } else {
                 std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
             };
-            let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+            let listener = tokio::net::TcpListener::bind((bind_ip, self.config.http_port))
+                .await
+                .map_err(KoiError::Io)?;
+            let bound = listener.local_addr().map_err(KoiError::Io)?;
+            http_addr = Some(bound);
             let http_cfg = koi_serve::http::HttpConfig {
                 pond: None,
-                bind_ip,
-                port: self.config.http_port,
                 started_at: std::time::Instant::now(),
+                host: host.clone(),
                 dashboard: dashboard_state,
                 browser: browser_state,
                 auth: self.config.http_token.clone(),
-                mdns_snapshot: mdns_bridge.clone(),
                 mcp_http: false,
                 webhooks: self.config.webhooks.clone(),
                 admin_shutdown: false,
                 api_docs: self.config.api_docs_enabled,
                 daemon: false,
-                ready: Some(ready_tx),
             };
-            tasks.push(tokio::spawn(async move {
-                if let Err(e) = koi_serve::http::start(http_cores, http_cfg, http_cancel).await {
+            let fatal_cancel = http_cancel.clone();
+            running.own_task(tokio::spawn(async move {
+                if let Err(e) =
+                    koi_serve::http::serve(listener, http_cores, http_cfg, http_cancel).await
+                {
                     tracing::error!(error = %e, "embedded HTTP adapter failed");
+                    fatal_cancel.cancel();
                 }
             }));
-            // Wait for the listener to bind so the handle reports the real port
-            // (the OS-assigned one when http_port == 0). A bind failure drops the
-            // sender → `None` here; the spawned task has already logged the error.
-            http_addr = ready_rx.await.ok();
         }
 
         // ── Self-announce supervisor: _http._tcp, posture-reactive ──
@@ -593,16 +592,6 @@ impl KoiEmbedded {
         // stamp) and re-stamps it on every Open↔Authenticated flip — the same reactivity the
         // daemon and the Windows service get, shared via koi-compose. `_mcp._tcp` stays off:
         // embedded mounts no /v1/mcp transport, so it must not advertise one.
-        let announce_cores = koi_compose::cores::Cores {
-            mdns: mdns.clone(),
-            certmesh: certmesh.clone(),
-            dns: dns.clone(),
-            health: health.clone(),
-            proxy: proxy.clone(),
-            udp: udp.clone(),
-            runtime: runtime.clone(),
-            mdns_snapshot: mdns_bridge.clone(),
-        };
         // Advertise the ACTUAL bound port: with http_port(0) the OS picked an
         // ephemeral port at bind time, so announcing the configured 0 would publish
         // an unreachable _http._tcp/_mcp._tcp record. `http_addr` holds the resolved
@@ -610,8 +599,9 @@ impl KoiEmbedded {
         // port when HTTP is disabled (announce_http requires http_enabled anyway).
         let announce_http_port = http_addr.map(|a| a.port()).unwrap_or(self.config.http_port);
         koi_compose::self_announce::spawn(
-            &announce_cores,
+            &running,
             koi_compose::self_announce::SelfAnnounceConfig {
+                host: host.clone(),
                 http_port: announce_http_port,
                 dashboard_enabled: self.config.dashboard_enabled,
                 announce_http: self.config.announce_http
@@ -621,7 +611,6 @@ impl KoiEmbedded {
                 dns_zone: self.config.dns_config.zone.clone(),
             },
             cancel.clone(),
-            &mut tasks,
         );
 
         // ── Domain event → host KoiEvent forwarders ──
@@ -630,79 +619,107 @@ impl KoiEmbedded {
         // is the only gate needed.
         if let Some(core) = &mdns {
             spawn_event_mapper(
+                "mdns",
                 core.subscribe(),
                 map_mdns_event,
                 event_tx.clone(),
                 self.event_handler.clone(),
                 cancel.clone(),
-                &mut tasks,
+                &running,
             );
         }
         if let Some(runtime) = &health {
             spawn_event_mapper(
-                runtime.core().subscribe(),
+                "health",
+                runtime.subscribe(),
                 |e| Some(map_health_event(e)),
                 event_tx.clone(),
                 self.event_handler.clone(),
                 cancel.clone(),
-                &mut tasks,
+                &running,
             );
         }
         if let Some(runtime) = &dns {
             spawn_event_mapper(
-                runtime.core().subscribe(),
+                "dns",
+                runtime.subscribe(),
                 |e| Some(map_dns_event(e)),
                 event_tx.clone(),
                 self.event_handler.clone(),
                 cancel.clone(),
-                &mut tasks,
+                &running,
             );
         }
         if let Some(core) = &certmesh {
             spawn_event_mapper(
+                "certmesh",
                 core.subscribe(),
                 |e| Some(map_certmesh_event(e)),
                 event_tx.clone(),
                 self.event_handler.clone(),
                 cancel.clone(),
-                &mut tasks,
+                &running,
             );
-            // Posture transitions (Open↔Authenticated) surface as PostureChanged —
-            // the live trust-state signal the consumer's serve supervisor and any
-            // observer react to (ADR-020 §5/§13).
-            spawn_posture_watcher(
-                core.watch_posture(),
+            // Certmesh's cheap latest-value projection is also available as a
+            // coalescing host notification. It deliberately does not synthesize
+            // semantic transition history from a watch channel.
+            spawn_certmesh_status_notifier(
+                core.watch_status(),
                 event_tx.clone(),
                 self.event_handler.clone(),
                 cancel.clone(),
-                &mut tasks,
+                &running,
+            );
+        }
+        if let Some(core) = &trust {
+            spawn_event_mapper(
+                "trust",
+                core.subscribe(),
+                |event| Some(map_trust_event(event)),
+                event_tx.clone(),
+                self.event_handler.clone(),
+                cancel.clone(),
+                &running,
             );
         }
         if let Some(runtime_proxy) = &proxy {
             spawn_event_mapper(
-                runtime_proxy.core().subscribe(),
+                "proxy",
+                runtime_proxy.subscribe(),
                 |e| Some(map_proxy_event(e)),
                 event_tx.clone(),
                 self.event_handler.clone(),
                 cancel.clone(),
-                &mut tasks,
+                &running,
+            );
+        }
+        if let Some(runtime_udp) = &udp {
+            spawn_event_mapper(
+                "udp",
+                runtime_udp.subscribe(),
+                |event| Some(map_udp_event(event)),
+                event_tx.clone(),
+                self.event_handler.clone(),
+                cancel.clone(),
+                &running,
             );
         }
         if let Some(runtime_core) = &runtime {
             spawn_event_mapper(
+                "runtime",
                 runtime_core.subscribe(),
                 map_runtime_event,
                 event_tx.clone(),
                 self.event_handler.clone(),
                 cancel.clone(),
-                &mut tasks,
+                &running,
             );
         }
 
-        // The runtime orchestrator and the certmesh role loops (trust-bundle pull + renewal)
-        // are spawned inside `build_cores` (gated on the spec's `spawn_orchestrator` /
-        // `spawn_certmesh_loops`, set from the builder opt-ins above). Only the opt-in-without-
-        // prerequisite warnings stay here.
+        // The runtime orchestrator and Certmesh tasks are spawned inside
+        // `build_cores`. Trust-bundle pull + renewal honor the builder opt-in;
+        // Certmesh's deadline/status clock always runs while the domain exists.
+        // Only opt-in-without-prerequisite warnings stay here.
         if self.config.orchestrator_enabled && runtime.is_none() {
             tracing::warn!(
                 "orchestrator enabled but the runtime adapter is not — skipping orchestrator"
@@ -710,8 +727,9 @@ impl KoiEmbedded {
         }
 
         // ── Certmesh enrollment-approval pump (self-managed) ──
-        // The trust-bundle pull + cert-renewal loops are spawned by `build_cores`; the approval
-        // pump is NOT (its decider is host-specific). Embedded has no console, so it
+        // The status clock and optional trust-bundle pull + cert-renewal loop are
+        // spawned by `build_cores`; the approval pump is NOT (its decider is host-specific).
+        // Embedded has no console, so it
         // auto-denies. On by default with self-management (ADR-023); a self-driver opts out.
         if self.config.certmesh_managed {
             if let Some(ref certmesh_core) = certmesh {
@@ -719,7 +737,7 @@ impl KoiEmbedded {
                     certmesh_core,
                     koi_compose::certmesh::deny_and_log_decider(),
                     &cancel,
-                    &mut tasks,
+                    &running,
                 )
                 .await;
             } else {
@@ -731,6 +749,7 @@ impl KoiEmbedded {
         }
 
         Ok(KoiHandle::new_embedded(
+            host,
             mdns,
             dns,
             health,
@@ -738,11 +757,12 @@ impl KoiEmbedded {
             proxy,
             udp,
             runtime,
+            system_status,
+            running,
             http_addr,
             self.config.data_dir.clone(),
             event_tx,
             cancel,
-            tasks,
         ))
     }
 }
@@ -758,7 +778,7 @@ fn build_remote_client(config: &KoiConfig) -> KoiClient {
     if let Some(token) = &config.service_token {
         return KoiClient::with_token(&config.service_endpoint, token);
     }
-    if let Some(bc) = koi_config::breadcrumb::read_breadcrumb() {
+    if let Ok(Some(bc)) = koi_config::breadcrumb::read_breadcrumb() {
         if endpoints_match(&bc.endpoint, &config.service_endpoint) {
             return KoiClient::with_token(&config.service_endpoint, &bc.token);
         }
@@ -835,6 +855,44 @@ fn map_certmesh_event(event: koi_certmesh::CertmeshEvent) -> KoiEvent {
         koi_certmesh::CertmeshEvent::BundleUpdated { self_revoked } => {
             KoiEvent::BundleUpdated { self_revoked }
         }
+        koi_certmesh::CertmeshEvent::PromotedToAuthority { hostname } => {
+            KoiEvent::CertmeshPromotedToAuthority { hostname }
+        }
+        koi_certmesh::CertmeshEvent::ReloadHookCompleted { command } => {
+            KoiEvent::CertmeshReloadHookCompleted { command }
+        }
+        koi_certmesh::CertmeshEvent::ReloadHookFailed { command, reason } => {
+            KoiEvent::CertmeshReloadHookFailed { command, reason }
+        }
+    }
+}
+
+fn map_trust_event(event: koi_trust::TrustEvent) -> KoiEvent {
+    match event {
+        koi_trust::TrustEvent::RootInstalled { name, fingerprint } => {
+            KoiEvent::TrustRootInstalled { name, fingerprint }
+        }
+        koi_trust::TrustEvent::RootRemoved { name, fingerprint } => {
+            KoiEvent::TrustRootRemoved { name, fingerprint }
+        }
+        koi_trust::TrustEvent::TransitionRecovered {
+            operation,
+            name,
+            fingerprint,
+        } => KoiEvent::TrustTransitionRecovered {
+            operation,
+            name,
+            fingerprint,
+        },
+        koi_trust::TrustEvent::PresenceChanged {
+            name,
+            fingerprint,
+            presence,
+        } => KoiEvent::TrustPresenceChanged {
+            name,
+            fingerprint,
+            presence,
+        },
     }
 }
 
@@ -842,6 +900,21 @@ fn map_proxy_event(event: koi_proxy::ProxyEvent) -> KoiEvent {
     match event {
         koi_proxy::ProxyEvent::EntryUpdated { entry } => KoiEvent::ProxyEntryUpdated { entry },
         koi_proxy::ProxyEvent::EntryRemoved { name } => KoiEvent::ProxyEntryRemoved { name },
+        koi_proxy::ProxyEvent::ScopedEntriesReplaced { entries, .. } => {
+            KoiEvent::ProxyEntriesReplaced { entries }
+        }
+    }
+}
+
+fn map_udp_event(event: koi_udp::UdpEvent) -> KoiEvent {
+    match event {
+        koi_udp::UdpEvent::Bound(binding) => KoiEvent::UdpBound {
+            id: binding.id,
+            local_addr: binding.local_addr,
+        },
+        koi_udp::UdpEvent::Renewed { id, .. } => KoiEvent::UdpRenewed { id },
+        koi_udp::UdpEvent::Unbound { id, reason } => KoiEvent::UdpUnbound { id, reason },
+        koi_udp::UdpEvent::Stopped => KoiEvent::UdpStopped,
     }
 }
 
@@ -867,24 +940,37 @@ fn map_runtime_event(event: koi_runtime::RuntimeEvent) -> Option<KoiEvent> {
 /// `map` returns `None` to drop an event (e.g. mDNS `Found`, which has no host-facing
 /// variant); event types that always map wrap their mapper as `|e| Some(map_x(e))`.
 fn spawn_event_mapper<E, F>(
+    domain: &'static str,
     mut rx: broadcast::Receiver<E>,
     map: F,
     tx: broadcast::Sender<KoiEvent>,
     handler: Option<Arc<dyn Fn(KoiEvent) + Send + Sync>>,
     cancel: CancellationToken,
-    tasks: &mut Vec<JoinHandle<()>>,
+    owner: &koi_compose::cores::RunningCores,
 ) where
     E: Clone + Send + 'static,
     F: Fn(E) -> Option<KoiEvent> + Send + 'static,
 {
-    tasks.push(tokio::spawn(async move {
+    owner.own_task(tokio::spawn(async move {
         loop {
             tokio::select! {
                 _ = cancel.cancelled() => break,
                 msg = rx.recv() => {
-                    let Ok(event) = msg else { continue; };
-                    if let Some(mapped) = map(event) {
-                        emit_event(&tx, handler.as_ref(), mapped);
+                    match msg {
+                        Ok(event) => {
+                            if let Some(mapped) = map(event) {
+                                emit_event(&tx, handler.as_ref(), mapped);
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Lagged(dropped)) => {
+                            tracing::warn!(domain, dropped, "embedded event observer lagged; host must reread current status");
+                            emit_event(
+                                &tx,
+                                handler.as_ref(),
+                                KoiEvent::StatusInvalidated { domain, dropped },
+                            );
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
                     }
                 }
             }
@@ -892,20 +978,20 @@ fn spawn_event_mapper<E, F>(
     }));
 }
 
-/// Spawn a task translating this node's posture-watch transitions into
-/// `KoiEvent::PostureChanged` until cancellation (ADR-020 §5). A `watch` (which
-/// holds the latest value and coalesces) rather than a broadcast, so it needs its
-/// own loop instead of [`spawn_event_mapper`]. The first borrow seeds the baseline
-/// so the initial value is not mis-reported as a transition.
-fn spawn_posture_watcher(
-    mut rx: tokio::sync::watch::Receiver<koi_common::posture::Posture>,
+/// Forward Certmesh's coalescing latest-value status notification to the host.
+///
+/// A `watch` receiver can skip intermediate values, so this reports the exact
+/// current revision/posture and never invents a `from → to` semantic history.
+/// The initial value is the baseline and is not emitted as a change.
+fn spawn_certmesh_status_notifier(
+    mut rx: tokio::sync::watch::Receiver<std::sync::Arc<koi_certmesh::CertmeshStatus>>,
     tx: broadcast::Sender<KoiEvent>,
     handler: Option<Arc<dyn Fn(KoiEvent) + Send + Sync>>,
     cancel: CancellationToken,
-    tasks: &mut Vec<JoinHandle<()>>,
+    owner: &koi_compose::cores::RunningCores,
 ) {
-    tasks.push(tokio::spawn(async move {
-        let mut last = *rx.borrow_and_update();
+    owner.own_task(tokio::spawn(async move {
+        rx.borrow_and_update();
         loop {
             tokio::select! {
                 _ = cancel.cancelled() => break,
@@ -913,11 +999,18 @@ fn spawn_posture_watcher(
                     if res.is_err() {
                         break; // the certmesh core was dropped
                     }
-                    let to = *rx.borrow_and_update();
-                    if to != last {
-                        emit_event(&tx, handler.as_ref(), KoiEvent::PostureChanged { from: last, to });
-                        last = to;
-                    }
+                    let (revision, posture) = {
+                        let status = rx.borrow_and_update();
+                        (status.revision, status.posture)
+                    };
+                    emit_event(
+                        &tx,
+                        handler.as_ref(),
+                        KoiEvent::CertmeshStatusChanged {
+                            revision,
+                            posture,
+                        },
+                    );
                 }
             }
         }
@@ -937,33 +1030,6 @@ fn emit_event(
 
 pub(crate) fn map_join_error(err: tokio::task::JoinError) -> KoiError {
     KoiError::Io(std::io::Error::other(err.to_string()))
-}
-
-/// Build a dashboard snapshot from the embedded domain cores.
-///
-/// Delegates to `koi_compose::snapshot::build_dashboard_snapshot`, the one detail projection
-/// shared with the daemon dashboard, so the embedded snapshot now carries the same
-/// health / DNS / certmesh / proxy / UDP detail (not just the capability ladder).
-async fn build_embedded_snapshot(
-    mdns: Option<Arc<koi_mdns::MdnsCore>>,
-    certmesh: Option<Arc<koi_certmesh::CertmeshCore>>,
-    dns: Option<Arc<koi_dns::DnsRuntime>>,
-    health: Option<Arc<koi_health::HealthRuntime>>,
-    proxy: Option<Arc<koi_proxy::ProxyRuntime>>,
-    udp: Option<Arc<koi_udp::UdpRuntime>>,
-    runtime: Option<Arc<koi_runtime::RuntimeCore>>,
-) -> serde_json::Value {
-    let cores = koi_compose::cores::Cores {
-        mdns,
-        certmesh,
-        dns,
-        health,
-        proxy,
-        udp,
-        runtime,
-        mdns_snapshot: None,
-    };
-    koi_compose::snapshot::build_dashboard_snapshot(&cores).await
 }
 
 #[cfg(test)]
@@ -1015,31 +1081,40 @@ mod tests {
         // dir — never a split between the injected dir and an ambient default.
         let base = koi_common::test::ensure_data_dir("koi-embedded-datadir-tests");
         let data_dir = base.join("custom-data");
-        let paths = koi_certmesh::CertmeshPaths::with_data_dir(data_dir.clone());
-
         // Fresh machine: no CA yet. The uninitialized early-return must still
         // carry the injected paths — this is the regression the dropped-paths
         // bug (uninitialized branches dropping `paths`) used to fail.
-        let fresh = koi_compose::cores::init_certmesh_core(Some(&data_dir), "internal")
-            .expect("uninitialized core");
+        let fresh =
+            koi_compose::cores::init_certmesh_core(&data_dir, "internal", "embedded-test-host")
+                .expect("uninitialized core");
         assert_eq!(
             fresh.paths().data_dir(),
             data_dir.as_path(),
             "uninitialized core must keep the injected data_dir"
         );
 
-        // Create a CA + roster UNDER the injected dir.
-        koi_certmesh::ca::create_ca("test-pass-strong", &[7u8; 32], &paths)
+        // Create the managed aggregate UNDER the injected dir through its sole
+        // command facade. My Organization posture starts closed and requires
+        // approval.
+        fresh
+            .create(koi_certmesh::protocol::CreateCaRequest {
+                passphrase: "test-pass-strong".into(),
+                entropy_hex: koi_common::encoding::hex_encode(&[7_u8; 32]),
+                operator: Some("ops".into()),
+                enrollment_open: false,
+                requires_approval: true,
+                auto_unlock: false,
+                totp_secret_hex: None,
+            })
+            .await
             .expect("create CA under injected dir");
-        // My Organization posture: closed enrollment, approval required.
-        let roster = koi_certmesh::roster::Roster::new(false, true, Some("ops".to_string()));
-        koi_certmesh::roster::save_roster(&roster, &paths.roster_path())
-            .expect("save roster under injected dir");
+        drop(fresh);
 
         // Reopen on the same injected dir: the CA is discovered there and the
         // core unlocks from it — proving the data root is honored end-to-end.
-        let reopened = koi_compose::cores::init_certmesh_core(Some(&data_dir), "internal")
-            .expect("locked core");
+        let reopened =
+            koi_compose::cores::init_certmesh_core(&data_dir, "internal", "embedded-test-host")
+                .expect("locked core");
         assert_eq!(reopened.paths().data_dir(), data_dir.as_path());
         reopened
             .unlock("test-pass-strong")
@@ -1215,45 +1290,113 @@ mod tests {
         assert!(matches!(mapped, KoiEvent::CertmeshDestroyed));
     }
 
+    #[test]
+    fn map_certmesh_reload_hook_outcomes() {
+        let completed = map_certmesh_event(koi_certmesh::CertmeshEvent::ReloadHookCompleted {
+            command: "reload-consumer".to_string(),
+        });
+        assert!(matches!(
+            completed,
+            KoiEvent::CertmeshReloadHookCompleted { ref command }
+                if command == "reload-consumer"
+        ));
+
+        let failed = map_certmesh_event(koi_certmesh::CertmeshEvent::ReloadHookFailed {
+            command: "reload-consumer".to_string(),
+            reason: "exit status 1".to_string(),
+        });
+        assert!(matches!(
+            failed,
+            KoiEvent::CertmeshReloadHookFailed {
+                ref command,
+                ref reason,
+            } if command == "reload-consumer" && reason == "exit status 1"
+        ));
+    }
+
     #[tokio::test]
-    async fn posture_watcher_emits_upgrade_and_degrade() {
+    async fn certmesh_status_notifier_reports_the_latest_coalesced_revision() {
+        use koi_certmesh::{
+            CertmeshIdentityStatus, CertmeshRole, CertmeshStatus, IdentityCondition,
+        };
+        use koi_common::diagnosis::TrustDiagnosis;
         use koi_common::posture::Posture;
-        let (tx_p, rx_p) = tokio::sync::watch::channel(Posture::OPEN);
+
+        let status = |revision: u64, posture: Posture| {
+            Arc::new(CertmeshStatus {
+                revision,
+                role: if posture.is_secure() {
+                    CertmeshRole::Member
+                } else {
+                    CertmeshRole::Open
+                },
+                posture,
+                identity: CertmeshIdentityStatus {
+                    condition: if posture.is_secure() {
+                        IdentityCondition::Healthy
+                    } else {
+                        IdentityCondition::Absent
+                    },
+                    info: None,
+                    reason: None,
+                },
+                diagnosis: TrustDiagnosis::from_checks(posture, Vec::new()),
+                authority: None,
+                reload: None,
+                renewal: koi_certmesh::CertmeshRenewalStatus::default(),
+            })
+        };
+        let (tx_p, rx_p) = tokio::sync::watch::channel(status(0, Posture::OPEN));
         let (ev_tx, mut ev_rx) = broadcast::channel(16);
         let cancel = CancellationToken::new();
-        let mut tasks = Vec::new();
-        spawn_posture_watcher(rx_p, ev_tx, None, cancel.clone(), &mut tasks);
-        // Let the watcher run to its first await so it captures OPEN as the
-        // baseline before we send (current-thread test runtime: yield runs the
-        // spawned task up to `rx.changed()`).
+        let owner = koi_compose::cores::RunningCores::default();
+        spawn_certmesh_status_notifier(rx_p, ev_tx, None, cancel.clone(), &owner);
+        // Let the notifier consume revision 0 as its unreported baseline.
         tokio::task::yield_now().await;
 
-        // Open→Authenticated → an upgrade PostureChanged.
-        tx_p.send(Posture::new(true, false)).unwrap();
+        tx_p.send(status(1, Posture::new(true, false))).unwrap();
         let ev = tokio::time::timeout(std::time::Duration::from_secs(1), ev_rx.recv())
             .await
             .expect("event arrives")
             .expect("recv ok");
         assert!(
-            matches!(ev, KoiEvent::PostureChanged { from, to } if !from.signed && to.signed),
-            "expected upgrade, got {ev:?}"
+            matches!(
+                ev,
+                KoiEvent::CertmeshStatusChanged {
+                    revision: 1,
+                    posture
+                } if posture.signed && !posture.encrypted
+            ),
+            "expected revision 1, got {ev:?}"
         );
 
-        // Authenticated→Open → a degrade PostureChanged (as loud as the upgrade).
-        tx_p.send(Posture::OPEN).unwrap();
+        // A watch is a latest-value projection. Two commits before the receiver
+        // runs produce one honest notification for revision 3, not a fabricated
+        // revision-1→2 or revision-2→3 semantic transition.
+        tx_p.send(status(2, Posture::new(true, true))).unwrap();
+        tx_p.send(status(3, Posture::OPEN)).unwrap();
         let ev = tokio::time::timeout(std::time::Duration::from_secs(1), ev_rx.recv())
             .await
             .expect("event arrives")
             .expect("recv ok");
         assert!(
-            matches!(ev, KoiEvent::PostureChanged { from, to } if from.signed && !to.signed),
-            "expected degrade, got {ev:?}"
+            matches!(
+                ev,
+                KoiEvent::CertmeshStatusChanged {
+                    revision: 3,
+                    posture: Posture::OPEN
+                }
+            ),
+            "expected latest coalesced revision 3, got {ev:?}"
         );
 
-        cancel.cancel();
-        for t in tasks {
-            let _ = t.await;
-        }
+        koi_compose::cores::ordered_shutdown(
+            &cancel,
+            &owner,
+            std::time::Duration::from_secs(1),
+            std::time::Duration::ZERO,
+        )
+        .await;
     }
 
     // ── map_proxy_event ────────────────────────────────────────────
@@ -1292,6 +1435,75 @@ mod tests {
             }
             other => panic!("expected ProxyEntryRemoved, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn map_udp_lifecycle_events() {
+        let now = chrono::Utc::now();
+        let bound = map_udp_event(koi_udp::UdpEvent::Bound(koi_udp::BindingInfo {
+            id: "binding-1".to_string(),
+            local_addr: "127.0.0.1:4000".to_string(),
+            created_at: now,
+            last_heartbeat: now,
+            lease_secs: 60,
+            allow_remote: false,
+        }));
+        assert!(matches!(
+            bound,
+            KoiEvent::UdpBound { ref id, ref local_addr }
+                if id == "binding-1" && local_addr == "127.0.0.1:4000"
+        ));
+
+        let unbound = map_udp_event(koi_udp::UdpEvent::Unbound {
+            id: "binding-1".to_string(),
+            reason: koi_udp::UdpUnbindReason::Shutdown,
+        });
+        assert!(matches!(
+            unbound,
+            KoiEvent::UdpUnbound {
+                reason: koi_udp::UdpUnbindReason::Shutdown,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn mapper_lag_is_explicit_to_the_host() {
+        let (domain_tx, domain_rx) = broadcast::channel(1);
+        domain_tx.send(1_u8).expect("first event");
+        domain_tx.send(2_u8).expect("second event forces lag");
+        let (host_tx, mut host_rx) = broadcast::channel(4);
+        let cancel = CancellationToken::new();
+        let owner = koi_compose::cores::RunningCores::default();
+        spawn_event_mapper(
+            "test-domain",
+            domain_rx,
+            |_| None,
+            host_tx,
+            None,
+            cancel.clone(),
+            &owner,
+        );
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), host_rx.recv())
+            .await
+            .expect("host notification timeout")
+            .expect("host event channel");
+        assert!(matches!(
+            event,
+            KoiEvent::StatusInvalidated {
+                domain: "test-domain",
+                dropped: 1
+            }
+        ));
+
+        koi_compose::cores::ordered_shutdown(
+            &cancel,
+            &owner,
+            std::time::Duration::from_secs(1),
+            std::time::Duration::ZERO,
+        )
+        .await;
     }
 
     // ── map_join_error ─────────────────────────────────────────────

@@ -6,14 +6,19 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::roster::{CertPolicy, EnrollmentState};
+use crate::roster::CertPolicy;
+pub use crate::roster::EnrollmentState;
+
+// Status is owned by the Certmesh domain read model, not by the HTTP protocol.
+// Re-export the wire type here during the public API transition.
+pub use crate::status::{CertmeshMemberStatus as MemberSummary, CertmeshStatus};
 
 /// Client request to join the mesh.
 ///
 /// The joining machine must identify itself by hostname so the CA
 /// issues a certificate with the correct subject (not the CA’s own
 /// hostname).
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct JoinRequest {
     /// Hostname of the machine requesting to join.
     pub hostname: String,
@@ -161,45 +166,6 @@ pub struct JoinResponse {
     pub policy: CertPolicy,
 }
 
-/// Certmesh status overview (returned by GET /status).
-///
-/// The security posture is reported as the two real booleans
-/// (`enrollment_open`, `requires_approval`); `enrollment_state` is the
-/// open/closed wire enum derived from `enrollment_open`.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct CertmeshStatus {
-    pub ca_initialized: bool,
-    pub ca_locked: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ca_fingerprint: Option<String>,
-    /// Active authentication method ("totp", or absent if uninitialized).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub auth_method: Option<String>,
-    /// Whether the mesh is currently accepting new members.
-    pub enrollment_open: bool,
-    /// Whether joins require operator approval at the CA.
-    pub requires_approval: bool,
-    pub enrollment_state: EnrollmentState,
-    pub member_count: usize,
-    /// Monotonic roster sequence (ADR-017 F8) — the trust bundle's `seq`.
-    #[serde(default)]
-    pub seq: u64,
-    /// CA-held certificate lifecycle policy (ADR-017).
-    #[serde(default)]
-    pub policy: CertPolicy,
-    pub members: Vec<MemberSummary>,
-}
-
-/// Compact member summary for status display.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct MemberSummary {
-    pub hostname: String,
-    pub role: String,
-    pub status: String,
-    pub cert_fingerprint: String,
-    pub cert_expires: String,
-}
-
 /// Request to set a post-renewal reload hook for this host.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct SetHookRequest {
@@ -210,7 +176,7 @@ pub struct SetHookRequest {
 }
 
 /// Response after setting a reload hook.
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct SetHookResponse {
     pub hostname: String,
     pub reload: String,
@@ -259,6 +225,12 @@ pub struct CreateCaResponse {
     pub auth_setup: koi_crypto::auth::AuthSetup,
     /// SHA-256 fingerprint of the CA certificate.
     pub ca_fingerprint: String,
+}
+
+/// Public CA root material for bootstrap/export tooling.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct CaCertificateResponse {
+    pub ca_cert_pem: String,
 }
 
 /// POST /unlock request - decrypt the CA key.
@@ -385,6 +357,9 @@ pub struct PromoteResponse {
     /// Serialized auth credential (StoredAuth JSON).
     pub auth_data: serde_json::Value,
     pub roster_json: String,
+    /// Durable ACME accounts; absent for peers predating account transfer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acme_accounts_json: Option<String>,
     pub ca_cert_pem: String,
     /// Server's ephemeral X25519 public key for DH key agreement.
     /// Present only when the client sent an `ephemeral_public` in the request.
@@ -394,6 +369,40 @@ pub struct PromoteResponse {
         with = "optional_byte_array"
     )]
     pub ephemeral_public: Option<[u8; 32]>,
+}
+
+/// Start a promotion on the local daemon. The ephemeral secret never crosses
+/// the process boundary; only this public key is sent to the current authority.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct BeginPromotionResponse {
+    pub session_id: String,
+    /// Hex-encoded X25519 public key.
+    pub ephemeral_public: String,
+}
+
+/// Ask the local member daemon to carry a promotion request over its mTLS
+/// identity. The operator CLI never reads or transports the member private key.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct RelayPromotionRequest {
+    pub session_id: String,
+    pub authority_endpoint: String,
+    pub auth: koi_crypto::auth::AuthResponse,
+}
+
+/// Complete a local promotion with material returned by the current authority.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct AcceptPromotionRequest {
+    pub session_id: String,
+    pub promotion: PromoteResponse,
+    /// New at-rest passphrase chosen locally; it is never sent to the authority.
+    pub passphrase: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct AcceptPromotionResponse {
+    pub promoted: bool,
+    pub role: String,
+    pub hostname: String,
 }
 
 /// POST /renew request — **member-initiated, CSR-only** rotate-key renewal
@@ -715,6 +724,7 @@ mod tests {
             },
             auth_data: serde_json::json!({"method": "totp", "encrypted_secret": {"ciphertext": [10], "salt": [11], "nonce": [12]}}),
             roster_json: r#"{"metadata":{}}"#.to_string(),
+            acme_accounts_json: None,
             ca_cert_pem: "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----\n".to_string(),
             ephemeral_public: None,
         };
@@ -737,6 +747,7 @@ mod tests {
             },
             auth_data: serde_json::json!({"method": "totp"}),
             roster_json: "{}".to_string(),
+            acme_accounts_json: None,
             ca_cert_pem: "cert".to_string(),
             ephemeral_public: Some(server_pub),
         };
@@ -838,55 +849,6 @@ mod tests {
     }
 
     // ── Phase 2 tests ──────────────────────────────────────────────────
-
-    #[test]
-    fn certmesh_status_serializes() {
-        let status = CertmeshStatus {
-            ca_initialized: true,
-            ca_locked: false,
-            ca_fingerprint: Some("abc123".to_string()),
-            auth_method: None,
-            enrollment_open: true,
-            requires_approval: false,
-            enrollment_state: EnrollmentState::Open,
-            member_count: 1,
-            seq: 0,
-            policy: CertPolicy::default(),
-            members: vec![MemberSummary {
-                hostname: "node-01".to_string(),
-                role: "primary".to_string(),
-                status: "active".to_string(),
-                cert_fingerprint: "abc".to_string(),
-                cert_expires: "2026-03-13T00:00:00Z".to_string(),
-            }],
-        };
-        let json = serde_json::to_string(&status).unwrap();
-        assert!(json.contains("\"ca_initialized\":true"));
-        assert!(json.contains("\"member_count\":1"));
-        assert!(json.contains("\"enrollment_open\":true"));
-        assert!(json.contains("\"requires_approval\":false"));
-    }
-
-    #[test]
-    fn certmesh_status_reports_posture_booleans() {
-        let status = CertmeshStatus {
-            ca_initialized: true,
-            ca_locked: false,
-            ca_fingerprint: Some("fp-org".to_string()),
-            auth_method: None,
-            enrollment_open: false,
-            requires_approval: true,
-            enrollment_state: EnrollmentState::Closed,
-            member_count: 0,
-            seq: 0,
-            policy: CertPolicy::default(),
-            members: vec![],
-        };
-        let json = serde_json::to_string(&status).unwrap();
-        assert!(json.contains("\"enrollment_open\":false"));
-        assert!(json.contains("\"requires_approval\":true"));
-        assert!(json.contains("\"enrollment_state\":\"closed\""));
-    }
 
     // ── Service delegation serde tests ──────────────────────────────
 
@@ -1016,70 +978,6 @@ mod tests {
         let json = serde_json::to_string(&resp).unwrap();
         let parsed: DestroyResponse = serde_json::from_str(&json).unwrap();
         assert!(parsed.destroyed);
-    }
-
-    #[test]
-    fn certmesh_status_serde_round_trip() {
-        let status = CertmeshStatus {
-            ca_initialized: true,
-            ca_locked: false,
-            ca_fingerprint: Some("fp-round-trip".to_string()),
-            auth_method: None,
-            enrollment_open: true,
-            requires_approval: true,
-            enrollment_state: EnrollmentState::Open,
-            member_count: 2,
-            seq: 5,
-            policy: CertPolicy::default(),
-            members: vec![
-                MemberSummary {
-                    hostname: "node-01".to_string(),
-                    role: "primary".to_string(),
-                    status: "active".to_string(),
-                    cert_fingerprint: "fp1".to_string(),
-                    cert_expires: "2026-06-01".to_string(),
-                },
-                MemberSummary {
-                    hostname: "node-02".to_string(),
-                    role: "member".to_string(),
-                    status: "active".to_string(),
-                    cert_fingerprint: "fp2".to_string(),
-                    cert_expires: "2026-06-01".to_string(),
-                },
-            ],
-        };
-        let json = serde_json::to_string(&status).unwrap();
-        let parsed: CertmeshStatus = serde_json::from_str(&json).unwrap();
-        assert!(parsed.ca_initialized);
-        assert!(!parsed.ca_locked);
-        assert!(parsed.enrollment_open);
-        assert!(parsed.requires_approval);
-        assert_eq!(parsed.member_count, 2);
-        assert_eq!(parsed.members.len(), 2);
-        assert_eq!(parsed.members[0].hostname, "node-01");
-        assert_eq!(parsed.members[1].hostname, "node-02");
-    }
-
-    #[test]
-    fn certmesh_status_uninitialized_round_trip() {
-        let status = CertmeshStatus {
-            ca_initialized: false,
-            ca_locked: false,
-            ca_fingerprint: None,
-            auth_method: None,
-            enrollment_open: false,
-            requires_approval: false,
-            enrollment_state: EnrollmentState::Closed,
-            member_count: 0,
-            seq: 0,
-            policy: CertPolicy::default(),
-            members: vec![],
-        };
-        let json = serde_json::to_string(&status).unwrap();
-        let parsed: CertmeshStatus = serde_json::from_str(&json).unwrap();
-        assert!(!parsed.ca_initialized);
-        assert_eq!(parsed.member_count, 0);
-        assert!(parsed.members.is_empty());
     }
 
     #[test]

@@ -346,7 +346,7 @@ pub struct DaemonStatus {
 }
 
 /// Registration counts by state.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 pub struct RegistrationCounts {
     pub alive: usize,
     pub draining: usize,

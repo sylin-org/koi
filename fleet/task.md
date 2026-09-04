@@ -38,7 +38,7 @@ twins, or a production machine. Report the observed hostname and OS when refusin
 3. Read, in order:
    - `fleet/PROTOCOL.md`;
    - `fleet/coordination.md`;
-   - `fleet/epics/001-productization-hardening.md`;
+   - the current epic linked from `fleet/coordination.md`;
    - this hat's brief from the table above;
    - this hat's full journal and unresolved issues;
    - the relevant ADRs, source, tests, and `docs/SURFACES.md` rows.
@@ -51,6 +51,10 @@ proves it wrong.
 Within a brief, the most recent dated `next dispatch` section is the current routing
 and outranks retained baseline lists. Journal and issue evidence still determine what
 is already complete.
+
+The current epic outranks every retained brief dispatch. If it pauses a release, soak,
+installation, or system mutation while shared development validation is underway, obey that
+pause even when the hat brief's newest historical section says to begin the work.
 
 When the epic names a frozen source SHA, synchronized `dev` is the instruction and
 evidence branch, not an implicit replacement candidate. Verify that exact commit

@@ -25,6 +25,9 @@ pub struct BackupPayload {
     /// Auth credential bytes - TOTP raw secret.
     pub auth_data: Vec<u8>,
     pub roster_json: String,
+    /// Durable RFC 8555 accounts, so restored clients retain their `kid`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acme_accounts_json: Option<String>,
     pub audit_log: String,
 }
 
@@ -35,6 +38,7 @@ impl BackupPayload {
         auth_method: String,
         auth_data: Vec<u8>,
         roster_json: String,
+        acme_accounts_json: Option<String>,
         audit_log: String,
     ) -> Self {
         Self {
@@ -45,6 +49,7 @@ impl BackupPayload {
             auth_method,
             auth_data,
             roster_json,
+            acme_accounts_json,
             audit_log,
         }
     }

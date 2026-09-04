@@ -236,7 +236,7 @@ The daemon listens on two ports with different security postures:
 
 | Port | Default | Bind address | Auth | Purpose |
 |------|---------|-------------|------|---------|
-| **5641** | `--port` | `127.0.0.1` (loopback) | DAT header (`x-koi-token`, enforced on all non-GET requests except `/v1/certmesh/join`) | Local CLI, dashboard, management API |
+| **5641** | `--port` | `127.0.0.1` (loopback) | DAT header for mutations and protected operator reads; `/join`, `/bootstrap`, and the signed trust bundle have narrow protocol exemptions | Local CLI, dashboard, management API |
 | **5642** | `--mtls-port` | `0.0.0.0` (all interfaces) | mTLS client certificate | Inter-node communication (promote, health heartbeat, set-hook, renew) |
 | **5643** | `--acme-port` | `0.0.0.0` (all interfaces) | JWS (server-auth TLS) | [ACME (RFC 8555) facade](acme.md) — standard ACME clients get certs from the CA |
 
@@ -257,7 +257,8 @@ Most certmesh endpoints are mounted at `/v1/certmesh/` on the daemon's HTTP port
 | `POST` | `/v1/certmesh/create`           | Initialize a new CA                   |
 | `POST` | `/v1/certmesh/invite`           | Mint a single-use, hostname-bound invite |
 | `POST` | `/v1/certmesh/join`             | Enroll in an existing mesh            |
-| `GET`  | `/v1/certmesh/status`           | Mesh status, members, CA state        |
+| `GET`  | `/v1/certmesh/bootstrap`        | Minimal public CA fingerprint/enrollment preflight |
+| `GET`  | `/v1/certmesh/status`           | Full authoritative node/identity/authority/roster status (**DAT required remotely**) |
 | `POST` | `/v1/certmesh/unlock`           | Decrypt the CA key                    |
 | `PUT`  | `/v1/certmesh/set-hook`         | Configure renewal hook                |
 | `POST` | `/v1/certmesh/promote`          | Promote a member to standby CA (**mTLS, port 5642**) |
@@ -271,6 +272,13 @@ Most certmesh endpoints are mounted at `/v1/certmesh/` on the daemon's HTTP port
 | `POST` | `/v1/certmesh/restore`          | Restore from a backup bundle          |
 | `POST` | `/v1/certmesh/revoke`           | Revoke a member's certificate         |
 | `POST` | `/v1/certmesh/destroy`          | Destroy the CA and all state          |
+
+The public bootstrap and protected status routes are deliberately separate. A joiner needs
+only authority availability, the CA fingerprint, and enrollment/approval flags before it has
+credentials. Full status also carries the node's durable role (`open`, `member`, or
+`authority`), current posture, identity condition, trust diagnosis, CA state, policy, and
+roster. A joined member with a missing, corrupt, expired, or revoked identity remains a
+member and enforces trust fail-closed; it is never silently reported as Open.
 
 ### Join example
 
@@ -464,6 +472,4 @@ Certmesh is intentionally small. Knowing what it does *not* do is as important a
 ## Embedding certmesh in a Rust app
 
 To run certmesh as a library — in-process, no daemon, the full `CertmeshCore` plus the network adapters you compose for your role (a mesh member or the CA host) — see [Embedding certmesh](certmesh-embedded.md).
-
-
 

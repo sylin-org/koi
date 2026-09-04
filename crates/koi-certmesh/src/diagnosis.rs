@@ -6,12 +6,9 @@
 //! [`build_diagnosis`] is pure (all inputs passed in) so every branch is unit
 //! -testable without a CA; `CertmeshCore::diagnose` gathers the inputs.
 //!
-//! Honesty rule (mkcert #182, ADR-020 §13): a check never reports a fake success
-//! over something it cannot verify — e.g. OS trust-store membership is not
-//! queryable via `os-truststore`, so that check states the limitation + the exact
-//! remedy instead of claiming "installed".
+//! OS trust-store ownership and diagnosis belong to `koi-trust`; Certmesh reports
+//! only the certificate-mesh facts it can authoritatively decide.
 
-use chrono::{DateTime, Utc};
 use koi_common::diagnosis::{DiagnosisCheck, TrustDiagnosis};
 use koi_common::posture::Posture;
 use x509_parser::prelude::FromDer;
@@ -55,13 +52,16 @@ pub fn identity_material_is_usable(cert_pem: &str, key_pem: &str, ca_cert_pem: &
 
 /// Assemble the trust diagnosis (pure). `integrity_ok` is `None` on an Open node
 /// (no identity) and `Some(chain-validates)` when secure; `self_revoked` is whether
-/// this node's own leaf is in the revoked set; `now` drives the clock line.
+/// this node's own leaf is in the revoked set. `identity_expected` distinguishes a
+/// valid Open node from a member whose required identity disappeared, preventing
+/// a broken secure node from being reported as healthy/Open.
 pub fn build_diagnosis(
     posture: Posture,
     identity: Option<&Identity>,
     integrity_ok: Option<bool>,
     self_revoked: bool,
-    now: DateTime<Utc>,
+    identity_expected: bool,
+    identity_problem: Option<&str>,
 ) -> TrustDiagnosis {
     let mut checks = Vec::new();
 
@@ -76,12 +76,23 @@ pub fn build_diagnosis(
     checks.push(posture_check);
 
     let Some(id) = identity else {
-        // Open node: the identity-dependent checks do not apply.
-        checks.push(DiagnosisCheck::not_applicable(
-            "identity",
-            "Open node — no cryptographic identity (this is valid; not an error)",
-        ));
-        checks.push(clock_check(now));
+        if identity_expected {
+            checks.push(
+                DiagnosisCheck::red(
+                    "identity",
+                    identity_problem.unwrap_or(
+                        "this node belongs to a mesh but its local identity is unavailable",
+                    ),
+                )
+                .with_remedy("repair or re-enroll: `koi certmesh join <endpoint>`"),
+            );
+        } else {
+            checks.push(DiagnosisCheck::not_applicable(
+                "identity",
+                "Open node — no cryptographic identity (this is valid; not an error)",
+            ));
+        }
+        checks.push(clock_check());
         return TrustDiagnosis::from_checks(posture, checks);
     };
 
@@ -124,18 +135,8 @@ pub fn build_diagnosis(
     // ── renewal health (reuses RenewalHealth) ──
     checks.push(renewal_check(&id.renewal));
 
-    // ── ca_trust_install (honest: not queryable → state the limitation + remedy) ──
-    checks.push(
-        DiagnosisCheck::ok(
-            "ca_trust_install",
-            "local apps should trust the mesh root; install status is not queryable \
-             via the OS trust API (no fake 'installed' is reported)",
-        )
-        .with_remedy("ensure it is installed: `koi trust diagnose --fix`"),
-    );
-
     // ── clock / freshness window (informational) ──
-    checks.push(clock_check(now));
+    checks.push(clock_check());
 
     TrustDiagnosis::from_checks(posture, checks)
 }
@@ -167,12 +168,11 @@ fn renewal_check(renewal: &crate::RenewalHealth) -> DiagnosisCheck {
 
 /// The clock line: local time + the ±freshness window so an operator understands
 /// the skew tolerance (ADR-020 §13 — surface the leeway).
-fn clock_check(now: DateTime<Utc>) -> DiagnosisCheck {
+fn clock_check() -> DiagnosisCheck {
     DiagnosisCheck::ok(
         "clock",
         format!(
-            "local clock {}; envelopes accept ±{}s skew (run NTP if peers reject for skew)",
-            now.to_rfc3339(),
+            "envelopes accept ±{}s skew (run NTP if peers reject for skew)",
             crate::envelope::FRESHNESS_WINDOW_SECS,
         ),
     )
@@ -186,6 +186,7 @@ fn short_fp(fp: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
     use koi_common::diagnosis::{CheckStatus, DiagnosisStatus};
 
     fn renewal(expires_in_days: i64, renew_overdue: bool, expired: bool) -> crate::RenewalHealth {
@@ -219,7 +220,7 @@ mod tests {
 
     #[test]
     fn open_node_marks_identity_checks_not_applicable() {
-        let d = build_diagnosis(Posture::OPEN, None, None, false, Utc::now());
+        let d = build_diagnosis(Posture::OPEN, None, None, false, false, None);
         assert_eq!(d.overall, DiagnosisStatus::Healthy);
         assert_eq!(find(&d, "identity").status, CheckStatus::NotApplicable);
         // Open posture carries a remedy to gain an identity.
@@ -236,7 +237,8 @@ mod tests {
             Some(&id),
             Some(true),
             false,
-            Utc::now(),
+            true,
+            None,
         );
         assert_eq!(d.overall, DiagnosisStatus::Healthy);
         assert_eq!(find(&d, "renewal").status, CheckStatus::Ok);
@@ -252,7 +254,8 @@ mod tests {
             Some(&id),
             Some(true),
             false,
-            Utc::now(),
+            true,
+            None,
         );
         assert!(d.is_red());
         let r = find(&d, "renewal");
@@ -272,7 +275,8 @@ mod tests {
             Some(&id),
             Some(true),
             false,
-            Utc::now(),
+            true,
+            None,
         );
         assert_eq!(find(&d, "renewal").status, CheckStatus::Ok);
         assert!(find(&d, "renewal")
@@ -290,7 +294,8 @@ mod tests {
             Some(&id),
             Some(true),
             true,
-            Utc::now(),
+            true,
+            None,
         );
         assert!(d.is_red());
         let r = find(&d, "self_revocation");
@@ -307,26 +312,25 @@ mod tests {
             Some(&id),
             Some(false),
             false,
-            Utc::now(),
+            true,
+            None,
         );
         assert!(d.is_red());
         assert_eq!(find(&d, "identity_integrity").status, CheckStatus::Red);
     }
 
     #[test]
-    fn ca_trust_install_is_honest_not_a_fake_success() {
-        let id = identity(renewal(60, false, false));
+    fn missing_identity_on_a_member_is_red_not_open() {
         let d = build_diagnosis(
-            Posture::new(true, false),
-            Some(&id),
-            Some(true),
+            Posture::OPEN,
+            None,
+            None,
             false,
-            Utc::now(),
+            true,
+            Some("member certificate is missing"),
         );
-        let c = find(&d, "ca_trust_install");
-        // Honest: it does NOT claim "installed"; it states the limitation + a remedy.
-        assert!(!c.detail.to_lowercase().contains("installed successfully"));
-        assert!(c.detail.contains("not queryable"));
-        assert!(c.remedy.is_some());
+        assert!(d.is_red());
+        assert_eq!(find(&d, "identity").status, CheckStatus::Red);
+        assert!(find(&d, "identity").detail.contains("missing"));
     }
 }

@@ -7,6 +7,7 @@ subject CN, and the P-256 SPKI algorithm. One keypair, three opinions.
 """
 
 import json
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -21,7 +22,12 @@ def node_available() -> bool:
     return shutil.which("node") is not None
 
 
+def cryptography_available() -> bool:
+    return importlib.util.find_spec("cryptography") is not None
+
+
 @unittest.skipUnless(node_available(), "node is not installed")
+@unittest.skipUnless(cryptography_available(), "cryptography is not installed")
 class TestTsCsrCrossLanguage(unittest.IsolatedAsyncioTestCase):
     def test_generated_csr_verifies_with_cryptography(self):
         cryptography = __import__("cryptography")

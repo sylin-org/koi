@@ -40,7 +40,7 @@ References: [CLI](docs/reference/cli.md) ·
 Open a terminal:
 
 ```
-koi mdns discover
+koi --standalone mdns discover
 ```
 
 Koi scans your local network and lists every service type it can find. After five
@@ -52,13 +52,14 @@ _googlecast._tcp
 _spotify-connect._tcp
 ```
 
-That's mDNS discovery — no configuration, no server, no daemon. Just devices
-talking to each other.
+That's an intentional one-process mDNS session — no configuration or central
+server. `--standalone` is explicit so Koi never starts a second responder beside
+an installed service.
 
 To advertise a service:
 
 ```
-koi mdns announce "My App" _http._tcp 8080
+koi --standalone mdns announce "My App" _http._tcp 8080
 ```
 
 Other devices running any mDNS browser will see it. Press Ctrl+C to stop — and
@@ -86,7 +87,7 @@ diagnostics.
 
 ## The daemon
 
-One-off commands work standalone, but composed services — DNS, certificates,
+One-off commands can use explicit `--standalone`, but composed services — DNS, certificates,
 the dashboard, and container integration — live in the daemon:
 
 ```
@@ -105,8 +106,8 @@ The daemon exposes:
   (`$XDG_RUNTIME_DIR/koi.sock`) — mDNS operations over NDJSON
 
 Bare `koi` (no flags, no subcommand) does **not** start a daemon — it shows status
-and the command catalog. The daemon starts only with `--daemon`, as an installed
-service, or in piped-stdin mode.
+and the command catalog. The daemon starts only with `--daemon` or as an installed
+service.
 
 ### Writes require the daemon token
 
@@ -146,42 +147,29 @@ Koi v0.x
 You normally never think about this — but here is the rule:
 
 1. **Subcommand present** (`koi mdns discover`, `koi dns add`, …):
-   - `--standalone` → run a local engine, ignore any daemon
+   - `--standalone` → run an intentional local composition, only when the local service is stopped
    - `--endpoint URL` → talk to that daemon explicitly
-   - otherwise → if a daemon is running (detected via the breadcrumb file, <1 ms),
-     act as its client; if not, run standalone where the command supports it
-2. **Stdin is a pipe** (`echo '…' | koi`) → NDJSON in, NDJSON out (mDNS verbs)
-3. **`koi --daemon`** → start the daemon
-4. **No subcommand, no pipe, no flag** → status + catalog
+   - otherwise → use the healthy authenticated local service; if none is available, fail with startup guidance
+2. **`koi --daemon`** → start the daemon
+3. **No subcommand** → status + catalog
 
 Client mode is what makes `koi mdns announce` pleasant: the CLI auto-heartbeats the
 lease while running and unregisters cleanly on Ctrl+C.
 
 ---
 
-## JSON and piped modes
+## JSON output
 
-Every command supports `--json` (NDJSON to stdout):
+Commands support `--json` for machine-readable output:
 
 ```
 koi mdns discover _http._tcp --json
 koi status --json
 ```
 
-When stdin is a pipe, Koi speaks NDJSON directly — handy as a dev REPL:
-
-```bash
-echo '{"browse":"_http._tcp"}' | koi
-```
-
-| Operation | Request JSON |
-| --------- | ------------ |
-| Browse | `{"browse": "_http._tcp"}` |
-| Register | `{"register": {"name": "My App", "type": "_http._tcp", "port": 8080}}` |
-| Unregister | `{"unregister": "a1b2c3d4"}` |
-| Resolve | `{"resolve": "My NAS._http._tcp.local."}` |
-| Subscribe | `{"subscribe": "_http._tcp"}` |
-| Heartbeat | `{"heartbeat": "a1b2c3d4"}` |
+Redirecting stdin never starts a local responder. For long-lived integrations,
+use the authenticated HTTP or local IPC boundary. `koi mcp serve` is the one
+explicit stdio surface and remains a client of the installed service.
 
 ---
 

@@ -30,6 +30,8 @@ const DASHBOARD_HTML: &str = include_str!("../assets/dashboard.html");
 pub struct DashboardIdentity {
     pub version: String,
     pub platform: String,
+    pub hostname: String,
+    pub hostname_fqdn: String,
 }
 
 /// A domain-agnostic SSE event forwarded by the caller.
@@ -77,9 +79,10 @@ impl From<&DashboardSseEvent> for KoiEventWire {
 
 /// Type alias for the async snapshot closure.
 ///
-/// The caller provides a closure that queries all domain cores and returns a complete
-/// JSON snapshot. koi-dashboard wraps it with identity / uptime / mode metadata. This
-/// inversion keeps the dashboard surface free of domain coupling.
+/// The caller provides a closure that projects one already-captured product status into
+/// complete JSON. koi-dashboard wraps it with identity / uptime / mode metadata. The mDNS
+/// browser remains its own authoritative-snapshot-backed presentation model. This inversion
+/// keeps the dashboard surface free of domain coupling.
 pub type SnapshotFn =
     Arc<dyn Fn() -> Pin<Box<dyn Future<Output = serde_json::Value> + Send>> + Send + Sync>;
 
@@ -128,8 +131,13 @@ fn dashboard_event_stream(state: DashboardState) -> impl Stream<Item = Result<Ev
                                 .ok()
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                            tracing::warn!(dropped = n, "Dashboard SSE stream lagged");
-                            continue;
+                            tracing::warn!(dropped = n, "Dashboard SSE stream lagged; sending authoritative resync");
+                            let ev = snapshot_resync(&state, n).await;
+                            Event::default()
+                                .event(&ev.event_type)
+                                .id(ev.id)
+                                .json_data(ev.data)
+                                .ok()
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     }
@@ -162,19 +170,13 @@ pub async fn get_dashboard() -> impl IntoResponse {
 
 /// `GET /v1/dashboard/snapshot` — System-level JSON snapshot.
 pub async fn get_snapshot(Extension(state): Extension<DashboardState>) -> impl IntoResponse {
-    let hostname = hostname::get()
-        .ok()
-        .and_then(|os| os.into_string().ok())
-        .unwrap_or_else(|| "unknown".to_string());
-    let hostname_fqdn = format!("{hostname}.local");
-
     let details = (state.snapshot_fn)().await;
 
     Json(DashboardSnapshot {
         version: state.identity.version.clone(),
         platform: state.identity.platform.clone(),
-        hostname,
-        hostname_fqdn,
+        hostname: state.identity.hostname.clone(),
+        hostname_fqdn: state.identity.hostname_fqdn.clone(),
         uptime_secs: state.started_at.elapsed().as_secs(),
         mode: state.mode.to_string(),
         details,
@@ -225,8 +227,14 @@ fn wire_event_stream(state: DashboardState) -> impl Stream<Item = Result<Event, 
                                 .ok()
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                            tracing::warn!(dropped = n, "events SSE stream lagged");
-                            continue;
+                            tracing::warn!(dropped = n, "events SSE stream lagged; sending authoritative resync");
+                            let ev = snapshot_resync(&state, n).await;
+                            let wire = KoiEventWire::from(&ev);
+                            Event::default()
+                                .event(&ev.event_type)
+                                .id(&ev.id)
+                                .json_data(wire)
+                                .ok()
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     }
@@ -242,15 +250,81 @@ fn wire_event_stream(state: DashboardState) -> impl Stream<Item = Result<Event, 
     }
 }
 
+async fn snapshot_resync(state: &DashboardState, dropped: u64) -> DashboardSseEvent {
+    let snapshot = (state.snapshot_fn)().await;
+    DashboardSseEvent {
+        event_type: "system.resync".to_string(),
+        id: uuid::Uuid::now_v7().to_string(),
+        data: serde_json::json!({
+            "reason": "stream_lag",
+            "dropped": dropped,
+            "snapshot": snapshot,
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::DASHBOARD_HTML;
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+    use tokio_stream::StreamExt;
 
     #[test]
     fn dashboard_uses_current_snapshot_fields() {
-        assert!(DASHBOARD_HTML.contains("c.requires_approval"));
+        assert!(DASHBOARD_HTML.contains("c.authority"));
+        assert!(DASHBOARD_HTML.contains("identity.condition"));
+        assert!(DASHBOARD_HTML.contains("a.requires_approval"));
         assert!(DASHBOARD_HTML.contains("listener.state"));
+        assert!(!DASHBOARD_HTML.contains("c.ca_initialized"));
         assert!(!DASHBOARD_HTML.contains("c.profile"));
         assert!(!DASHBOARD_HTML.contains("listener.running"));
+    }
+
+    #[tokio::test]
+    async fn lagged_dashboard_stream_rereads_the_authoritative_snapshot() {
+        let reads = Arc::new(AtomicUsize::new(0));
+        let snapshot_reads = reads.clone();
+        let snapshot_fn: SnapshotFn = Arc::new(move || {
+            snapshot_reads.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { serde_json::json!({ "revision": 41 }) })
+        });
+        let (event_tx, _) = broadcast::channel(1);
+        let state = DashboardState {
+            identity: DashboardIdentity {
+                version: "test".to_string(),
+                platform: "test".to_string(),
+                hostname: "test-host".to_string(),
+                hostname_fqdn: "test-host.local".to_string(),
+            },
+            mode: "test",
+            snapshot_fn,
+            event_tx: event_tx.clone(),
+            started_at: Instant::now(),
+        };
+        let stream = dashboard_event_stream(state);
+        tokio::pin!(stream);
+
+        // Poll once so the per-client receiver exists, then overflow its one-event
+        // buffer deterministically before polling again.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(1), stream.next())
+                .await
+                .is_err()
+        );
+        let event = |id: &str| DashboardSseEvent {
+            event_type: "test.event".to_string(),
+            id: id.to_string(),
+            data: serde_json::json!({}),
+        };
+        event_tx.send(event("first")).unwrap();
+        event_tx.send(event("second")).unwrap();
+
+        let event = tokio::time::timeout(Duration::from_secs(1), stream.next())
+            .await
+            .expect("lag produces a prompt resync")
+            .expect("stream remains open");
+        assert!(event.is_ok());
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
     }
 }

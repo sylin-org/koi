@@ -1,10 +1,10 @@
 # Upgrade & migration
 
 You want to move a running Koi to a newer build without losing your certificate mesh,
-DNS records, or proxy config — and without getting surprised by a breaking change. Koi
-is on the **1.0 release-candidate line**, so "newer build" is not automatically "drop-in
-safe": a prerelease is where the intended v1 contract meets real networks before the stable
-declaration.
+DNS records, or proxy config — and without getting surprised by a breaking change. Current
+repository source is **1.0.0-dev.0**, an architecture-development line after withdrawal of
+the former rc.2 freeze. It is not a drop-in release candidate. `1.0.0-rc.2` remains the last
+published prerelease; its release-to-release migration notes are retained below.
 This guide is the safe upgrade procedure and what to check before you run it.
 
 The short version: **read the [CHANGELOG](../../CHANGELOG.md) first, back up if anything
@@ -12,11 +12,21 @@ looks risky, then upgrade.** The rest of this page is the detail.
 
 ---
 
-## The release-candidate reality (read this before every upgrade)
+## The development-line reality (read this before every upgrade)
 
-Koi's `1.0.0-rc.x` builds state the contract intended for 1.0, but remain prereleases.
-An RC update can still correct a contract that proves unsafe or misleading in real use;
-that correction will be called out explicitly in the changelog.
+Do not replace an installed candidate with a `1.0.0-dev.0` checkout merely because it is
+the current source. Development builds may intentionally change public and embedded APIs
+while [ADR-043](../adr/043-observable-domain-boundaries.md) is implemented. Wait for a named
+candidate and its migration note unless you are deliberately participating in development
+validation. Published `1.0.0-rc.x` builds remain prereleases and may also correct a contract
+that proves unsafe or misleading in real use; each correction is called out in the changelog.
+
+The current development line deliberately replaces the embedded adaptive-serving API:
+`KoiHandle::serve` is now async and returns the real bound `SocketAddr`; callers add `.await`
+and use that address (especially when requesting port 0). `KoiHandle::try_serve` and the public
+`serve_adaptive` re-export are removed because they formed parallel readiness contracts.
+`participate` likewise returns the actual address only after both listener bind and its initial
+mDNS registration succeed.
 
 So the rule is simple and it has no exceptions:
 
@@ -78,9 +88,9 @@ curl -fsSL https://raw.githubusercontent.com/sylin-org/koi/main/install.sh | sh
 irm https://raw.githubusercontent.com/sylin-org/koi/main/install.ps1 | iex
 ```
 
-For the release candidate, use an explicit version: `cargo binstall koi-net --version
-1.0.0-rc.1` or `npx @sylin-org/koi@1.0.0-rc.1`. Unqualified installs intentionally remain
-on the latest stable release until Koi 1.0.0 ships.
+For the last published candidate, use an explicit version: `cargo binstall koi-net --version
+1.0.0-rc.2` or `npx @sylin-org/koi@1.0.0-rc.2`. Unqualified installs intentionally remain
+on the latest stable release; the `1.0.0-dev.0` workspace is source-only development.
 
 `koi install` is the upgrade command. Running it again against a newer binary **stops
 the existing service, swaps in the new binary, rewrites the service definition, and
@@ -360,7 +370,10 @@ or embed it:
   `/v1/dns/{list,zone,entries}` stay token-free on loopback, but a **non-loopback** caller
   must send `-H "x-koi-token: $TOKEN"` (read it with `koi token show`). A remote script that
   polled `…/v1/dns/zone` unauthenticated now gets a `401` — add the header.
-  `/v1/certmesh/status` and `/v1/certmesh/trust-bundle` stay open (enrollment depends on them).
+  At 0.5.0, `/v1/certmesh/status` and `/v1/certmesh/trust-bundle` both remained open.
+  Current `1.0.0-dev.0` supersedes that status detail: enrollment preflight now uses public
+  `/v1/certmesh/bootstrap`, full `/v1/certmesh/status` requires the DAT from remote or
+  unknown peers, and the signed trust bundle remains public.
 - **The audit log and the UDP surface are token-gated on every method.** `GET /v1/certmesh/log`,
   `GET /v1/udp/status`, and `GET /v1/udp/recv/{id}` now require the token.
 - **UDP binds loopback by default.** `koi udp bind` (and `send` to a non-loopback destination)

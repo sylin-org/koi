@@ -168,7 +168,7 @@ pub fn run_ceremony<R: CeremonyRules>(
             if let Some(err) = &response.error {
                 anyhow::bail!("{err}");
             }
-            return Ok(response.result_data.unwrap_or_default());
+            return completed_result_data(ceremony, response.result_data);
         }
 
         // Collect input from prompts
@@ -184,6 +184,15 @@ pub fn run_ceremony<R: CeremonyRules>(
             })
             .map_err(|e| anyhow::anyhow!("{e}"))?;
     }
+}
+
+fn completed_result_data(
+    ceremony: &str,
+    result_data: Option<serde_json::Map<String, serde_json::Value>>,
+) -> anyhow::Result<serde_json::Map<String, serde_json::Value>> {
+    result_data.ok_or_else(|| {
+        anyhow::anyhow!("ceremony '{ceremony}' completed without its required result data")
+    })
 }
 
 // ── Rendering ───────────────────────────────────────────────────────
@@ -558,4 +567,27 @@ fn textwrap_simple(text: &str, width: usize) -> Vec<String> {
     }
 
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::completed_result_data;
+
+    #[test]
+    fn completed_ceremony_requires_result_data() {
+        let error = completed_result_data("init", None).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("ceremony 'init' completed without its required result data"));
+    }
+
+    #[test]
+    fn completed_ceremony_preserves_result_data() {
+        let mut result = serde_json::Map::new();
+        result.insert("answer".into(), serde_json::json!(42));
+        assert_eq!(
+            completed_result_data("init", Some(result)).unwrap()["answer"],
+            42
+        );
+    }
 }

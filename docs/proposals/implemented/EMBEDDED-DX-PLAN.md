@@ -85,6 +85,8 @@ handle.mdns().browse("_http._tcp").await?;
 - `KoiEvent::CertmeshMemberJoined { hostname, fingerprint }`
 - `KoiEvent::CertmeshMemberRevoked { hostname }`
 - `KoiEvent::CertmeshDestroyed`
+- `KoiEvent::CertmeshStatusChanged { revision, posture }` (coalescing latest-value
+  notification, not semantic history; revisions may skip)
 - `KoiEvent::ProxyEntryUpdated { entry }`
 - `KoiEvent::ProxyEntryRemoved { name }`
 
@@ -94,8 +96,8 @@ The facade subscribes to each crate's channel and maps domain events into
 
 The facade exposes:
 
-- `handle.events()` -> `impl Stream<Item = KoiEvent>`
-- `handle.subscribe()` -> `Receiver<KoiEvent>`
+- `handle.events()` -> `Result<BroadcastStream<KoiEvent>, KoiError>`
+- `handle.subscribe()` -> `Result<Receiver<KoiEvent>, KoiError>`
 - `builder.events(handler)` -> push-style hook
 
 ## Configuration

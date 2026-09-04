@@ -34,9 +34,13 @@ pub(crate) const DEFAULT_TIMEOUT: u64 = 5;
 
 // ── Mode detection ───────────────────────────────────────────────────
 
-/// Execution mode for commands that support both local and daemon backends.
+/// Execution mode for commands that support both an explicitly requested local
+/// composition and the authoritative daemon boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Mode {
-    /// Operate directly on a local MdnsCore instance.
+    /// Operate directly in this process. This is never selected implicitly and
+    /// is refused while a local daemon is reachable, preserving one native
+    /// resource owner per machine.
     Standalone,
     /// Talk to a running daemon via HTTP.
     Client {
@@ -65,31 +69,90 @@ pub(crate) fn token_for_explicit_endpoint(explicit_token: Option<&str>) -> Strin
     explicit_token.unwrap_or("").to_string()
 }
 
-/// Determine whether to run standalone (local mDNS core) or as a client
-/// talking to an already-running daemon.
-pub(crate) fn detect_mode(cli: &Cli) -> Mode {
-    if cli.standalone {
-        return Mode::Standalone;
-    }
-    if let Some(endpoint) = &cli.endpoint {
-        // Explicit endpoint: use the explicit --token/KOI_TOKEN if set, else
-        // tokenless. Never the breadcrumb token (would leak to a remote host).
-        return Mode::Client {
-            endpoint: endpoint.clone(),
-            token: token_for_explicit_endpoint(cli_token(cli)),
-        };
-    }
-    // Resolve the authenticated real local daemon (breadcrumb or local control).
-    if let Ok(access) = koi_client::local_daemon_access() {
-        let c = KoiClient::new(&access.endpoint);
-        if c.health().is_ok() {
-            return Mode::Client {
-                endpoint: access.endpoint,
-                token: access.token,
-            };
+/// Select a command's one execution owner.
+///
+/// A missing or unreachable daemon is an observable error, never permission to
+/// open the same durable state and native resources in a second process. The
+/// caller may explicitly request standalone operation, but even that is refused
+/// while the authenticated local daemon is alive.
+pub(crate) fn detect_mode(cli: &Cli) -> anyhow::Result<Mode> {
+    let local = if cli.endpoint.is_some() && !cli.standalone {
+        // The operator named this owner explicitly; local ownership is
+        // irrelevant and its credentials must never be consulted.
+        koi_client::LocalDaemonObservation::Absent
+    } else {
+        local_daemon_mode()
+    };
+    select_mode(
+        cli.standalone,
+        cli.endpoint.as_deref(),
+        cli_token(cli),
+        local,
+    )
+}
+
+fn local_daemon_mode() -> koi_client::LocalDaemonObservation<Mode> {
+    match koi_client::observe_local_daemon_access() {
+        koi_client::LocalDaemonObservation::Present(access) => {
+            match KoiClient::new(&access.endpoint).health() {
+                Ok(()) => koi_client::LocalDaemonObservation::Present(Mode::Client {
+                    endpoint: access.endpoint,
+                    token: access.token,
+                }),
+                Err(error) => koi_client::LocalDaemonObservation::Uncertain(error),
+            }
+        }
+        koi_client::LocalDaemonObservation::Absent => koi_client::LocalDaemonObservation::Absent,
+        koi_client::LocalDaemonObservation::Uncertain(error) => {
+            koi_client::LocalDaemonObservation::Uncertain(error)
         }
     }
-    Mode::Standalone
+}
+
+fn select_mode(
+    standalone: bool,
+    explicit_endpoint: Option<&str>,
+    explicit_token: Option<&str>,
+    local: koi_client::LocalDaemonObservation<Mode>,
+) -> anyhow::Result<Mode> {
+    if standalone {
+        if explicit_endpoint.is_some() {
+            anyhow::bail!("--standalone and --endpoint select different owners; use exactly one");
+        }
+        match local {
+            koi_client::LocalDaemonObservation::Present(_) => {
+                anyhow::bail!(
+                    "Standalone mode refuses to run beside the active local Koi service. Use the service, or stop it before retrying with --standalone."
+                );
+            }
+            koi_client::LocalDaemonObservation::Uncertain(error) => {
+                anyhow::bail!(
+                    "Standalone mode cannot prove that the local Koi service is absent: {error}. Resolve local service discovery before retrying."
+                );
+            }
+            koi_client::LocalDaemonObservation::Absent => {}
+        }
+        return Ok(Mode::Standalone);
+    }
+
+    if let Some(endpoint) = explicit_endpoint {
+        // Explicit endpoint: use the explicit --token/KOI_TOKEN if set, else
+        // tokenless. Never the breadcrumb token (would leak to a remote host).
+        return Ok(Mode::Client {
+            endpoint: endpoint.to_string(),
+            token: token_for_explicit_endpoint(explicit_token),
+        });
+    }
+
+    match local {
+        koi_client::LocalDaemonObservation::Present(mode) => Ok(mode),
+        koi_client::LocalDaemonObservation::Absent => Err(anyhow::anyhow!(
+            "No running Koi service found. Start the installed service or pass --endpoint. Use --standalone only for an intentional local session."
+        )),
+        koi_client::LocalDaemonObservation::Uncertain(error) => Err(anyhow::anyhow!(
+            "The local Koi service owner could not be verified: {error}. Refusing to guess between daemon and standalone ownership."
+        )),
+    }
 }
 
 /// Build a [`KoiClient`] for a command that always needs a running daemon (mDNS admin and
@@ -112,15 +175,25 @@ pub(crate) fn require_client(
         let token = token_for_explicit_endpoint(explicit_token);
         return Ok(KoiClient::with_token(ep, &token));
     }
-    if let Ok(access) = koi_client::local_daemon_access() {
-        if KoiClient::new(&access.endpoint).health().is_ok() {
-            return Ok(KoiClient::with_token(&access.endpoint, &access.token));
+    match koi_client::observe_local_daemon_access() {
+        koi_client::LocalDaemonObservation::Present(access) => {
+            let client = KoiClient::with_token(&access.endpoint, &access.token);
+            client.health().map_err(|error| {
+                anyhow::anyhow!(
+                    "The local Koi owner is published at {}, but its health boundary is unavailable: {error}",
+                    access.endpoint
+                )
+            })?;
+            Ok(client)
         }
+        koi_client::LocalDaemonObservation::Absent => anyhow::bail!(
+            "No running Koi service found.\n\
+             Install and start the service first: koi install (or pass --endpoint)."
+        ),
+        koi_client::LocalDaemonObservation::Uncertain(error) => anyhow::bail!(
+            "The local Koi service owner could not be verified: {error}. Resolve local service discovery or pass an explicit --endpoint."
+        ),
     }
-    anyhow::bail!(
-        "No running Koi service found.\n\
-         Install and start the service first: koi install (or pass --endpoint)."
-    )
 }
 
 pub(crate) async fn with_mode<T, LFut, CFut, L, C>(
@@ -187,12 +260,48 @@ pub(crate) fn effective_timeout(
     }
 }
 
-/// Print a serializable value as JSON, handling serialization errors
-/// gracefully instead of panicking.
-pub(crate) fn print_json<T: serde::Serialize>(value: &T) {
-    match serde_json::to_string(value) {
-        Ok(json) => println!("{json}"),
-        Err(e) => eprintln!("Error: failed to serialize response: {e}"),
+/// Serialize and print a boundary value without turning an encoding failure
+/// into a successful command exit.
+pub(crate) fn print_json<T: serde::Serialize>(value: &T) -> anyhow::Result<()> {
+    println!("{}", serde_json::to_string(value)?);
+    Ok(())
+}
+
+/// Decode an exact daemon boundary value instead of manufacturing presentation
+/// defaults when a peer violates the advertised contract.
+pub(crate) fn decode_response<T>(value: serde_json::Value, surface: &str) -> anyhow::Result<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    serde_json::from_value(value)
+        .map_err(|error| anyhow::anyhow!("invalid {surface} response: {error}"))
+}
+
+/// Decode one required response field while retaining a dependency-light HTTP
+/// client. Domain-native snapshot types should use [`decode_response`]; this
+/// helper is for the small adapter-only acknowledgement envelopes.
+pub(crate) fn decode_field<T>(
+    value: &serde_json::Value,
+    field: &str,
+    surface: &str,
+) -> anyhow::Result<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let field_value = value
+        .get(field)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("invalid {surface} response: missing `{field}`"))?;
+    serde_json::from_value(field_value)
+        .map_err(|error| anyhow::anyhow!("invalid {surface} response field `{field}`: {error}"))
+}
+
+pub(crate) fn require_ok_response(value: &serde_json::Value, surface: &str) -> anyhow::Result<()> {
+    let status: String = decode_field(value, "status", surface)?;
+    if status == "ok" {
+        Ok(())
+    } else {
+        anyhow::bail!("invalid {surface} response: expected status `ok`, received `{status}`")
     }
 }
 
@@ -371,6 +480,35 @@ mod tests {
         assert!(payload.lease_secs.is_none());
     }
 
+    #[test]
+    fn response_decoding_rejects_missing_or_wrong_typed_fields() {
+        let missing =
+            decode_field::<bool>(&serde_json::json!({}), "started", "DNS start").unwrap_err();
+        assert!(missing.to_string().contains("missing `started`"));
+
+        let wrong =
+            decode_field::<u64>(&serde_json::json!({ "sent": "eight" }), "sent", "UDP send")
+                .unwrap_err();
+        assert!(wrong.to_string().contains("response field `sent`"));
+    }
+
+    #[test]
+    fn json_presentation_failure_is_a_command_failure() {
+        struct RefusesSerialization;
+
+        impl serde::Serialize for RefusesSerialization {
+            fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: serde::Serializer,
+            {
+                Err(serde::ser::Error::custom("intentional encoding failure"))
+            }
+        }
+
+        let error = print_json(&RefusesSerialization).unwrap_err();
+        assert!(error.to_string().contains("intentional encoding failure"));
+    }
+
     // ── token-selection tests ────────────────────────────────────────
     //
     // The security-critical rule: an explicit --endpoint must NEVER be paired
@@ -389,5 +527,89 @@ mod tests {
             token_for_explicit_endpoint(Some("remote-secret")),
             "remote-secret"
         );
+    }
+
+    #[test]
+    fn automatic_mode_never_falls_back_to_a_second_local_owner() {
+        let error = select_mode(
+            false,
+            None,
+            None,
+            koi_client::LocalDaemonObservation::Absent,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("No running Koi service"));
+    }
+
+    #[test]
+    fn explicit_standalone_is_refused_beside_a_live_local_daemon() {
+        let local = Mode::Client {
+            endpoint: "http://127.0.0.1:5641".to_string(),
+            token: "local".to_string(),
+        };
+        let error = select_mode(
+            true,
+            None,
+            None,
+            koi_client::LocalDaemonObservation::Present(local),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("refuses to run beside"));
+    }
+
+    #[test]
+    fn explicit_standalone_is_available_when_it_is_the_only_owner() {
+        assert_eq!(
+            select_mode(true, None, None, koi_client::LocalDaemonObservation::Absent,).unwrap(),
+            Mode::Standalone
+        );
+    }
+
+    #[test]
+    fn standalone_refuses_when_local_ownership_is_uncertain() {
+        let error = select_mode(
+            true,
+            None,
+            None,
+            koi_client::LocalDaemonObservation::Uncertain(koi_client::ClientError::Decode(
+                "malformed breadcrumb".to_string(),
+            )),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("cannot prove"));
+        assert!(error.to_string().contains("malformed breadcrumb"));
+    }
+
+    #[test]
+    fn explicit_endpoint_never_uses_local_daemon_credentials() {
+        let local = Mode::Client {
+            endpoint: "http://127.0.0.1:5641".to_string(),
+            token: "local-secret".to_string(),
+        };
+        assert_eq!(
+            select_mode(
+                false,
+                Some("https://remote.example:5642"),
+                Some("remote-secret"),
+                koi_client::LocalDaemonObservation::Present(local),
+            )
+            .unwrap(),
+            Mode::Client {
+                endpoint: "https://remote.example:5642".to_string(),
+                token: "remote-secret".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn standalone_and_endpoint_are_mutually_exclusive() {
+        let error = select_mode(
+            true,
+            Some("http://localhost:5641"),
+            None,
+            koi_client::LocalDaemonObservation::Absent,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("use exactly one"));
     }
 }

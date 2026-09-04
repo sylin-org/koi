@@ -29,7 +29,6 @@
 use koi_certmesh::ca;
 use koi_certmesh::envelope::{build_envelope, verify_envelope, FRESHNESS_WINDOW_SECS};
 use koi_certmesh::sealed::{open_sealed, seal_passthrough};
-use koi_certmesh::CertmeshPaths;
 use koi_common::envelope::{Assurance, Envelope, Freshness};
 use koi_common::posture::{Posture, PostureLevel};
 use koi_common::sealed::Sealed;
@@ -92,13 +91,8 @@ impl Fixtures {
     /// seeded with `entropy`, the foreign CA with its bitwise-inverted twin (so it
     /// is a genuinely different, independent CA). Confined to a `tempdir`.
     fn mint(entropy: [u8; 32]) -> Self {
-        let tmp = tempfile::tempdir().expect("tempdir");
-
         // Mesh CA.
-        let mesh_paths = CertmeshPaths::with_data_dir(tmp.path().join("mesh"));
-        let mesh_ca = ca::create_ca("sim-pass", &entropy, &mesh_paths)
-            .expect("create mesh CA")
-            .0;
+        let mesh_ca = ca::ephemeral_ca(&entropy).expect("create in-memory mesh CA");
         let ca_pem = mesh_ca.cert_pem.clone();
 
         let leaves: Vec<Leaf> = (0..NUM_NODES)
@@ -124,10 +118,7 @@ impl Fixtures {
             }
             e
         };
-        let foreign_paths = CertmeshPaths::with_data_dir(tmp.path().join("foreign"));
-        let foreign_ca = ca::create_ca("sim-pass", &foreign_entropy, &foreign_paths)
-            .expect("create foreign CA")
-            .0;
+        let foreign_ca = ca::ephemeral_ca(&foreign_entropy).expect("create in-memory foreign CA");
         let foreign_cn = "foreign-node".to_string();
         let foreign_issued = ca::issue_certificate(
             &foreign_ca,

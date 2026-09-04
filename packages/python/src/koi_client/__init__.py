@@ -1,10 +1,10 @@
-"""Koi HTTP client (beta) — read-side surfaces over the frozen HTTP API.
+"""Koi HTTP client (beta) — read-side surfaces over the versioned HTTP API.
 
 Zero runtime dependencies: Python 3.9+ standard library only. Shapes are pinned
 by the repository's conformance vectors (docs/reference/vectors/) and the
 language-neutral wire contract (docs/reference/trust-protocol.md).
 
-Beta scope: status, health, certmesh status/posture, Agent-Door discovery, and
+Beta scope: status, health, certmesh status/bootstrap/posture, Agent-Door discovery, and
 the /v1/events SSE stream. Enrollment (raw-CSR custody) is not yet in the beta
 surface; it will land as a 0.x addition without breaking these shapes.
 """
@@ -61,8 +61,23 @@ class KoiClient:
             return False
 
     def certmesh_status(self) -> Dict[str, Any]:
-        """/v1/certmesh/status — roster summary + CA posture booleans."""
+        """The authoritative Certmesh status for operator tooling.
+
+        The response identifies this node's ``role``, ``posture``, local
+        ``identity`` health and diagnosis. Authority-only enrollment and roster
+        state lives under the optional ``authority`` member. Remote calls need
+        a Daemon Access Token; enrollment discovery uses
+        :meth:`certmesh_bootstrap` instead.
+        """
         return self._json("GET", "/v1/certmesh/status")
+
+    def certmesh_bootstrap(self) -> Dict[str, Any]:
+        """Minimal public authority preflight for discovery and enrollment.
+
+        This call deliberately omits the client's token so a local daemon token
+        can never be sent to a remote enrollment authority.
+        """
+        return self._json("GET", "/v1/certmesh/bootstrap", no_auth=True)
 
     def posture(self) -> Dict[str, Any]:
         """/v1/certmesh/posture — ``{signed, encrypted, level}``."""
@@ -154,7 +169,11 @@ class KoiClient:
             with urllib.request.urlopen(req, timeout=self._timeout) as res:
                 yield from _sse_frames(res)
         except urllib.error.HTTPError as err:
-            raise KoiHttpError(err.code, err.read().decode("utf-8", "replace")) from None
+            try:
+                body = err.read().decode("utf-8", "replace")
+            finally:
+                err.close()
+            raise KoiHttpError(err.code, body) from None
 
     def _request(self, method: str, path: str, body: Optional[Dict[str, Any]] = None, no_auth: bool = False) -> Any:
         headers = {
@@ -174,7 +193,11 @@ class KoiClient:
         try:
             return urllib.request.urlopen(req, timeout=self._timeout)
         except urllib.error.HTTPError as err:
-            raise KoiHttpError(err.code, err.read().decode("utf-8", "replace")) from None
+            try:
+                body = err.read().decode("utf-8", "replace")
+            finally:
+                err.close()
+            raise KoiHttpError(err.code, body) from None
 
     def _json(self, method: str, path: str, body: Optional[Dict[str, Any]] = None, no_auth: bool = False) -> Dict[str, Any]:
         with self._request(method, path, body=body, no_auth=no_auth) as res:

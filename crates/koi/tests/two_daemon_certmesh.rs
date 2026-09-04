@@ -6,9 +6,10 @@
 //!
 //! Two daemons (A = CA, B = member) are spawned as child processes — `koi --daemon` on
 //! distinct loopback ports + data dirs — and driven over raw HTTP (reqwest). The story:
-//! GET is token-exempt → a gated POST without the token is **401** → with the token it
-//! succeeds → A mints an invite → B generates its own CSR via its own daemon → **B joins A
-//! over real HTTP with NO token** (the one exempt mutation) → A's roster shows B → B
+//! public bootstrap works without a token while local management reads full status → a gated
+//! POST without the token is **401** → with the token it succeeds → A mints an invite → B
+//! generates its own CSR via its own daemon → **B joins A over real HTTP with NO token** (the
+//! one exempt mutation) → A's roster shows B → B
 //! installs the signed leaf via its own daemon (pin-checked) → A revokes B → **a fresh
 //! re-join is rejected with 403 (revoked)** — the revocation boundary proved cross-process.
 //!
@@ -46,9 +47,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use koi_certmesh::invite;
 use koi_certmesh::protocol::{
-    CertmeshStatus, CreateCaRequest, InstallCertRequest, InviteRequest, InviteResponse,
-    JoinRequest, JoinResponse, MemberCsrRequest, MemberCsrResponse, RevokeRequest,
+    CreateCaRequest, InstallCertRequest, InviteRequest, InviteResponse, JoinRequest, JoinResponse,
+    MemberCsrRequest, MemberCsrResponse, RevokeRequest,
 };
+use koi_certmesh::{CertmeshBootstrapStatus, CertmeshRole, CertmeshStatus};
 use koi_crypto::pinning::fingerprints_match;
 
 const MEMBER: &str = "tier2-web-01";
@@ -345,13 +347,29 @@ async fn two_daemon_join_and_revoke_over_real_binary() {
     let a_tok = a.token();
     let b_tok = b.token();
 
-    // ── DAT middleware: GET is exempt; a gated POST needs the token ──
-    let st = client
+    // ── Boundary contract: loopback management gets full status; bootstrap is public ──
+    let local_status: CertmeshStatus = client
         .get(format!("{a_base}/v1/certmesh/status"))
         .send()
         .await
-        .expect("GET /status");
-    assert!(st.status().is_success(), "GET /status must be token-exempt");
+        .expect("GET /status")
+        .json()
+        .await
+        .expect("status json");
+    assert_eq!(local_status.role, CertmeshRole::Open);
+    assert!(local_status.authority.is_none());
+    let bootstrap: CertmeshBootstrapStatus = client
+        .get(format!("{a_base}/v1/certmesh/bootstrap"))
+        .send()
+        .await
+        .expect("GET /bootstrap")
+        .json()
+        .await
+        .expect("bootstrap json");
+    assert!(
+        !bootstrap.authority_available,
+        "a fresh daemon must honestly report that it is not an authority"
+    );
 
     // ── ADR-016 §2 / ADR-020 P4c: the inter-node mTLS listener is posture-reactive ──
     // A booted Open (no CA), so its mTLS listener must be DOWN now…
@@ -448,17 +466,18 @@ async fn two_daemon_join_and_revoke_over_real_binary() {
         .to_string();
 
     // ── preflight pin (GET, no token) ──
-    let status: CertmeshStatus = client
-        .get(format!("{a_base}/v1/certmesh/status"))
+    let bootstrap: CertmeshBootstrapStatus = client
+        .get(format!("{a_base}/v1/certmesh/bootstrap"))
         .send()
         .await
-        .expect("status")
+        .expect("bootstrap")
         .json()
         .await
-        .expect("status json");
+        .expect("bootstrap json");
+    assert!(bootstrap.authority_available);
     assert!(
         fingerprints_match(
-            status.ca_fingerprint.as_deref().unwrap_or_default(),
+            bootstrap.ca_fingerprint.as_deref().unwrap_or_default(),
             &pinned_fp
         ),
         "preflight: A's advertised fingerprint must match the pinned invite fingerprint"
@@ -478,6 +497,7 @@ async fn two_daemon_join_and_revoke_over_real_binary() {
         .json()
         .await
         .expect("member-csr json");
+    let member_csr = csr.csr;
 
     // ── B joins A over real cross-process HTTP — /join is the ONE DAT-exempt mutation ──
     let join_resp = client
@@ -486,7 +506,7 @@ async fn two_daemon_join_and_revoke_over_real_binary() {
             hostname: MEMBER.to_string(),
             auth: None,
             invite_token: Some(secret.to_string()),
-            csr: Some(csr.csr),
+            csr: Some(member_csr.clone()),
             sans: sans.clone(),
             role: None,
         })
@@ -509,13 +529,18 @@ async fn two_daemon_join_and_revoke_over_real_binary() {
     // ── success proof: A's roster now lists B (replaces the negative-only /join coverage) ──
     let after: CertmeshStatus = client
         .get(format!("{a_base}/v1/certmesh/status"))
+        .header("x-koi-token", &a_tok)
         .send()
         .await
         .expect("status after join")
         .json()
         .await
         .expect("status json");
+    assert_eq!(after.role, CertmeshRole::Authority);
     let member = after
+        .authority
+        .as_ref()
+        .expect("A's authority status")
         .members
         .iter()
         .find(|m| m.hostname == MEMBER)
@@ -583,26 +608,16 @@ async fn two_daemon_join_and_revoke_over_real_binary() {
         .await
         .expect("re-invite json");
     let (secret2, _) = invite::decode_code(&reinvite.token);
-    let csr2: MemberCsrResponse = client
-        .post(format!("{b_base}/v1/certmesh/member-csr"))
-        .header("x-koi-token", &b_tok)
-        .json(&MemberCsrRequest {
-            hostname: MEMBER.to_string(),
-            sans: sans.clone(),
-        })
-        .send()
-        .await
-        .expect("member-csr 2")
-        .json()
-        .await
-        .expect("member-csr 2 json");
+    // B is now a member and must fail closed rather than staging a second join key. Reuse the
+    // original public CSR to exercise A's revoked-member boundary; A rejects revocation before
+    // any certificate issuance or already-enrolled decision.
     let rejoin = client
         .post(format!("{a_base}/v1/certmesh/join"))
         .json(&JoinRequest {
             hostname: MEMBER.to_string(),
             auth: None,
             invite_token: Some(secret2.to_string()),
-            csr: Some(csr2.csr),
+            csr: Some(member_csr),
             sans: sans.clone(),
             role: None,
         })

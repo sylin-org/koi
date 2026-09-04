@@ -144,6 +144,15 @@ shutdown use the same path.
 This makes the HTTP, IPC, embedded, MCP, and standalone surfaces agree on what
 success means.
 
+Composition-generated records whose truth lasts only for one running component
+(`_http`, `_mcp`, `_certmesh`, and runtime-derived service announcements) use the
+same session-lease mechanism as transports. Their owner still requests and awaits
+explicit withdrawal on an ordinary stop. If provider churn or cancellation prevents
+that acknowledgement, dropping the session moves every unsettled record into the
+domain reaper instead of converting it accidentally into permanent intent. A live
+replacement is break-before-make and retains the prior id until withdrawal succeeds,
+so recovery retries do not create two responders for one logical record.
+
 ### 6. Structured state is canonical
 
 The admin status contract exposes control-plane state, generation, each route,

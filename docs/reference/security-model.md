@@ -32,36 +32,43 @@ expose it deliberately with `--http-bind` (env `KOI_HTTP_BIND`):
 Non-loopback binds log a warning at startup and surface in `koi status` (`Bind:`
 line / `http_bind` JSON field) and the breadcrumb. **Exposure does not relax auth** —
 mutations still require the token; on Windows the exposed HTTP port also gets a
-firewall rule. `0.0.0.0` exposes `GET` endpoints to any device on the network.
+firewall rule. `0.0.0.0` exposes the unauthenticated `GET` subset to any device on the
+network; protected reads still require the DAT.
 
 ## The daemon access token (DAT)
 
-Every daemon start generates a fresh random token. **All HTTP requests except
-`GET`/`HEAD`/`OPTIONS` must carry it** in the `x-koi-token` header, or they receive
+Every daemon start generates a fresh random token. **All HTTP requests except most
+`GET`/`HEAD`/`OPTIONS` requests must carry it** in the `x-koi-token` header, or they receive
 `401 {"error": "unauthorized", ...}`. Comparison is constant-time. The header value is
 the **bare token** — the breadcrumb file stores it with a `dat:` line prefix, but that
 prefix is not part of the header value.
 
 Carve-outs to that rule:
 
-- **`/v1/mcp`** (the in-process MCP transport) requires the token on *every* method —
-  including its `GET` server→client SSE stream, which is a live channel, not a read.
-- **`/v1/certmesh/log`** (the CA audit log) requires the token on *every* method. The
-  log narrates the full trust history — member joins/revocations, auth rotations, failed
-  unlock attempts, backup/restore — so reading it is not read-safe.
-- **The whole `/v1/udp/*` surface** requires the token on *every* method. `GET
+- **`/v1/mcp`** (the in-process MCP transport) requires the token on every
+  resource-bearing method — including its `GET` server→client SSE stream, which is a live
+  channel, not a read. Body-free CORS `OPTIONS` preflight remains exempt.
+- **`/v1/events`** is also a live SSE channel and requires the token. **`/v1/pond`** is
+  operator desire/state and is protected on every method; Pond's separate LAN listener
+  exposes only its privacy-reduced read projection.
+- **`/v1/certmesh/posture` and `/v1/certmesh/log`** require the token on every
+  resource-bearing method. Posture exposes live identity readiness; the audit log narrates
+  joins/revocations, auth rotations, failed unlock attempts, and backup/restore.
+- **The whole `/v1/udp/*` surface** requires the token on every resource-bearing method. `GET
   /v1/udp/status` enumerates every binding's id and `GET /v1/udp/recv/{id}` streams a
   binding's inbound datagrams — both expose other token-holders' bindings.
-- **`/v1/certmesh/diagnose` and `/v1/dns/{list,zone,entries}`** are token-free for a
-  **loopback** peer (local tooling, the CLI, the dashboard) but require the token from a
-  **non-loopback** peer — the trust-doctor report and the full DNS zone are fine to read
-  locally but not safe to leave world-readable once the adapter is bound to a routable
-  address. When the peer address is unknown, these fail closed (token required).
-- **`/v1/certmesh/status` and `/v1/certmesh/trust-bundle` stay open on every peer** — by
-  design. They are load-bearing in the *unauthenticated* cross-host protocol: a joining
-  node reads `status.ca_fingerprint` to pin the CA before it holds any credential, and
-  members pull the trust-bundle (an ES256-signed, self-verifying document) over plain
-  HTTP. Gating either would break enrollment and sync.
+- **`/v1/certmesh/{status,diagnose}`, `/v1/dns/{list,zone,entries}`, and
+  `/v1/dashboard/{snapshot,events}`** are token-free for a **loopback** peer (local tooling,
+  the CLI, and the dashboard) but require the token from a
+  **non-loopback** peer — the authoritative trust state/diagnosis and full DNS zone are fine
+  to read locally but not safe to leave world-readable once the adapter is bound to a
+  routable address. The dashboard carries those same details, including snapshot resyncs on
+  its SSE stream. When the peer address is unknown, these fail closed (token required).
+- **`/v1/certmesh/bootstrap` and `/v1/certmesh/trust-bundle` stay open on every peer** —
+  by design. A joining node reads the minimal bootstrap projection's CA fingerprint and
+  enrollment readiness before it holds a credential. Members pull the trust bundle (an
+  ES256-signed, self-verifying document) over plain HTTP. Full status is not used for
+  bootstrap and remains token-protected from remote or unknown peers.
 - **`POST /v1/certmesh/join`** does *not* require the token. A node enrolling against a
   remote CA has no way to know that host's local token, so enrollment is authorized by
   the TOTP code in the request body instead — the join handler verifies it along with
@@ -140,11 +147,12 @@ origins (any port). The API is **not** open to arbitrary web origins.
 Be aware of the trade-offs in the current model:
 
 - **Most `GET` endpoints are unauthenticated on loopback.** Any local process (or any
-  localhost-origin web page, via CORS) can read daemon status, discovered services, and
-  certmesh status. Treat local processes as trusted readers; if that doesn't fit your
-  machine, don't run the daemon there. The audit log (`/v1/certmesh/log`) and the
-  `/v1/udp/*` surface are the exception — they require the token even on loopback (see
-  the carve-outs above), and the DNS zone / diagnose reads require it from a remote peer.
+  localhost-origin web page, via CORS) can read daemon status and discovered services.
+  Treat local processes as trusted readers; if that doesn't fit your machine, don't run
+  the daemon there. Certmesh posture/audit, Pond control, event streams, MCP, and
+  `/v1/udp/*` require the token even on loopback (see the carve-outs above); full certmesh
+  status/diagnosis and the DNS zone require it from a remote peer. Certmesh bootstrap and
+  the signed trust bundle remain intentionally public.
 - **The token authorizes writes, not identities — on loopback.** There is one token
   per daemon and no per-caller scopes. Non-loopback callers can hold a *principal*
   identity instead (ADR-026): an enrolled client-role certificate that names its holder,

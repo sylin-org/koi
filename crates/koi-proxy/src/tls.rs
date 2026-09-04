@@ -1,20 +1,11 @@
 //! TLS termination for the proxy data plane: hot-reloadable certificate resolution.
 //!
-//! A single [`rustls::ServerConfig`] is built once per listener; its
-//! [`ResolvesServerCert`] reads the current [`CertifiedKey`] from a lock on every
-//! handshake, so swapping the key (when a cert file changes on disk) is picked up
-//! on the next handshake with **no listener restart** — hot reload is free.
-//!
-//! The certificate is resolved in priority order:
-//! 1. `certs/<entry.name>/{fullchain.pem,key.pem}` — explicit per-entry cert
-//! 2. `certs/<hostname>/{fullchain.pem,key.pem}`   — the local certmesh member cert
-//! 3. a generated self-signed cert (zero-config fallback)
-//!
-//! The cert watcher bridges `notify` (which runs on its own non-tokio thread) into
-//! a tokio task via a channel — it **never** calls `tokio::spawn` from notify's
-//! thread, which is the second latent panic the old data plane carried.
+//! Proxy owns explicit per-entry overrides under `proxy-certs/<entry>/`. A
+//! Certmesh identity is supplied through a typed, in-process composition port;
+//! this domain never discovers another domain by reading its files. The selected
+//! identity changes on the next handshake without restarting the listener.
 
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::{Arc, OnceLock, RwLock};
 
 use notify::{RecursiveMode, Watcher};
@@ -24,7 +15,12 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
 use rustls::ServerConfig;
+use sha2::{Digest, Sha256};
+use tokio::sync::{mpsc, watch};
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+
+use koi_common::integration::{TlsIdentitySnapshot, TlsIdentitySource};
 
 use crate::config::ProxyEntry;
 use crate::ProxyError;
@@ -32,7 +28,9 @@ use crate::ProxyError;
 /// Where a listener's certificate came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CertSource {
-    /// A cert/key pair was found on disk (certmesh deposits certs there).
+    /// An operator-managed pair was found in Proxy's per-entry override directory.
+    Override,
+    /// The local trust-domain identity arrived through the composition port.
     Certmesh,
     /// No usable cert on disk; a self-signed cert was generated.
     SelfSigned,
@@ -41,10 +39,25 @@ pub enum CertSource {
 impl CertSource {
     pub fn as_str(self) -> &'static str {
         match self {
+            CertSource::Override => "override",
             CertSource::Certmesh => "certmesh",
             CertSource::SelfSigned => "self-signed",
         }
     }
+}
+
+/// Observable certificate selection. Revision changes only when either the
+/// selected bytes or their provenance changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CertSelectionStatus {
+    pub revision: u64,
+    pub source: CertSource,
+}
+
+struct SelectedCert {
+    certified: Arc<CertifiedKey>,
+    source: CertSource,
+    change_token: [u8; 32],
 }
 
 /// A [`ResolvesServerCert`] whose certificate can be swapped at runtime.
@@ -76,14 +89,69 @@ impl ResolvesServerCert for CertResolver {
 /// The result of building a listener's TLS state.
 pub struct TlsSetup {
     pub config: Arc<ServerConfig>,
-    pub cert_source: CertSource,
-    pub resolver: Arc<CertResolver>,
+    pub cert_status: watch::Receiver<CertSelectionStatus>,
+    /// Kept alive by the listener. Certmesh observation is an async task and
+    /// needs no filesystem watcher.
+    pub override_watcher: Option<notify::RecommendedWatcher>,
+    /// Async certificate observers owned by the listener that consumes this
+    /// setup. They are never detached from the listener lifecycle.
+    pub background: TlsBackground,
 }
 
-/// Build a [`ServerConfig`] for an entry, resolving (or generating) its cert.
-pub fn build_tls(entry: &ProxyEntry) -> Result<TlsSetup, ProxyError> {
-    let (certified, cert_source) = resolve_initial(entry)?;
-    let resolver = Arc::new(CertResolver::new(certified));
+/// Owned async portion of one listener's certificate selection pipeline.
+pub struct TlsBackground {
+    tasks: Vec<JoinHandle<()>>,
+}
+
+impl TlsBackground {
+    pub async fn shutdown_until(&mut self, deadline: tokio::time::Instant) {
+        for task in &mut self.tasks {
+            if task.is_finished() {
+                let _ = (&mut *task).await;
+                continue;
+            }
+            if tokio::time::timeout_at(deadline, &mut *task).await.is_err() {
+                task.abort();
+                let _ = (&mut *task).await;
+            }
+        }
+        self.tasks.clear();
+    }
+}
+
+impl Drop for TlsBackground {
+    fn drop(&mut self) {
+        for task in &self.tasks {
+            task.abort();
+        }
+    }
+}
+
+/// Build a [`ServerConfig`] and arm both certificate inputs before returning.
+pub fn build_tls(
+    entry: &ProxyEntry,
+    certificate_overrides_dir: &Path,
+    tls_identity: Option<Arc<dyn TlsIdentitySource>>,
+    cancel: CancellationToken,
+) -> Result<TlsSetup, ProxyError> {
+    let (fallback_cert, fallback_key) = generate_self_signed(entry)?;
+    let fallback = build_certified_key(&fallback_cert, &fallback_key)?;
+
+    // Subscribe before the initial read so a Certmesh rotation racing startup
+    // is either selected now or remains pending on the watch receiver.
+    let identity_watch = tls_identity
+        .as_ref()
+        .map(|source| source.watch_tls_identity());
+    let initial_identity = identity_watch
+        .as_ref()
+        .map(|status| status.borrow().clone());
+
+    let override_dir = certificate_overrides_dir.join(&entry.name);
+    let (updates_tx, updates_rx) = mpsc::channel(8);
+    let override_watcher = spawn_override_watcher(&override_dir, updates_tx.clone());
+
+    let selected = select_cert(entry, &override_dir, initial_identity.as_deref(), &fallback);
+    let resolver = Arc::new(CertResolver::new(Arc::clone(&selected.certified)));
 
     let config = ServerConfig::builder_with_provider(provider())
         .with_safe_default_protocol_versions()
@@ -91,127 +159,221 @@ pub fn build_tls(entry: &ProxyEntry) -> Result<TlsSetup, ProxyError> {
         .with_no_client_auth()
         .with_cert_resolver(resolver.clone() as Arc<dyn ResolvesServerCert>);
 
+    let initial_status = CertSelectionStatus {
+        revision: 0,
+        source: selected.source,
+    };
+    let (status_tx, status_rx) = watch::channel(initial_status);
+    let mut background = Vec::with_capacity(2);
+    if let Some(task) = spawn_identity_signal(identity_watch, updates_tx.clone(), cancel.clone()) {
+        background.push(task);
+    }
+    drop(updates_tx);
+    background.push(spawn_selection_observer(
+        entry.clone(),
+        override_dir,
+        tls_identity,
+        fallback,
+        selected.change_token,
+        Arc::clone(&resolver),
+        status_tx,
+        updates_rx,
+        cancel,
+    ));
+
     Ok(TlsSetup {
         config: Arc::new(config),
-        cert_source,
-        resolver,
+        cert_status: status_rx,
+        override_watcher,
+        background: TlsBackground { tasks: background },
     })
 }
 
-/// Spawn the cert-change watcher. Returns the [`notify::RecommendedWatcher`], which
-/// the caller must keep alive for the listener's lifetime. Hot reload is best-effort:
-/// any failure to set up the watcher disables reload but never fails the listener.
-pub fn spawn_cert_watcher(
-    entry: ProxyEntry,
-    resolver: Arc<CertResolver>,
-    cancel: CancellationToken,
+/// Bridge filesystem callbacks into the bounded async update channel. Failure
+/// disables only explicit override hot reload; the Certmesh port remains live.
+fn spawn_override_watcher(
+    override_dir: &Path,
+    updates: mpsc::Sender<()>,
 ) -> Option<notify::RecommendedWatcher> {
-    let certs_dir = koi_common::paths::koi_certs_dir();
-    if let Err(e) = std::fs::create_dir_all(&certs_dir) {
-        tracing::warn!(error = %e, "Proxy cert watcher: cannot create certs dir; hot-reload disabled");
+    if let Err(error) = std::fs::create_dir_all(override_dir) {
+        tracing::warn!(
+            %error,
+            dir = %override_dir.display(),
+            "Proxy certificate override directory unavailable"
+        );
         return None;
     }
-
-    // Bounded channel coalesces bursts of fs events. `try_send` from notify's
-    // thread is non-blocking and needs no tokio runtime context.
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<()>(8);
     let mut watcher =
-        match notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-            if res.is_ok() {
-                let _ = tx.try_send(());
+        match notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
+            if result.is_ok() {
+                let _ = updates.try_send(());
             }
         }) {
-            Ok(w) => w,
-            Err(e) => {
-                tracing::warn!(error = %e, "Proxy cert watcher: init failed; hot-reload disabled");
+            Ok(watcher) => watcher,
+            Err(error) => {
+                tracing::warn!(%error, "Proxy certificate override watcher unavailable");
                 return None;
             }
         };
-
-    if let Err(e) = watcher.watch(&certs_dir, RecursiveMode::Recursive) {
-        tracing::warn!(error = %e, dir = %certs_dir.display(),
-            "Proxy cert watcher: watch failed; hot-reload disabled");
+    if let Err(error) = watcher.watch(override_dir, RecursiveMode::NonRecursive) {
+        tracing::warn!(
+            %error,
+            dir = %override_dir.display(),
+            "Proxy certificate override watch unavailable"
+        );
         return None;
     }
+    Some(watcher)
+}
 
+fn spawn_identity_signal(
+    identity: Option<watch::Receiver<Arc<TlsIdentitySnapshot>>>,
+    updates: mpsc::Sender<()>,
+    cancel: CancellationToken,
+) -> Option<JoinHandle<()>> {
+    let mut identity = identity?;
+    Some(tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                changed = identity.changed() => {
+                    if changed.is_err() || updates.send(()).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_selection_observer(
+    entry: ProxyEntry,
+    override_dir: std::path::PathBuf,
+    tls_identity: Option<Arc<dyn TlsIdentitySource>>,
+    fallback: Arc<CertifiedKey>,
+    mut selected_token: [u8; 32],
+    resolver: Arc<CertResolver>,
+    status: watch::Sender<CertSelectionStatus>,
+    mut updates: mpsc::Receiver<()>,
+    cancel: CancellationToken,
+) -> JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             tokio::select! {
                 _ = cancel.cancelled() => break,
-                msg = rx.recv() => {
-                    if msg.is_none() {
+                update = updates.recv() => {
+                    if update.is_none() {
                         break;
                     }
-                    // Drain any coalesced events before reloading once.
-                    while rx.try_recv().is_ok() {}
-                    reload_cert(&entry, &resolver).await;
+                    // Atomic file replacement can emit a burst. Give the pair a
+                    // moment to settle, then collapse every queued notification.
+                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                    while updates.try_recv().is_ok() {}
+                    let identity = tls_identity.as_ref().map(|provider| provider.tls_identity());
+                    let selected = select_cert(
+                        &entry,
+                        &override_dir,
+                        identity.as_deref(),
+                        &fallback,
+                    );
+                    let current = *status.borrow();
+                    if current.source != selected.source
+                        || selected_token != selected.change_token
+                    {
+                        selected_token = selected.change_token;
+                        resolver.swap(selected.certified);
+                        status.send_replace(CertSelectionStatus {
+                            revision: current.revision.saturating_add(1),
+                            source: selected.source,
+                        });
+                    }
                 }
             }
         }
-    });
-
-    Some(watcher)
+    })
 }
 
-/// Re-read the on-disk cert (if any) and swap it in. A missing on-disk cert is a
-/// no-op: we keep the current (possibly self-signed) cert rather than churning a
-/// fresh self-signed one on every unrelated filesystem event.
-async fn reload_cert(entry: &ProxyEntry, resolver: &Arc<CertResolver>) {
-    let entry = entry.clone();
-    let built =
-        tokio::task::spawn_blocking(move || find_file_cert(&entry).map(|ck| (ck, entry.name)))
-            .await
-            .ok()
-            .flatten();
-    if let Some((certified, name)) = built {
-        resolver.swap(certified);
-        tracing::info!(name = %name, "Proxy TLS cert reloaded");
-    }
-}
-
-/// Resolve the initial cert: an on-disk pair if present, else self-signed.
-fn resolve_initial(entry: &ProxyEntry) -> Result<(Arc<CertifiedKey>, CertSource), ProxyError> {
-    if let Some(certified) = find_file_cert(entry) {
-        return Ok((certified, CertSource::Certmesh));
-    }
-    let (cert_pem, key_pem) = generate_self_signed(entry)?;
-    let certified = build_certified_key(&cert_pem, &key_pem)?;
-    Ok((certified, CertSource::SelfSigned))
-}
-
-/// Candidate cert directories, in priority order.
-fn cert_candidate_dirs(entry: &ProxyEntry) -> Vec<PathBuf> {
-    let certs = koi_common::paths::koi_certs_dir();
-    let mut dirs = vec![certs.join(&entry.name)];
-    if let Ok(host) = hostname::get() {
-        let host = host.to_string_lossy().to_string();
-        if !host.is_empty() && host != entry.name {
-            dirs.push(certs.join(host));
-        }
-    }
-    dirs
-}
-
-/// Find and parse the first usable on-disk cert pair for an entry, or `None`.
-fn find_file_cert(entry: &ProxyEntry) -> Option<Arc<CertifiedKey>> {
-    for dir in cert_candidate_dirs(entry) {
-        let cert = dir.join("fullchain.pem");
-        let key = dir.join("key.pem");
-        if !(cert.is_file() && key.is_file()) {
-            continue;
-        }
-        let (Ok(cert_pem), Ok(key_pem)) = (std::fs::read(&cert), std::fs::read(&key)) else {
-            continue;
+/// Select from independent, explicitly owned inputs. A bad or removed higher
+/// priority source falls through immediately; it never leaves stale key material
+/// in the live resolver.
+fn select_cert(
+    entry: &ProxyEntry,
+    override_dir: &Path,
+    identity: Option<&TlsIdentitySnapshot>,
+    fallback: &Arc<CertifiedKey>,
+) -> SelectedCert {
+    if let Some((certified, change_token)) = find_override_cert(entry, override_dir) {
+        return SelectedCert {
+            certified,
+            source: CertSource::Override,
+            change_token,
         };
-        match build_certified_key(&cert_pem, &key_pem) {
-            Ok(certified) => return Some(certified),
-            Err(e) => tracing::warn!(
-                name = %entry.name, dir = %dir.display(), error = %e,
-                "Proxy cert files present but unusable; trying next source"
+    }
+    if let Some(material) = identity.and_then(|snapshot| snapshot.material.as_ref()) {
+        match build_certified_key(
+            material.certificate_chain_pem.as_bytes(),
+            material.private_key_pem.as_bytes(),
+        ) {
+            Ok(certified) => {
+                return SelectedCert {
+                    certified,
+                    source: CertSource::Certmesh,
+                    change_token: material_token(
+                        material.certificate_chain_pem.as_bytes(),
+                        material.private_key_pem.as_bytes(),
+                    ),
+                }
+            }
+            Err(error) => tracing::warn!(
+                name = %entry.name,
+                identity = %material.hostname,
+                %error,
+                "Composed TLS identity was unusable; using self-signed fallback"
             ),
         }
     }
-    None
+    SelectedCert {
+        certified: Arc::clone(fallback),
+        source: CertSource::SelfSigned,
+        // One fallback is generated per listener and retained for its lifetime.
+        change_token: [0; 32],
+    }
+}
+
+fn find_override_cert(entry: &ProxyEntry, dir: &Path) -> Option<(Arc<CertifiedKey>, [u8; 32])> {
+    let cert = dir.join("fullchain.pem");
+    let key = dir.join("key.pem");
+    if !(cert.is_file() && key.is_file()) {
+        return None;
+    }
+    let (Ok(cert_pem), Ok(key_pem)) = (std::fs::read(&cert), std::fs::read(&key)) else {
+        return None;
+    };
+    match build_certified_key(&cert_pem, &key_pem) {
+        Ok(certified) => Some((certified, material_token(&cert_pem, &key_pem))),
+        Err(error) => {
+            tracing::warn!(
+                name = %entry.name,
+                dir = %dir.display(),
+                %error,
+                "Proxy certificate override is unusable; trying next source"
+            );
+            None
+        }
+    }
+}
+
+/// Process-local equality token only. Length-prefixing makes the two inputs
+/// unambiguous; SHA-256 avoids treating a non-cryptographic hash collision as
+/// "unchanged" and accidentally retaining stale key material.
+fn material_token(certificate: &[u8], private_key: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(certificate.len().to_le_bytes());
+    hasher.update(certificate);
+    hasher.update(private_key.len().to_le_bytes());
+    hasher.update(private_key);
+    hasher.finalize().into()
 }
 
 /// Generate a self-signed cert/key PEM pair for an entry.
@@ -219,12 +381,6 @@ fn generate_self_signed(entry: &ProxyEntry) -> Result<(Vec<u8>, Vec<u8>), ProxyE
     let mut sans = vec!["localhost".to_string()];
     if !entry.name.is_empty() && entry.name != "localhost" {
         sans.push(entry.name.clone());
-    }
-    if let Ok(host) = hostname::get() {
-        let host = host.to_string_lossy().to_string();
-        if !host.is_empty() && !sans.contains(&host) {
-            sans.push(host);
-        }
     }
     let generated = rcgen::generate_simple_self_signed(sans)
         .map_err(|e| ProxyError::Io(format!("self-signed cert generation failed: {e}")))?;

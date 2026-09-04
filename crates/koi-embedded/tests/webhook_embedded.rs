@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use koi_compose::webhook::{signature_header, WebhookSink};
-use koi_config::state::DnsEntry;
+use koi_dns::DnsEntry;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -155,7 +155,7 @@ async fn configured_sink_delivers_signed_domain_event_and_reports_in_status() {
     let envelope: serde_json::Value = serde_json::from_slice(&req.body).expect("envelope json");
     assert_eq!(envelope["v"], 1, "envelope version is pinned at 1");
     assert_eq!(envelope["event"]["type"], "dns.updated");
-    assert_eq!(envelope["event"]["data"]["name"], "parity.internal");
+    assert_eq!(envelope["event"]["data"]["name"], "parity.internal.");
     assert_eq!(
         envelope["provenance"]["zone"], "internal",
         "provenance zone is the instance's configured DNS zone"

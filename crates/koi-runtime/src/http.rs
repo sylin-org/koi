@@ -4,16 +4,15 @@
 
 use std::sync::Arc;
 
+use crate::instance::Instance;
+use crate::RuntimeCore;
 use axum::extract::Extension;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
-use serde::Serialize;
-use utoipa::ToSchema;
 
-use crate::instance::Instance;
-use crate::RuntimeCore;
+pub use crate::RuntimeStatus;
 
 /// Route path constants.
 pub mod paths {
@@ -35,24 +34,12 @@ pub fn routes(core: Arc<RuntimeCore>) -> Router {
         .layer(Extension(core))
 }
 
-/// Runtime adapter status.
-#[derive(Debug, Serialize, ToSchema)]
-pub struct RuntimeStatus {
-    /// Whether the runtime adapter is active.
-    pub active: bool,
-    /// Backend name (docker, podman, systemd, etc.).
-    pub backend: Option<String>,
-    /// Number of tracked instances.
-    pub instance_count: usize,
-}
-
 /// GET /status — Runtime adapter status.
 #[utoipa::path(get, path = "/status", tag = "runtime",
     summary = "Runtime adapter status",
     responses((status = 200, body = RuntimeStatus)))]
 async fn status_handler(Extension(core): Extension<Arc<RuntimeCore>>) -> impl IntoResponse {
-    let status = core.status().await;
-    Json(status)
+    Json(core.status().as_ref().clone())
 }
 
 /// GET /instances — List all tracked instances.

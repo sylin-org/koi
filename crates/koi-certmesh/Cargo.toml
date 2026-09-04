@@ -18,9 +18,7 @@ koi-common.workspace = true
 # this crate re-exposes them default-on (see [features]) so it builds identically
 # standalone, and forwards the choice from its consumers.
 koi-crypto = { workspace = true, default-features = false }
-async-trait.workspace = true
 utoipa.workspace = true
-os-truststore.workspace = true
 # `pem` + `x509-parser` enable `CertificateSigningRequestParams::from_pem`, which
 # parses AND verifies a client CSR's self-signature (used by the ACME finalize path).
 rcgen = { workspace = true, features = ["pem", "x509-parser"] }
@@ -38,7 +36,6 @@ axum.workspace = true
 crossterm.workspace = true
 indicatif.workspace = true
 rand.workspace = true
-hostname.workspace = true
 # ACME (RFC 8555) JWS verification is ASSEMBLED from primitives — no josekit/jsonwebtoken.
 # `p256` reconstructs the account's ES256 verifying key from the JWK and verifies the raw
 # 64-byte R‖S signature; `base64` decodes the URL_SAFE_NO_PAD JWS members. (EAB MAC

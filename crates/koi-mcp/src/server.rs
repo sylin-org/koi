@@ -56,7 +56,39 @@ pub struct Server<S> {
     registry: Registry,
     /// Live resource subscriptions for this session: uri → the task that forwards
     /// `resources/updated` notifications to the peer. Aborted on unsubscribe.
-    subs: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
+    subs: Arc<SubscriptionTasks>,
+}
+
+#[derive(Default)]
+struct SubscriptionTasks {
+    tasks: Mutex<HashMap<String, JoinHandle<()>>>,
+}
+
+impl SubscriptionTasks {
+    async fn stop(&self) {
+        let mut tasks = self.tasks.lock().await;
+        for task in tasks.values() {
+            task.abort();
+        }
+        while let Some(uri) = tasks.keys().next().cloned() {
+            let task = tasks
+                .get_mut(&uri)
+                .expect("selected subscription remains owned");
+            let _ = (&mut *task).await;
+            tasks.remove(&uri);
+        }
+    }
+}
+
+impl Drop for SubscriptionTasks {
+    fn drop(&mut self) {
+        // A transport can disappear without invoking the async service shutdown
+        // hook. Subscription relays own no durable state, so abort them at the
+        // last session owner rather than letting them retain the peer forever.
+        for task in self.tasks.get_mut().values() {
+            task.abort();
+        }
+    }
 }
 
 // Hand-written so `Server<S>` is `Clone` without forcing `S: Clone` (the source is
@@ -79,7 +111,7 @@ impl<S: KoiSource> Server<S> {
         Self {
             source,
             registry: Registry::new(),
-            subs: Arc::new(Mutex::new(HashMap::new())),
+            subs: Arc::new(SubscriptionTasks::default()),
         }
     }
 
@@ -304,29 +336,10 @@ impl<S: KoiSource> Server<S> {
         if let Err(result) = self.require_daemon().await {
             return Ok(result);
         }
-        // Three sources, each tolerant of failure so a single disabled capability
-        // does not blank the whole inventory. `include` optionally narrows the set.
-        let want = |source: &str| tools::inventory_includes(req.include.as_deref(), source);
-        let status = if want("status") {
-            self.source.unified_status().await.ok()
-        } else {
-            None
-        };
-        let health = if want("health") {
-            self.source.health_status().await.ok()
-        } else {
-            None
-        };
-        let dns = if want("dns") {
-            self.source.dns_list().await.ok()
-        } else {
-            None
-        };
-        Ok(structured(serde_json::json!({
-            "status": status,
-            "health": health,
-            "dns": dns,
-        })))
+        match self.source.inventory_snapshot(req.include.clone()).await {
+            Ok(value) => Ok(structured(value)),
+            Err(error) => Ok(source_error_result(&error)),
+        }
     }
 
     #[tool(
@@ -413,6 +426,10 @@ impl<S: KoiSource> Server<S> {
 
     /// Unregister every tracked announcement. Call on shutdown.
     pub async fn shutdown(&self) {
+        // Keep every handle in the session-owned map until its abort is reaped.
+        // Cancelling this waiter therefore leaves the remaining handles owned by
+        // `SubscriptionTasks` for a later shutdown/drop instead of detaching them.
+        self.subs.stop().await;
         self.registry.shutdown(&self.source).await;
     }
 }
@@ -482,13 +499,11 @@ impl<S: KoiSource> ServerHandler for Server<S> {
     ) -> Result<ReadResourceResult, ErrorData> {
         let uri = request.uri;
         let value = match uri.as_str() {
-            URI_INVENTORY => {
-                // Same failure-tolerant join as the `lan_inventory` tool.
-                let status = self.source.unified_status().await.ok();
-                let health = self.source.health_status().await.ok();
-                let dns = self.source.dns_list().await.ok();
-                serde_json::json!({ "status": status, "health": health, "dns": dns })
-            }
+            URI_INVENTORY => self
+                .source
+                .inventory_snapshot(None)
+                .await
+                .map_err(resource_err)?,
             URI_HEALTH => self.source.health_status().await.map_err(resource_err)?,
             URI_DNS => self.source.dns_list().await.map_err(resource_err)?,
             URI_MDNS => self.source.mdns_snapshot().await.map_err(resource_err)?,
@@ -542,8 +557,9 @@ impl<S: KoiSource> ServerHandler for Server<S> {
                     }
                 }
             });
-            if let Some(previous) = self.subs.lock().await.insert(uri, task) {
-                previous.abort();
+            let previous = self.subs.tasks.lock().await.insert(uri, task);
+            if let Some(previous) = previous {
+                abort_and_reap(previous).await;
             }
         }
         Ok(())
@@ -554,11 +570,29 @@ impl<S: KoiSource> ServerHandler for Server<S> {
         request: UnsubscribeRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<(), ErrorData> {
-        if let Some(task) = self.subs.lock().await.remove(&request.uri) {
-            task.abort();
+        if let Some(task) = self.subs.tasks.lock().await.remove(&request.uri) {
+            abort_and_reap(task).await;
         }
         Ok(())
     }
+}
+
+struct AbortOnDropTask(Option<JoinHandle<()>>);
+
+impl Drop for AbortOnDropTask {
+    fn drop(&mut self) {
+        if let Some(task) = self.0.as_ref() {
+            task.abort();
+        }
+    }
+}
+
+async fn abort_and_reap(task: JoinHandle<()>) {
+    let mut task = AbortOnDropTask(Some(task));
+    let handle = task.0.as_mut().expect("owned MCP session task");
+    handle.abort();
+    let _ = handle.await;
+    task.0.take();
 }
 
 // ── Result helpers (one consistent error pattern) ─────────────────────
@@ -597,10 +631,10 @@ fn is_known_resource(uri: &str) -> bool {
 }
 
 /// Whether a `ResourceChange` should trigger a `resources/updated` for `uri`.
-/// The joined inventory reflects any domain change; the rest match one domain.
+/// Each signal names exactly the resource projection that changed.
 fn change_matches(uri: &str, change: ResourceChange) -> bool {
     match uri {
-        URI_INVENTORY => true,
+        URI_INVENTORY => change == ResourceChange::Inventory,
         URI_HEALTH => change == ResourceChange::Health,
         URI_DNS => change == ResourceChange::Dns,
         URI_MDNS => change == ResourceChange::Mdns,
@@ -612,16 +646,53 @@ fn change_matches(uri: &str, change: ResourceChange) -> bool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn inventory_reflects_every_domain_change() {
-        for change in [
-            ResourceChange::Inventory,
-            ResourceChange::Health,
-            ResourceChange::Dns,
-            ResourceChange::Mdns,
-        ] {
-            assert!(change_matches(URI_INVENTORY, change));
+    #[tokio::test]
+    async fn cancelled_subscription_shutdown_retains_the_join_handle() {
+        let subscriptions = Arc::new(SubscriptionTasks::default());
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let task = tokio::task::spawn_blocking(move || {
+            let _ = started_tx.send(());
+            let _ = release_rx.recv();
+        });
+        started_rx.await.expect("blocking relay started");
+        subscriptions
+            .tasks
+            .lock()
+            .await
+            .insert(URI_INVENTORY.to_string(), task);
+
+        let stopping = tokio::spawn({
+            let subscriptions = Arc::clone(&subscriptions);
+            async move { subscriptions.stop().await }
+        });
+        for _ in 0..32 {
+            if subscriptions.tasks.try_lock().is_err() {
+                break;
+            }
+            tokio::task::yield_now().await;
         }
+        assert!(subscriptions.tasks.try_lock().is_err());
+        stopping.abort();
+        assert!(stopping.await.unwrap_err().is_cancelled());
+        assert!(
+            subscriptions.tasks.lock().await.contains_key(URI_INVENTORY),
+            "cancelled waiter detached the relay"
+        );
+
+        release_tx.send(()).expect("release blocking relay");
+        subscriptions.stop().await;
+        subscriptions.stop().await;
+        assert!(subscriptions.tasks.lock().await.is_empty());
+    }
+
+    #[test]
+    fn resource_change_signals_match_one_projection() {
+        assert!(change_matches(URI_INVENTORY, ResourceChange::Inventory));
+        assert!(!change_matches(URI_INVENTORY, ResourceChange::Health));
+        assert!(change_matches(URI_HEALTH, ResourceChange::Health));
+        assert!(change_matches(URI_DNS, ResourceChange::Dns));
+        assert!(change_matches(URI_MDNS, ResourceChange::Mdns));
     }
 
     #[test]

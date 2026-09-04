@@ -15,6 +15,7 @@ use koi_common::local_control::{
 use koi_config::local_access::LocalOperator;
 use koi_mdns::MdnsCore;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use crate::dispatch;
@@ -26,6 +27,8 @@ mod windows;
 
 /// IPC session grace period.
 const SESSION_GRACE: Duration = Duration::from_secs(30);
+/// Maximum time accepted sessions receive to observe cancellation and exit.
+const SESSION_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Authorization and hand-off material for the local transport.
 ///
@@ -38,23 +41,117 @@ pub struct LocalControlConfig {
     pub info: LocalDaemonInfo,
 }
 
-pub async fn start(
-    mdns: Option<Arc<MdnsCore>>,
-    config: LocalControlConfig,
-    cancel: CancellationToken,
-) -> anyhow::Result<()> {
+/// One acquired generation of the trusted machine-local transport.
+///
+/// Construction is the readiness fence: the native endpoint exists, carries
+/// its final authorization policy, and is exclusively owned by this value.
+/// Running only admits connections to that already-acquired endpoint.
+pub struct LocalControl {
     #[cfg(unix)]
-    {
-        unix::start(mdns, config, cancel).await
-    }
+    inner: unix::LocalControl,
     #[cfg(windows)]
-    {
-        windows::start(mdns, config, cancel).await
+    inner: windows::LocalControl,
+}
+
+impl LocalControl {
+    /// Acquire and secure the platform transport before any task or ownership
+    /// publication can claim that local control is ready.
+    pub fn acquire(config: LocalControlConfig) -> anyhow::Result<Self> {
+        #[cfg(unix)]
+        {
+            Ok(Self {
+                inner: unix::LocalControl::acquire(config)?,
+            })
+        }
+        #[cfg(windows)]
+        {
+            Ok(Self {
+                inner: windows::LocalControl::acquire(config)?,
+            })
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = config;
+            anyhow::bail!("local IPC is unsupported on this platform")
+        }
     }
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = (mdns, config, cancel);
-        anyhow::bail!("local IPC is unsupported on this platform")
+
+    /// Serve the already-acquired generation until cancellation or a terminal
+    /// native error, then synchronously fence the endpoint and drain sessions.
+    pub async fn run(
+        self,
+        mdns: Option<Arc<MdnsCore>>,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<()> {
+        #[cfg(unix)]
+        {
+            self.inner.run(mdns, cancel).await
+        }
+        #[cfg(windows)]
+        {
+            self.inner.run(mdns, cancel).await
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (self, mdns, cancel);
+            anyhow::bail!("local IPC is unsupported on this platform")
+        }
+    }
+}
+
+async fn run_session<R, W>(
+    mdns: Option<Arc<MdnsCore>>,
+    reader: R,
+    writer: W,
+    access: Option<LocalDaemonAccess>,
+    info: LocalDaemonInfo,
+    cancel: CancellationToken,
+) -> anyhow::Result<()>
+where
+    R: AsyncBufRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin + Send + 'static,
+{
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Ok(()),
+        result = handle_connection(mdns, reader, writer, access, info) => result,
+    }
+}
+
+fn observe_session_result(result: Option<Result<anyhow::Result<()>, tokio::task::JoinError>>) {
+    match result {
+        Some(Ok(Err(error))) => {
+            tracing::debug!(%error, "Local-control connection closed with an error");
+        }
+        Some(Err(error)) if !error.is_cancelled() => {
+            tracing::warn!(%error, "Local-control connection task failed");
+        }
+        _ => {}
+    }
+}
+
+/// Reap every accepted session. Dropping a timed-out JoinSet would abort the
+/// tasks but would not acknowledge their completion, so stragglers are
+/// explicitly aborted and joined before the listener owner returns.
+async fn drain_sessions(sessions: &mut JoinSet<anyhow::Result<()>>) {
+    let deadline = tokio::time::Instant::now() + SESSION_DRAIN_TIMEOUT;
+    while !sessions.is_empty() {
+        match tokio::time::timeout_at(deadline, sessions.join_next()).await {
+            Ok(result) => observe_session_result(result),
+            Err(_) => break,
+        }
+    }
+
+    if !sessions.is_empty() {
+        tracing::warn!(
+            sessions = sessions.len(),
+            timeout_ms = SESSION_DRAIN_TIMEOUT.as_millis(),
+            "Local-control sessions exceeded the shutdown deadline"
+        );
+        sessions.abort_all();
+        while let Some(result) = sessions.join_next().await {
+            observe_session_result(Some(result));
+        }
     }
 }
 

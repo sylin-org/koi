@@ -38,7 +38,6 @@ tracing.workspace = true
 keyring = { workspace = true, optional = true }
 x25519-dalek.workspace = true
 hkdf.workspace = true
-hostname.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true

@@ -8,7 +8,7 @@ about a minute** — then points you at the deeper Find, Trust, and Connect jour
 You'll run four short steps:
 
 1. Get the binary and confirm it runs.
-2. See what's on your network — instantly, with no daemon and no config.
+2. See what's on your network in an explicit one-shot session.
 3. Start the daemon and open the dashboard.
 4. Do one real task end to end: give a machine a friendly name.
 
@@ -70,7 +70,7 @@ cargo build --release       # binary lands in target/release/
 Here's the part that needs no setup at all. Ask Koi what's on the network:
 
 ```bash
-koi mdns discover
+koi --standalone mdns discover
 ```
 
 Koi sends a multicast query, lists every service type it hears, and stops after
@@ -85,13 +85,14 @@ _airplay._tcp
 
 That's mDNS discovery — printers, smart speakers, Chromecasts, and any app that
 advertises itself, all surfaced from one command. **No daemon, no config, no
-server.** Koi ran as a one-shot CLI tool and exited.
+central server.** The explicit flag ensures Koi never starts another responder
+beside an installed service; this one-shot process exits after the browse.
 
 Want detail instead of just types? Narrow to one and Koi resolves each instance to
 an address:
 
 ```bash
-koi mdns discover http
+koi --standalone mdns discover http
 ```
 
 ```
@@ -111,7 +112,7 @@ here builds on the same binary.
 
 ## 3. Start the daemon
 
-One-off commands like `discover` work standalone. The composed services — a local
+One-off commands like `discover` can use explicit `--standalone`. The composed services — a local
 DNS resolver, certificates, health checks, the dashboard — live in a long-running
 **daemon**. Start one in the foreground:
 
@@ -138,15 +139,25 @@ koi status
 ```
 
 ```
-Koi v0.4.x - status
-
-  mDNS       running    0 registrations, 0 discovered
-  Certmesh   running    ready - run certmesh create
-  DNS        running    0 static, 0 certmesh, 0 mdns
-  Health     running    0 services up (0 total)
-  Proxy      running    0 listeners
-  UDP        running    0 bindings
+Koi v1.0.0-dev.0
+  Platform:  linux
+  Uptime:    12s
+  Daemon:    running
+  [+] mdns:  control plane ready; ...
+  [+] certmesh:  ready — run certmesh create
+  [+] trust:  no managed roots
+  [+] dns:  listening on ...
+  [+] health:  0 services up (0 total)
+  [+] proxy:  no listeners
+  [+] udp:  no bindings
+  [+] runtime:  ...
+  [+] ipc:  trusted local-control transport running
+  [-] pond:  disabled: not published
 ```
+
+Those ten rows are stable; their summaries are live projections from the daemon.
+If the daemon cannot be reached, Koi preserves the rows but marks each one
+`not observed` instead of guessing from configuration or state files.
 
 ---
 

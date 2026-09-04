@@ -13,64 +13,29 @@ impl CertmeshCore {
     /// fingerprint in the `_certmesh._tcp` mDNS TXT (ADR-017 F12) and as a cheap
     /// preflight datum.
     pub async fn ca_fingerprint(&self) -> Option<String> {
-        // In-memory path: compute under the lock, but drop the guard before any I/O
-        // (never hold the CA mutex across disk reads).
-        let in_memory = {
-            let ca_guard = self.state.ca.lock().await;
-            ca_guard.as_ref().map(ca::ca_fingerprint)
-        };
-        if in_memory.is_some() {
-            return in_memory;
-        }
-        // Locked CA: derive from the on-disk cert off the async executor.
-        let paths = self.state.paths.clone();
-        tokio::task::spawn_blocking(move || ca::ca_fingerprint_from_disk(&paths).ok())
-            .await
-            .ok()
-            .flatten()
-    }
-
-    /// Get the current certmesh status.
-    pub async fn certmesh_status(&self) -> protocol::CertmeshStatus {
-        let ca_guard = self.state.ca.lock().await;
-        let roster = self.state.roster.lock().await;
-        let auth_guard = self.state.auth.lock().await;
-        let auth_method = auth_guard.as_ref().map(|a| a.method_name());
-        build_status(self.paths(), &ca_guard, &roster, auth_method)
+        self.status()
+            .authority
+            .as_ref()
+            .and_then(|authority| authority.ca_fingerprint.clone())
     }
 
     /// This node's current trust posture — the mode oracle every
     /// mode-transparent primitive consults (ADR-020 §0).
     ///
-    /// `signed` is true when this node holds a usable cryptographic identity: its
-    /// CA-signed leaf (`cert.pem`/`key.pem`) is on disk *and* the node is anchored
-    /// to a mesh (the CA is initialized here, or a `member.json` records the mesh
-    /// it joined — so an orphaned leaf left after `destroy` does not read as
-    /// secure). A cheap filesystem check, safe to call from any primitive.
+    /// This is a constant-time projection of Certmesh's authoritative immutable
+    /// [`CertmeshStatus`], not a filesystem probe. `signed` is true only while
+    /// the domain reports a healthy, current, CA-anchored identity. Missing,
+    /// incoherent, expired, or revoked identity state fails closed to `false`.
     /// `encrypted` (the Confidential rung) stays false until the `seal`/`open`
     /// encryption rung lands (ADR-020 §4).
-    ///
-    /// Posture answers "do I have an identity", not "is it fresh" — identity
-    /// *health* (expiry, renewal status) is reported separately by
-    /// `ensure_identity` / `diagnose` (later ADR-020 phases).
     pub fn posture(&self) -> Posture {
-        Posture {
-            signed: self.has_local_identity(),
-            encrypted: false,
-        }
+        self.status().posture
     }
 
-    /// Whether this node holds a usable local identity (a CA-signed leaf on disk,
-    /// anchored to a mesh). Backs [`posture`](Self::posture).
-    fn has_local_identity(&self) -> bool {
-        node_has_identity(self.paths())
-    }
-
-    /// Whether this node is an active member of a certificate mesh — it holds a
-    /// usable CA-anchored identity (it created a CA, or joined one). A **cheap**
-    /// filesystem check (no lock, no network): the same fact as
-    /// [`posture`](Self::posture)`.signed`, named for the membership question
-    /// consumers actually ask (ADR-023 §1).
+    /// Whether this node has a durable relationship to a certificate mesh: it
+    /// owns a CA or joined one. This is intentionally independent from usable
+    /// identity posture, so missing, corrupt, expired, and revoked identities do
+    /// not silently turn authentication off.
     ///
     /// This is the supported predicate for a "membership = enforcement" consumer:
     /// gate enforcement on `is_certmesh_member()` — be permissive when `false` (an
@@ -78,7 +43,7 @@ impl CertmeshCore {
     /// self-management (renewal, revocation honoring, self-stand-down) on the same
     /// fact, so management is intrinsic to membership rather than a separate switch.
     pub fn is_certmesh_member(&self) -> bool {
-        self.has_local_identity()
+        self.status().role.requires_authentication()
     }
 
     /// Whether this node owns the mesh CA and can serve the trust-plane listeners.
@@ -86,49 +51,23 @@ impl CertmeshCore {
     /// An enrolled member has an authenticated identity but no CA private key, so
     /// it must not enter the CA self-enrollment/listener retry loop.
     pub fn is_ca_node(&self) -> bool {
-        self.paths().is_ca_initialized()
+        self.status().role == CertmeshRole::Authority
     }
 
-    /// Load this node's live identity from disk, or `None` if it has none.
+    /// Capture this node's authoritative in-memory identity projection.
     ///
-    /// Read-only: loads the on-disk leaf (cert/key) for the local hostname plus
-    /// the CA anchor it chains to, derives the pinned CA fingerprint, and computes
-    /// the leaf's renewal/expiry health from the CA-held policy. Returns `None`
-    /// when the node is Open — consistent with [`posture`](Self::posture)`.signed`.
+    /// Status and sensitive TLS material are published by the same aggregate
+    /// transition. Holding that transition while converting them avoids a
+    /// second filesystem-derived read model and returns `None` whenever the
+    /// primary status says the identity is absent, invalid, expired, or revoked.
     /// Does not renew or enroll (that is `ensure_identity`'s job).
     pub async fn local_identity(&self) -> Option<Identity> {
-        if !self.has_local_identity() {
-            return None;
-        }
-        let hostname = Self::local_hostname()?;
-        let leaf = self.paths().certs_dir().join(&hostname);
-        let cert_pem = std::fs::read_to_string(leaf.join("cert.pem")).ok()?;
-        let key_pem = std::fs::read_to_string(leaf.join("key.pem")).ok()?;
-        // CA anchor: the leaf-local ca.pem, falling back to the CA dir (CA node).
-        let ca_cert_pem = std::fs::read_to_string(leaf.join("ca.pem"))
-            .ok()
-            .or_else(|| std::fs::read_to_string(self.paths().ca_cert_path()).ok())?;
-        let ca_fingerprint =
-            koi_crypto::pinning::fingerprint_sha256(pem::parse(&ca_cert_pem).ok()?.contents());
-        let policy = self.local_policy().await;
-        let renewal = RenewalHealth::from_leaf(&cert_pem, &policy)?;
-        Some(Identity {
-            hostname,
-            cert_pem,
-            key_pem,
-            ca_cert_pem,
-            ca_fingerprint,
-            renewal,
-        })
+        let _transition = self.state.transition.lock().await;
+        self.local_identity_under_transition()
     }
 
-    /// The CA-held cert lifecycle policy this node follows: from `member.json`
-    /// if it joined a mesh, else the local roster's (CA node), else the default.
-    async fn local_policy(&self) -> roster::CertPolicy {
-        if let Some(ms) = member::load(&self.paths().member_state_path()) {
-            return ms.policy;
-        }
-        self.state.roster.lock().await.metadata.policy.clone()
+    pub(crate) fn local_identity_under_transition(&self) -> Option<Identity> {
+        self.state.local_identity_under_transition()
     }
 
     /// Ensure this node holds a current identity, then return it (`None` if it
@@ -145,16 +84,17 @@ impl CertmeshCore {
     /// First-join identity acquisition that needs out-of-band authorization (an
     /// invite/TOTP) is *not* performed here — that is the explicit `join` flow.
     pub async fn ensure_identity(&self) -> Option<Identity> {
-        if self.paths().is_ca_initialized() {
+        let status = self.status();
+        if status.role == CertmeshRole::Authority {
             // CA node: self-enroll is idempotent (reuses a fresh leaf, re-issues
             // one within the renewal threshold). Requires the CA unlocked.
-            let unlocked = self.state.ca.lock().await.is_some();
+            let unlocked = status.authority.as_ref().is_some_and(|ca| !ca.locked);
             if unlocked {
                 if let Err(e) = self.self_enroll().await {
                     tracing::warn!(error = %e, "ensure_identity: self-enroll failed");
                 }
             }
-        } else if member::load(&self.paths().member_state_path()).is_some() {
+        } else if status.role == CertmeshRole::Member {
             // Joined member: renew if due (network pull to the CA). Best-effort.
             if let Err(e) = self.renew_self_if_due().await {
                 tracing::warn!(error = %e, "ensure_identity: renewal check failed");
@@ -174,8 +114,10 @@ impl CertmeshCore {
         let mut nonce = [0u8; 16];
         rand::rng().fill_bytes(&mut nonce);
         let ts = chrono::Utc::now().timestamp();
-        let identity = self.local_identity().await;
-        let signer = self.outbound_signer(&identity).await;
+        let _transition = self.state.transition.lock().await;
+        let identity = self.local_identity_under_transition();
+        let self_revoked = self.is_self_revoked_under_transition();
+        let signer = self.outbound_signer(&identity, self_revoked);
         envelope::build_envelope(signer, bytes, &nonce, ts)
     }
 
@@ -186,12 +128,13 @@ impl CertmeshCore {
     /// no longer assert an authenticated identity — even to peers that have not yet
     /// pulled the revocation. Bounded: it stops *claiming* an identity; it does not
     /// delete the on-disk leaf or exit (the operator owns those).
-    async fn outbound_signer<'a>(
+    fn outbound_signer<'a>(
         &self,
         identity: &'a Option<Identity>,
+        self_revoked: bool,
     ) -> Option<(&'a str, &'a str)> {
         let id = identity.as_ref()?;
-        if self.is_self_revoked().await {
+        if self_revoked {
             static REVOKED_WARNED: std::sync::Once = std::sync::Once::new();
             REVOKED_WARNED.call_once(|| {
                 tracing::warn!(
@@ -213,21 +156,12 @@ impl CertmeshCore {
     /// (ADR-023 §5) and [`diagnose`](Self::diagnose) flags it RED. Exposed so a consumer
     /// can surface "you have been removed from the mesh — rejoin" without re-deriving it.
     pub async fn is_self_revoked(&self) -> bool {
-        // Member node: the bundle-derived flag (hostname-keyed by the CA).
-        if let Some(ms) = member::load(&self.paths().member_state_path()) {
-            if ms.self_revoked {
-                return true;
-            }
-        }
-        // CA node (or a self-enrolled host that keeps a roster): authoritative for its
-        // own hostname.
-        if let Some(hostname) = Self::local_hostname() {
-            let roster = self.state.roster.lock().await;
-            if roster.is_revoked(&hostname) {
-                return true;
-            }
-        }
-        false
+        let _transition = self.state.transition.lock().await;
+        self.is_self_revoked_under_transition()
+    }
+
+    pub(crate) fn is_self_revoked_under_transition(&self) -> bool {
+        self.state.is_self_revoked_under_transition()
     }
 
     /// Verify an [`Envelope`](koi_common::envelope::Envelope) → an
@@ -241,10 +175,37 @@ impl CertmeshCore {
         &self,
         env: &koi_common::envelope::Envelope,
     ) -> koi_common::envelope::Assurance {
-        let ca_cert_pem = self.local_ca_cert_pem().await;
-        let revoked = self.revoked_fingerprints().await;
-        let now = chrono::Utc::now().timestamp();
-        envelope::verify_envelope(env, ca_cert_pem.as_deref(), &revoked, now)
+        let env = env.clone();
+        match self
+            .run_blocking_transition(move |domain| {
+                let anchor = domain.ca_anchor.current();
+                let ca_cert_pem = anchor
+                    .anchor()
+                    .map_err(|reason| {
+                        CertmeshError::Internal(format!(
+                            "Certmesh CA anchor is unavailable: {reason}"
+                        ))
+                    })?
+                    .map(|anchor| anchor.certificate_pem.clone());
+                let revoked = revoked_fingerprints_under_transition(domain)?;
+                Ok(envelope::verify_envelope(
+                    &env,
+                    ca_cert_pem.as_deref(),
+                    &revoked,
+                    chrono::Utc::now().timestamp(),
+                ))
+            })
+            .await
+        {
+            Ok(Ok(assurance)) => assurance,
+            Ok(Err(error)) | Err(error) => {
+                tracing::error!(%error, "Certmesh verification state unavailable; rejecting envelope");
+                koi_common::envelope::Assurance::Rejected {
+                    reason: koi_common::envelope::RejectReason::UnknownSigner,
+                    signer_cn: None,
+                }
+            }
+        }
     }
 
     /// Seal `bytes` into a [`Sealed`](koi_common::sealed::Sealed) (ADR-020 §4).
@@ -267,8 +228,10 @@ impl CertmeshCore {
         let mut nonce = [0u8; 16];
         rand::rng().fill_bytes(&mut nonce);
         let ts = chrono::Utc::now().timestamp();
-        let identity = self.local_identity().await;
-        let signer = self.outbound_signer(&identity).await;
+        let _transition = self.state.transition.lock().await;
+        let identity = self.local_identity_under_transition();
+        let self_revoked = self.is_self_revoked_under_transition();
+        let signer = self.outbound_signer(&identity, self_revoked);
         sealed::seal_passthrough(signer, bytes, &nonce, ts)
     }
 
@@ -282,10 +245,24 @@ impl CertmeshCore {
         &self,
         sealed: &koi_common::sealed::Sealed,
     ) -> Result<koi_common::sealed::Opened, CertmeshError> {
-        let ca_cert_pem = self.local_ca_cert_pem().await;
-        let revoked = self.revoked_fingerprints().await;
-        let now = chrono::Utc::now().timestamp();
-        sealed::open_sealed(sealed, ca_cert_pem.as_deref(), &revoked, now)
+        let sealed = sealed.clone();
+        self.run_blocking_transition(move |domain| {
+            let anchor = domain.ca_anchor.current();
+            let ca_cert_pem = anchor
+                .anchor()
+                .map_err(|reason| {
+                    CertmeshError::Internal(format!("Certmesh CA anchor is unavailable: {reason}"))
+                })?
+                .map(|anchor| anchor.certificate_pem.clone());
+            let revoked = revoked_fingerprints_under_transition(domain)?;
+            sealed::open_sealed(
+                &sealed,
+                ca_cert_pem.as_deref(),
+                &revoked,
+                chrono::Utc::now().timestamp(),
+            )
+        })
+        .await?
     }
 
     /// Run the trust-doctor (ADR-020 §13) → a structured
@@ -297,37 +274,35 @@ impl CertmeshCore {
     /// into distinct, named checks each carrying an exact remedy. The rollup exits
     /// non-zero only when something is RED (`TrustDiagnosis::exit_code`).
     pub async fn diagnose(&self) -> koi_common::diagnosis::TrustDiagnosis {
-        let posture = self.posture();
-        let identity = self.local_identity().await;
-        let now = chrono::Utc::now();
-        let (integrity_ok, self_revoked) = match &identity {
-            Some(id) => {
-                let integrity = diagnosis::identity_material_is_usable(
-                    &id.cert_pem,
-                    &id.key_pem,
-                    &id.ca_cert_pem,
-                );
-                // Has this node's own identity been revoked mesh-wide? Hostname-keyed,
-                // the same authoritative signal the outbound self-gate uses.
-                let self_revoked = self.is_self_revoked().await;
-                (Some(integrity), self_revoked)
-            }
-            None => (None, false),
-        };
-        diagnosis::build_diagnosis(posture, identity.as_ref(), integrity_ok, self_revoked, now)
+        self.status().diagnosis.clone()
     }
 
-    /// The CA certificate this node trusts as its verification anchor: the leaf's
-    /// `ca.pem` (member or CA node), falling back to the CA cert on disk. `None`
-    /// on an Open node with no anchor.
-    async fn local_ca_cert_pem(&self) -> Option<String> {
-        if let Some(hostname) = Self::local_hostname() {
-            let leaf_ca = self.paths().certs_dir().join(&hostname).join("ca.pem");
-            if let Ok(pem) = std::fs::read_to_string(&leaf_ca) {
-                return Some(pem);
+    /// The CA certificate this node trusts as its verification anchor: the
+    /// authority's canonical CA artifact or a member leaf's pinned `ca.pem`.
+    /// `None` means the Open role positively has no anchor; observation failures
+    /// are returned rather than disguised as absence.
+    pub async fn ca_certificate_pem(&self) -> Result<Option<String>, CertmeshError> {
+        self.ca_anchor()
+            .anchor()
+            .map(|anchor| anchor.map(|anchor| anchor.certificate_pem.clone()))
+            .map_err(|reason| {
+                CertmeshError::Internal(format!("Certmesh CA anchor is unavailable: {reason}"))
+            })
+    }
+
+    /// Sign one coherent roster generation for the public trust-bundle query.
+    pub async fn signed_trust_bundle(&self) -> Result<bundle::SignedBundle, CertmeshError> {
+        let _transition = self.state.transition.lock().await;
+        let ca_guard = self.state.ca.lock();
+        let ca = ca_guard.as_ref().ok_or_else(|| {
+            if self.status().role == CertmeshRole::Authority {
+                CertmeshError::CaLocked
+            } else {
+                CertmeshError::CaNotInitialized
             }
-        }
-        std::fs::read_to_string(self.paths().ca_cert_path()).ok()
+        })?;
+        let roster = self.state.roster.lock();
+        bundle::sign(&roster, ca, chrono::Utc::now().to_rfc3339())
     }
 
     /// Best-effort revoked-leaf fingerprints honored by `verify`/`open` — the union of
@@ -339,26 +314,15 @@ impl CertmeshCore {
     /// `pub(crate)` so tests can assert the applied set; not a public API (a consumer
     /// reads membership via [`is_certmesh_member`](Self::is_certmesh_member) and its
     /// own revocation via [`is_self_revoked`](Self::is_self_revoked)).
-    pub(crate) async fn revoked_fingerprints(&self) -> Vec<String> {
-        // (a) CA-node path: the roster holds the authoritative revoked members. The
-        // guard drops at the end of this block — never held across the file read below.
-        let mut set: Vec<String> = {
-            let roster = self.state.roster.lock().await;
-            roster
-                .members
-                .iter()
-                .filter(|m| m.status == roster::MemberStatus::Revoked)
-                .map(|m| m.cert_fingerprint.clone())
-                .collect()
-        };
-        // (b) Member-node path: the cross-member revoked set from the last accepted
-        // trust bundle (a pure member keeps no roster). A cheap local file read.
-        if let Some(ms) = member::load(&self.paths().member_state_path()) {
-            set.extend(ms.revoked_fingerprints);
-        }
-        set.sort();
-        set.dedup();
-        set
+    #[cfg(test)]
+    pub(crate) async fn revoked_fingerprints(&self) -> Result<Vec<String>, CertmeshError> {
+        let _transition = self.state.transition.lock().await;
+        self.revoked_fingerprints_under_transition()
+    }
+
+    #[cfg(test)]
+    fn revoked_fingerprints_under_transition(&self) -> Result<Vec<String>, CertmeshError> {
+        revoked_fingerprints_under_transition(&self.state)
     }
 
     /// Gate `router`'s routes by authentication (ADR-020 §6 `require_auth`).
@@ -410,5 +374,57 @@ impl CertmeshCore {
             let policy = Arc::clone(&policy);
             async move { http::require_auth_with_mw(state, policy, req, next).await }
         }))
+    }
+}
+
+fn revoked_fingerprints_under_transition(
+    domain: &CertmeshDomain,
+) -> Result<Vec<String>, CertmeshError> {
+    let mut set: Vec<String> = domain
+        .roster
+        .lock()
+        .members
+        .iter()
+        .filter(|member| member.status == roster::MemberStatus::Revoked)
+        .map(|member| member.cert_fingerprint.clone())
+        .collect();
+    if domain.status.current().role == CertmeshRole::Member {
+        if let Some(member) = member::load(&domain.paths.member_state_path())? {
+            set.extend(member.revoked_fingerprints);
+        }
+    }
+    set.sort();
+    set.dedup();
+    Ok(set)
+}
+
+impl CertmeshDomain {
+    pub(crate) fn local_identity_under_transition(&self) -> Option<Identity> {
+        let status = self.status.current();
+        if status.identity.condition != IdentityCondition::Healthy {
+            return None;
+        }
+        let info = status.identity.info.as_ref()?;
+        let tls = self.tls_identity.current();
+        let material = tls.material.as_ref()?;
+        if material.hostname != info.hostname {
+            return None;
+        }
+        let certificate = pem::parse_many(material.certificate_chain_pem.as_ref())
+            .ok()?
+            .into_iter()
+            .next()?;
+        Some(Identity {
+            hostname: info.hostname.clone(),
+            cert_pem: pem::encode(&certificate),
+            key_pem: material.private_key_pem.to_string(),
+            ca_cert_pem: material.trust_anchor_pem.to_string(),
+            ca_fingerprint: info.ca_fingerprint.clone(),
+            renewal: info.renewal.clone(),
+        })
+    }
+
+    pub(crate) fn is_self_revoked_under_transition(&self) -> bool {
+        self.status.current().identity.condition == IdentityCondition::Revoked
     }
 }

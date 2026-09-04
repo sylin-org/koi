@@ -22,12 +22,18 @@ This is a one-time setup. On each platform, Koi registers itself with the native
 
 The daemon listens on port 5641 by default and exposes both the HTTP API (for any language) and the IPC pipe (for the CLI). Once installed, every other Koi command can talk to the daemon automatically.
 
-**All seven domain modules are enabled by default.** On a fresh install the daemon starts every module, even if you haven't configured it yet:
+**All core domains are available by default.** On a fresh install the daemon starts the
+configured runtime domains, even if you have not added any entries yet:
 
 - **mDNS** begins discovering peers immediately.
 - **DNS**, **Health**, **Proxy**, and **UDP** start in a _ready_ state with zero entries/routes - they accept configuration at any time.
 - **CertMesh** reports _ready - run certmesh create_ until you initialise a CA.
+- **Trust** observes Koi-managed operating-system roots and reconciles CertMesh's desired CA
+  anchor when one exists.
 - **Runtime** auto-detects Docker/Podman and begins watching container lifecycle events. If no runtime is available, it reports _inactive_ and the daemon continues normally.
+
+The same product-status ladder also reports the local IPC adapter and the optional Pond
+read-only LAN surface. Pond stays disabled until the operator publishes and arms it.
 
 This is by design. A freshly-installed Koi is healthy; unused modules carry no overhead and can be activated whenever you need them. Use `koi status` to see each module's current state. Disable any capability with `--no-<name>` (e.g., `--no-udp`, `--no-proxy`).
 
@@ -62,6 +68,10 @@ Koi v0.2.x - status
   Health     running    0 services up (0 total)
   Proxy      running    0 listeners
   UDP        running    0 bindings
+  Runtime    inactive   no supported runtime detected
+  Trust      running    no managed roots
+  IPC        running    local control available
+  Pond       disabled   not published
 ```
 
 Once you've been using Koi for a while, the numbers fill in:
@@ -75,6 +85,10 @@ Koi v0.2.x - status
   Health     running    5 checks (4 healthy, 1 unhealthy)
   Proxy      running    2 listeners
   UDP        running    1 binding
+  Runtime    running    docker: 3 instances
+  Trust      running    1 root present
+  IPC        running    local control available
+  Pond       running    http://host.local:5644
 ```
 
 Both support `--json` for scripting and monitoring integrations.

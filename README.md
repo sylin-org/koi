@@ -70,7 +70,7 @@ irm https://raw.githubusercontent.com/sylin-org/koi/main/install.ps1 | iex      
 Then:
 
 ```bash
-koi mdns discover        # works instantly, no daemon, no config
+koi --standalone mdns discover  # intentional one-shot session, no daemon or config
 ```
 
 For always-on naming, trust, connectivity, and observation, run the daemon —
@@ -191,7 +191,9 @@ contract is in the [trust protocol reference](docs/reference/trust-protocol.md).
 
 `koi-embedded` ships every backend by default. A lean consumer (e.g. a headless
 container that only needs discovery/DNS) can drop the heavy, version-locked ones with a
-single line — and re-arm any subset à la carte:
+single line — and re-arm any subset à la carte. The snippets below target `1.0.0-rc.2`,
+the last published prerelease; repository source is now on the `1.0.0-dev.0`
+architecture-development line:
 
 | Cargo feature | Default | Pulls in | Off → fallback |
 | --- | --- | --- | --- |
@@ -272,11 +274,12 @@ docker run -d --name koi -p 5641:5641 ghcr.io/sylin-org/koi:latest   # daemon
 package is named `koi-net` — see [Name](#name) below — and installs a `koi`
 binary). It needs a Rust toolchain; the recommended installer above does not.
 
-The v1 release-candidate line carries an artifact manifest and `cargo-binstall`
+The published v1 release-candidate line carries an artifact manifest and `cargo-binstall`
 metadata, so Rust users can install the official prebuilt archive without compiling.
-Prereleases are deliberately explicit: use `cargo binstall koi-net --version 1.0.0-rc.1`
-or `npx @sylin-org/koi@1.0.0-rc.1`. Stable unqualified commands remain on the latest stable
-release until Koi 1.0.0 ships.
+Prereleases are deliberately explicit: the last published candidate is installed with
+`cargo binstall koi-net --version 1.0.0-rc.2` or
+`npx @sylin-org/koi@1.0.0-rc.2`. Stable unqualified commands remain on the latest stable
+release; development source is not presented as a release artifact.
 See [ADR-025](docs/adr/025-release-channels-and-bootstrap-contract.md) for the
 artifact-first channel contract and its deliberately honest rollout states.
 
@@ -288,7 +291,7 @@ cd koi
 cargo build --release
 ```
 
-**Verify** — every release binary and the container image carry a signed
+**Verify the last published candidate** — every release binary and the container image carry a signed
 build-provenance attestation. A trust tool should let you verify its own supply
 chain in one line:
 
@@ -299,16 +302,16 @@ gh attestation verify oci://ghcr.io/sylin-org/koi:1.0.0-rc.2 --repo sylin-org/ko
 
 ## Project status
 
-Koi is at **v1.0.0-rc.2: feature-complete for the v1 contract and ready for real-network
-evaluation**. The release candidate brings the Find / Trust / Connect promise, artifact-first
-distribution, self-managing certmesh trust, truthful runtime recovery, principal identity for
-non-human callers, short-lived trust defaults, signed webhook fan-out, and repeatable physical
-Windows/Linux validation into one candidate ([CHANGELOG](CHANGELOG.md)).
+Koi source is at **v1.0.0-dev.0**, an active architecture-development line. The former
+`v1.0.0-rc.2` candidate remains the last published prerelease, but its freeze has been
+withdrawn for current source while [observable domain boundaries](docs/adr/043-observable-domain-boundaries.md)
+are implemented and validated. Current `dev` is not a release candidate or a stable declaration.
 
-An RC is not the stable declaration: pin `1.0.0-rc.1`, read the
-[upgrade guide](docs/guides/upgrading.md), and report anything that disagrees with the docs.
-The remaining road to 1.0 is defect discovery and contract hardening—not another expansion of
-scope. The assessment and validation record remain public under
+The accepted rc.2 and fleet records remain evidence for the exact artifacts they tested; they
+are not being rewritten as proof for this development line. A new candidate requires fresh
+repository validation and an explicit physical-validation dispatch. To use the published
+candidate, pin `1.0.0-rc.2` and read the [upgrade guide](docs/guides/upgrading.md). The
+assessment and historical validation record remain public under
 [docs/assessment/](docs/assessment/README.md) and [docs/prompts/](docs/prompts/README.md).
 
 ## Documentation
@@ -346,6 +349,7 @@ for the copy-paste client config.
 
 **Decisions & direction:** [Find, Trust, Connect](docs/adr/024-public-identity-find-trust-connect.md) ·
 [Release channels](docs/adr/025-release-channels-and-bootstrap-contract.md) ·
+[Observable domain boundaries](docs/adr/043-observable-domain-boundaries.md) ·
 [All ADRs](docs/adr/) ·
 [Assessment & roadmap](docs/assessment/README.md)
 

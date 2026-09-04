@@ -44,22 +44,10 @@ pub fn koi_data_dir() -> PathBuf {
     }
 }
 
-/// Runtime state directory.
-#[allow(clippy::disallowed_methods)] // sanctioned sub-dir derivation helper
-pub fn koi_state_dir() -> PathBuf {
-    koi_data_dir().join("state")
-}
-
 /// Log directory.
 #[allow(clippy::disallowed_methods)] // sanctioned sub-dir derivation helper
 pub fn koi_log_dir() -> PathBuf {
     koi_data_dir().join("logs")
-}
-
-/// Certificate directory (used by certmesh).
-#[allow(clippy::disallowed_methods)] // sanctioned sub-dir derivation helper
-pub fn koi_certs_dir() -> PathBuf {
-    koi_data_dir().join("certs")
 }
 
 #[cfg(test)]
@@ -91,41 +79,12 @@ mod tests {
     }
 
     #[test]
-    fn state_dir_is_child_of_data_dir() {
-        let _lock = ENV_LOCK.lock().unwrap();
-        let data = koi_data_dir();
-        let state = koi_state_dir();
-        assert!(state.starts_with(&data));
-        assert!(state.ends_with("state"));
-    }
-
-    #[test]
     fn log_dir_is_child_of_data_dir() {
         let _lock = ENV_LOCK.lock().unwrap();
         let data = koi_data_dir();
         let logs = koi_log_dir();
         assert!(logs.starts_with(&data));
         assert!(logs.ends_with("logs"));
-    }
-
-    #[test]
-    fn certs_dir_is_child_of_data_dir() {
-        let _lock = ENV_LOCK.lock().unwrap();
-        let data = koi_data_dir();
-        let certs = koi_certs_dir();
-        assert!(certs.starts_with(&data));
-        assert!(certs.ends_with("certs"));
-    }
-
-    #[test]
-    fn subdirs_are_distinct() {
-        let _lock = ENV_LOCK.lock().unwrap();
-        let state = koi_state_dir();
-        let logs = koi_log_dir();
-        let certs = koi_certs_dir();
-        assert_ne!(state, logs);
-        assert_ne!(state, certs);
-        assert_ne!(logs, certs);
     }
 
     #[cfg(windows)]

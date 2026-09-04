@@ -46,10 +46,12 @@ Distro names drift; capabilities don't.
 ### The pipeline (identical everywhere)
 
 1. **Stage the binary atomically.** If source and destination are the same file,
-   skip the copy (the ETXTBSY case). Otherwise copy to `<dest>.new` and
-   `rename(2)` into place — renaming over a running executable is legal on
-   Linux/macOS. On Windows, a destination the running service holds fails the
-   rename and the installer says exactly what to do instead of a raw OS error.
+   skip the copy (the ETXTBSY case). Otherwise copy to a unique sibling,
+   flush the complete file, atomically replace the destination, and make the
+   containing-directory update durable. Renaming over a running executable is
+   legal on Linux/macOS. On Windows, a destination the running service holds
+   fails the replace and the installer says exactly what to do instead of a raw
+   OS error.
 2. **Detect the init system** → pick a recipe. Unknown is a recipe too (below),
    never an ENOENT stack trace.
 3. **Ownership-aware port pre-flight.** Each recipe first reports whether it is
@@ -68,8 +70,11 @@ Distro names drift; capabilities don't.
    (ADR-031 precedence applies). System services resolve their config at
    `/etc/koi/config.toml` (the unit/init script sets `XDG_CONFIG_HOME=/etc`);
    user services use the natural `~/.config/koi/config.toml`; Windows uses
-   `%ProgramData%\koi\config.toml`. An existing operator config is never
-   touched.
+   `%ProgramData%\koi\config.toml`. Existing port declarations are never
+   changed. Creating an absent config is an atomic create-if-absent operation,
+   so a file that appears during planning wins rather than being overwritten;
+   adding a missing port declaration to an existing config is one durable
+   atomic replacement.
 5. **Install the service via the recipe** (enable + start).
 6. **Verify with koi's own client** — a raw loopback HTTP GET of `/healthz`
    from the installer process. No curl, no wget, nothing to be missing.
@@ -92,9 +97,12 @@ path is the workbench autostart (ADR-034 P-A), not a fake SCM user service.
 
 ### Exit semantics
 
-Full install (service registered + healthz verified) → 0. Partial (binary
-staged, no service possible) → non-zero with the exact manual steps. A cleanup
-failure remains a failed operation with the remedy printed (standing doctrine).
+Full install (service registered + healthz verified and the transaction
+durably settled) → 0. Partial (binary staged, no service possible) → non-zero
+with the exact manual steps. Failure before settlement rolls back. Failure to
+remove backup/staging debris after durable settlement does not roll back a
+verified installation: Koi leaves the `Settled` journal in place, reports the
+cleanup problem, and retries cleanup only on the next install.
 
 Systemd and OpenRC system installs are durable transactions. Before either
 manager is mutated, Koi checkpoints the installed binary, registration,
@@ -104,6 +112,39 @@ probe returns non-zero and restores the previous healthy service; an interrupted
 transaction is recovered before a later install begins. OpenRC additionally
 requires `supervise-daemon` and `logrotate`, writes a bounded rotation policy,
 and refuses to claim installation when either facility is unavailable.
+
+### Durable transaction protocol (2026-09-03 amendment)
+
+The systemd, OpenRC, and SCM recipes share these persistence invariants:
+
+1. One stable OS-native lock serializes installation and recovery for the
+   machine-wide service even when invocations select different data roots.
+   User-recipe locking is likewise anchored to the one HOME-owned install
+   shape, not a configurable data root. Lock files are retained; closing the
+   native handle releases ownership without an unlink split-brain window.
+2. `Preparing` is durable before checkpoint work starts. Existing targets are
+   copied to create-if-absent backups through the common atomic persistence
+   boundary; each manifest records the length and SHA-256 identity of the
+   exact staged backup. A backup path that appears concurrently is never
+   clobbered.
+3. `Armed` is durable before the first service-manager, firewall, file, or
+   lifecycle mutation. A visible replacement whose durability could not be
+   confirmed is not sufficient at this boundary. Private Unix modes or Windows
+   ACLs are installed on empty stages before bytes are written.
+4. Recovery validates every required backup before its first native effect.
+   Each restore hashes the exact bytes copied into its replacement stage and
+   compares them with the manifest again, then uses the same durable atomic
+   replacement primitive. On Unix, target and removal commits include the
+   parent-directory flush.
+5. Verification is followed by a durable `Settled` transition. That transition,
+   not deletion of an `Armed` manifest, is the semantic commit. Once settled,
+   every restart is cleanup-only and can never restore the superseded files.
+   If settlement cannot be proven durable, the live transaction is durably
+   re-armed before rollback begins.
+
+The result is interruption-convergent: every durable phase has exactly one
+safe retry behavior, and backup deletion is never mistaken for the point at
+which an installation became accepted.
 
 ## Consequences
 

@@ -5,9 +5,7 @@
 //! decrypt after each daemon restart.
 
 use std::fmt;
-use std::io::Write;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
@@ -258,50 +256,30 @@ pub fn ca_keypair_to_der(key: &CaKeyPair) -> Result<Vec<u8>, CryptoError> {
 /// Write secret material to a file with restricted permissions.
 ///
 /// On Unix, sets file mode to 0o600 (owner read/write only).
-/// On non-Unix platforms, uses standard file write.
+/// On Windows, strips inherited access and grants full control only to SYSTEM,
+/// Administrators, and the current process user before any secret bytes are staged.
 pub fn write_secret_file(path: &Path, data: &[u8]) -> Result<(), CryptoError> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    let options = koi_common::persist::AtomicWriteOptions::new().with_unix_mode(0o600);
 
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let mut tmp_name = path.as_os_str().to_os_string();
-    tmp_name.push(format!(
-        ".{}.{}.tmp",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    let tmp_path = std::path::PathBuf::from(tmp_name);
-
-    #[cfg(unix)]
-    let mut file = {
-        use std::os::unix::fs::OpenOptionsExt;
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&tmp_path)?
-    };
-    #[cfg(not(unix))]
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&tmp_path)?;
-
-    let write_result = file.write_all(data).and_then(|()| file.sync_all());
-    drop(file);
-    if let Err(error) = write_result {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(error.into());
-    }
     #[cfg(windows)]
-    restrict_windows_acl(&tmp_path);
+    let outcome = koi_common::persist::write_bytes_atomic_with_options_and_prepare_stage(
+        path,
+        data,
+        options,
+        restrict_windows_acl,
+    )?;
+    #[cfg(not(windows))]
+    let outcome = koi_common::persist::write_bytes_atomic_with_options(path, data, options)?;
 
-    if let Err(error) = koi_common::persist::replace_file(&tmp_path, path) {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(error.into());
+    if let koi_common::persist::AtomicCommit::DurabilityUncertain(error) = outcome {
+        // The replacement is already visible. Reporting an ordinary write failure here would
+        // leave callers behind the secret they and a restarted process can immediately read.
+        tracing::error!(
+            path = %path.display(),
+            %error,
+            "secret file is visible, but its crash durability could not be confirmed"
+        );
     }
-
     Ok(())
 }
 
@@ -431,36 +409,51 @@ pub enum CryptoError {
     Io(#[from] std::io::Error),
 }
 
-/// Best-effort ACL restriction on Windows using icacls.
+/// Restrict a Windows stage using the platform's real `icacls` capability.
 ///
 /// Strips inherited permissions and grants full control to SYSTEM,
 /// the built-in Administrators group, and the current process user.
 #[cfg(windows)]
-pub(crate) fn restrict_windows_acl(path: &std::path::Path) {
+pub(crate) fn restrict_windows_acl(path: &std::path::Path) -> std::io::Result<()> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x08000000;
-    // Command::args() handles quoting automatically via CreateProcess —
-    // do NOT embed quotes in the argument strings.
-    let path_str = path.display().to_string();
-    let mut args = vec![
-        path_str,
-        "/inheritance:r".to_string(),
-        "/grant:r".to_string(),
-        "SYSTEM:F".to_string(),
-        "/grant:r".to_string(),
-        "BUILTIN\\Administrators:F".to_string(),
-    ];
+
+    // Command::arg() handles CreateProcess quoting; passing Path directly also preserves
+    // non-Unicode Windows paths.
+    let mut command = std::process::Command::new("icacls");
+    command.arg(path).args([
+        "/inheritance:r",
+        "/grant:r",
+        "SYSTEM:F",
+        "/grant:r",
+        "BUILTIN\\Administrators:F",
+    ]);
     if let Ok(user) = std::env::var("USERNAME") {
         if !user.eq_ignore_ascii_case("SYSTEM") {
-            args.push("/grant:r".to_string());
-            args.push(format!("{user}:F"));
+            command.arg("/grant:r").arg(format!("{user}:F"));
         }
     }
-    let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    let _ = std::process::Command::new("icacls")
-        .args(&args_ref)
-        .creation_flags(CREATE_NO_WINDOW)
-        .output();
+    let output = command.creation_flags(CREATE_NO_WINDOW).output()?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let detail = if stderr.trim().is_empty() {
+        stdout.trim()
+    } else {
+        stderr.trim()
+    };
+    Err(std::io::Error::other(format!(
+        "icacls failed with {}{}",
+        output.status,
+        if detail.is_empty() {
+            String::new()
+        } else {
+            format!(": {detail}")
+        }
+    )))
 }
 
 #[cfg(test)]
@@ -559,6 +552,36 @@ mod tests {
 
         assert_eq!(std::fs::read(&path).unwrap(), b"second");
         assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_secret_file_replaces_permissive_target_with_owner_only_stage() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("secret");
+        std::fs::write(&path, b"old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)).unwrap();
+
+        write_secret_file(&path, b"new secret").unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"new secret");
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_acl_failure_is_propagated() {
+        let temp = tempfile::tempdir().unwrap();
+        let missing = temp.path().join("does-not-exist");
+
+        let error = restrict_windows_acl(&missing).unwrap_err();
+
+        assert!(!error.to_string().is_empty());
     }
 
     #[test]

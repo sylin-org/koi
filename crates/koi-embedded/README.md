@@ -28,8 +28,7 @@ let koi = Builder::new()
     .start()
     .await?;
 
-// Register a service through the mDNS handle (`mdns()` returns a `Result`;
-// `register` is synchronous).
+// Register a service through the mDNS handle (`mdns()` returns a `Result`).
 koi.mdns()?.register(RegisterPayload {
     name: "My Service".to_string(),
     service_type: "_http._tcp".to_string(),
@@ -37,10 +36,10 @@ koi.mdns()?.register(RegisterPayload {
     ip: None,
     lease_secs: None,
     txt: Default::default(),
-})?;
+}).await?;
 
 // Subscribe to the system-wide event stream.
-let mut rx = koi.subscribe();
+let mut rx = koi.subscribe()?;
 while let Ok(event) = rx.recv().await {
     println!("{event:?}");
 }

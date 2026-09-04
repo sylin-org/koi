@@ -49,17 +49,11 @@ const. The per-crate copies in mdns/certmesh/dns/health/proxy/runtime were remov
 | `META_BROWSE_IDLE`  | 300s  | Stop the lazy LAN-wide meta-browse after this idle |
 | `SUPERVISOR_TICK`   | 30s   | Idle-supervisor check interval                     |
 
-### koi-serve -- Pipe Adapter (`crates/koi-serve/src/pipe.rs`)
+### koi-serve -- Local IPC Adapter (`crates/koi-serve/src/local_ipc/mod.rs`)
 
 | Constant        | Value | Purpose                  |
 | --------------- | ----- | ------------------------ |
 | `SESSION_GRACE` | 30s   | IPC session grace period |
-
-### koi-serve -- Stdio Adapter (`crates/koi-serve/src/stdio.rs`)
-
-| Constant        | Value | Purpose                  |
-| --------------- | ----- | ------------------------ |
-| `SESSION_GRACE` | 5s    | Piped stdin grace period |
 
 ### koi -- Main (`crates/koi/src/main.rs`)
 
@@ -111,7 +105,8 @@ const. The per-crate copies in mdns/certmesh/dns/health/proxy/runtime were remov
 | `handle_line()`    | Parse NDJSON request, dispatch to MdnsCore, write responses         |
 | `write_response()` | Serialize pipeline response with graceful fallback (no `.unwrap()`) |
 
-Used by both `koi_serve::pipe` and `koi_serve::stdio` - never duplicate this logic.
+Used by the authenticated `koi_serve::local_ipc` adapter. The removed implicit
+stdio responder must not be recreated; explicit MCP stdio is client-backed.
 
 ### `commands` (`crates/koi/src/commands/mod.rs`)
 

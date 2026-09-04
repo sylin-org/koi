@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 
 const POLICY_VERSION: u16 = 1;
 const POLICY_FILENAME: &str = "local-access.json";
+#[cfg(not(windows))]
+const POLICY_UNIX_MODE: u32 = 0o600;
 
 /// The one interactive operator authorized to receive this machine's daemon
 /// endpoint and DAT over the local IPC transport.
@@ -62,21 +64,47 @@ pub fn load(data_dir: &Path) -> io::Result<LocalAccessPolicy> {
 }
 
 pub fn save(data_dir: &Path, policy: &LocalAccessPolicy) -> io::Result<()> {
+    let path = policy_path(data_dir);
+    let outcome = save_commit(data_dir, policy)?;
+    if let persist::AtomicCommit::DurabilityUncertain(error) = outcome {
+        // Replacement already happened. Returning an ordinary error here would leave callers
+        // behind the policy they and the daemon can immediately read from disk.
+        tracing::error!(
+            path = %path.display(),
+            %error,
+            "local access policy is visible, but its crash durability could not be confirmed"
+        );
+    }
+    Ok(())
+}
+
+/// Persist policy while retaining the exact durability outcome for installer
+/// transactions, which must not begin native side effects on an uncertain
+/// checkpoint.
+pub fn save_commit(
+    data_dir: &Path,
+    policy: &LocalAccessPolicy,
+) -> io::Result<persist::AtomicCommit> {
     policy.clone().validate()?;
     let path = policy_path(data_dir);
-    persist::write_json_pretty(&path, policy)?;
-    restrict_policy(&path)
-}
-
-#[cfg(unix)]
-fn restrict_policy(path: &Path) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-}
-
-#[cfg(not(unix))]
-fn restrict_policy(_path: &Path) -> io::Result<()> {
-    Ok(())
+    #[cfg(windows)]
+    let outcome = {
+        let json = serde_json::to_vec_pretty(policy)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        persist::write_bytes_atomic_with_options_and_prepare_stage(
+            &path,
+            &json,
+            persist::AtomicWriteOptions::new(),
+            persist::restrict_windows_local_secret_acl,
+        )?
+    };
+    #[cfg(not(windows))]
+    let outcome = persist::write_json_pretty_commit_with_options(
+        &path,
+        policy,
+        persist::AtomicWriteOptions::new().with_unix_mode(POLICY_UNIX_MODE),
+    )?;
+    Ok(outcome)
 }
 
 #[cfg(test)]
@@ -99,6 +127,18 @@ mod tests {
         let policy = LocalAccessPolicy::new(LocalOperator::UnixUid { uid: 1000 });
         save(&root, &policy).unwrap();
         assert_eq!(load(&root).unwrap(), policy);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(policy_path(&root))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                POLICY_UNIX_MODE
+            );
+        }
         let _ = std::fs::remove_dir_all(root);
     }
 

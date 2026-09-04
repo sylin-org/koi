@@ -5,6 +5,13 @@ use koi_proxy::ProxyEntry;
 
 #[derive(Debug, Clone)]
 pub enum KoiEvent {
+    /// The host-facing semantic event adapter fell behind one domain. Event
+    /// history is incomplete; current truth remains available through
+    /// `KoiHandle::status` / `watch_status`.
+    StatusInvalidated {
+        domain: &'static str,
+        dropped: u64,
+    },
     MdnsFound(ServiceRecord),
     MdnsResolved(ServiceRecord),
     MdnsRemoved {
@@ -56,13 +63,47 @@ pub enum KoiEvent {
     BundleUpdated {
         self_revoked: bool,
     },
-    /// This node's trust posture changed (ADR-020 §5/§13). Emitted on every
-    /// Open↔Authenticated transition. The **degrade** direction (identity lost →
-    /// fell back to Open) is surfaced as loudly as the upgrade — exactly where
-    /// silent expiry/fallback loses operators.
-    PostureChanged {
-        from: Posture,
-        to: Posture,
+    /// This node durably accepted CA material and became an authority.
+    CertmeshPromotedToAuthority {
+        hostname: String,
+    },
+    /// The configured post-certificate activation hook completed.
+    CertmeshReloadHookCompleted {
+        command: String,
+    },
+    /// The active certificate remains authoritative, but its local consumer
+    /// did not reload and the durable hook intent remains pending.
+    CertmeshReloadHookFailed {
+        command: String,
+        reason: String,
+    },
+    TrustRootInstalled {
+        name: String,
+        fingerprint: String,
+    },
+    TrustRootRemoved {
+        name: String,
+        fingerprint: String,
+    },
+    TrustTransitionRecovered {
+        operation: koi_trust::TrustOperation,
+        name: String,
+        fingerprint: String,
+    },
+    TrustPresenceChanged {
+        name: String,
+        fingerprint: String,
+        presence: koi_trust::TrustPresence,
+    },
+    /// Certmesh has a newer authoritative status snapshot.
+    ///
+    /// This is a latest-value notification sourced from a coalescing `watch`, not
+    /// semantic transition history: revisions may skip. Consumers that need the
+    /// full status reread `certmesh().status()`; consumers that only need current
+    /// transport posture may use the included value directly.
+    CertmeshStatusChanged {
+        revision: u64,
+        posture: Posture,
     },
     ProxyEntryUpdated {
         entry: ProxyEntry,
@@ -70,6 +111,22 @@ pub enum KoiEvent {
     ProxyEntryRemoved {
         name: String,
     },
+    /// One transient producer replaced its complete effective proxy desire.
+    ProxyEntriesReplaced {
+        entries: Vec<ProxyEntry>,
+    },
+    UdpBound {
+        id: String,
+        local_addr: String,
+    },
+    UdpRenewed {
+        id: String,
+    },
+    UdpUnbound {
+        id: String,
+        reason: koi_udp::UdpUnbindReason,
+    },
+    UdpStopped,
     RuntimeInstanceStarted {
         name: String,
         backend: String,
@@ -99,6 +156,33 @@ mod tests {
     fn mdns_found_variant_construction() {
         let event = KoiEvent::MdnsFound(sample_record());
         assert!(matches!(event, KoiEvent::MdnsFound(ref r) if r.name == "My App"));
+    }
+
+    #[test]
+    fn status_invalidation_names_the_lossy_domain() {
+        let event = KoiEvent::StatusInvalidated {
+            domain: "mdns",
+            dropped: 7,
+        };
+        assert!(matches!(
+            event,
+            KoiEvent::StatusInvalidated {
+                domain: "mdns",
+                dropped: 7
+            }
+        ));
+    }
+
+    #[test]
+    fn trust_event_variants_are_coarse() {
+        let event = KoiEvent::TrustRootInstalled {
+            name: "koi-certmesh-ca".into(),
+            fingerprint: "abc".into(),
+        };
+        assert!(matches!(
+            event,
+            KoiEvent::TrustRootInstalled { ref name, .. } if name == "koi-certmesh-ca"
+        ));
     }
 
     #[test]
@@ -190,13 +274,13 @@ mod tests {
     }
 
     #[test]
-    fn posture_changed_variant() {
-        let event = KoiEvent::PostureChanged {
-            from: Posture::OPEN,
-            to: Posture::new(true, false),
+    fn certmesh_status_changed_is_a_latest_value_notification() {
+        let event = KoiEvent::CertmeshStatusChanged {
+            revision: 7,
+            posture: Posture::new(true, false),
         };
         assert!(
-            matches!(event, KoiEvent::PostureChanged { from, to } if !from.signed && to.signed)
+            matches!(event, KoiEvent::CertmeshStatusChanged { revision: 7, posture } if posture.signed)
         );
     }
 
@@ -222,6 +306,29 @@ mod tests {
             name: "grafana".to_string(),
         };
         assert!(matches!(event, KoiEvent::ProxyEntryRemoved { ref name } if name == "grafana"));
+    }
+
+    #[test]
+    fn udp_lifecycle_variants_preserve_identity_and_reason() {
+        let bound = KoiEvent::UdpBound {
+            id: "binding-1".to_string(),
+            local_addr: "127.0.0.1:5353".to_string(),
+        };
+        let removed = KoiEvent::UdpUnbound {
+            id: "binding-1".to_string(),
+            reason: koi_udp::UdpUnbindReason::LeaseExpired,
+        };
+        assert!(matches!(
+            bound,
+            KoiEvent::UdpBound { ref id, .. } if id == "binding-1"
+        ));
+        assert!(matches!(
+            removed,
+            KoiEvent::UdpUnbound {
+                reason: koi_udp::UdpUnbindReason::LeaseExpired,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -260,6 +367,10 @@ mod tests {
     #[test]
     fn debug_does_not_panic() {
         let events = vec![
+            KoiEvent::StatusInvalidated {
+                domain: "mdns",
+                dropped: 2,
+            },
             KoiEvent::MdnsFound(sample_record()),
             KoiEvent::MdnsRemoved {
                 name: "x".to_string(),
@@ -301,9 +412,12 @@ mod tests {
             KoiEvent::BundleUpdated {
                 self_revoked: false,
             },
-            KoiEvent::PostureChanged {
-                from: Posture::OPEN,
-                to: Posture::new(true, true),
+            KoiEvent::CertmeshPromotedToAuthority {
+                hostname: "h".to_string(),
+            },
+            KoiEvent::CertmeshStatusChanged {
+                revision: 9,
+                posture: Posture::new(true, true),
             },
             KoiEvent::ProxyEntryUpdated {
                 entry: ProxyEntry {
@@ -316,6 +430,18 @@ mod tests {
             KoiEvent::ProxyEntryRemoved {
                 name: "p".to_string(),
             },
+            KoiEvent::UdpBound {
+                id: "u".to_string(),
+                local_addr: "127.0.0.1:1".to_string(),
+            },
+            KoiEvent::UdpRenewed {
+                id: "u".to_string(),
+            },
+            KoiEvent::UdpUnbound {
+                id: "u".to_string(),
+                reason: koi_udp::UdpUnbindReason::Requested,
+            },
+            KoiEvent::UdpStopped,
             KoiEvent::RuntimeInstanceStarted {
                 name: "web".to_string(),
                 backend: "docker".to_string(),

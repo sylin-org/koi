@@ -1,10 +1,9 @@
 ﻿# JSON Wire Protocol
 
-Koi's mDNS commands use the same JSON protocol across HTTP, IPC (Named Pipe / Unix
-Domain Socket), and stdin/stdout. The top-level key is the verb - the JSON _is_ the
+Koi's mDNS commands use the same JSON vocabulary across HTTP and authenticated
+local IPC (Named Pipe / Unix Domain Socket). The top-level key is the verb - the JSON _is_ the
 intent. The authenticated local IPC transport additionally accepts the small,
-versioned local-control contract documented below; those requests are not HTTP or
-stdin commands.
+versioned local-control contract documented below; those requests are not HTTP commands.
 
 ---
 
@@ -110,19 +109,6 @@ either request. Windows gives the pipe a protected DACL for SYSTEM, Administrato
 and the recorded operator, then returns bytes only when the connected process token
 has the exact recorded operator SID. Unix admits root and the one recorded UID.
 Neither response is exposed by Pond or public HTTP status.
-
----
-
-## CLI transport
-
-stdin/stdout with the same NDJSON protocol:
-
-```bash
-echo '{"browse":"_http._tcp"}' | koi
-echo '{"register":{"name":"test","type":"_http._tcp","port":8080}}' | koi | jq '.registered.id'
-```
-
-Activates when Koi detects stdin is a pipe (not a terminal).
 
 ---
 

@@ -6,36 +6,41 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use koi_common::persist::{self, AtomicWriteOptions, FileIntegrity};
+
 const BACKUP_SUFFIX: &str = ".koi-install-backup";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(super) struct FileSnapshot {
-    pub(super) path: PathBuf,
-    pub(super) backup: PathBuf,
-    pub(super) existed: bool,
+pub(in crate::platform) struct FileSnapshot {
+    pub(in crate::platform) path: PathBuf,
+    pub(in crate::platform) backup: PathBuf,
+    pub(in crate::platform) existed: bool,
     mode: Option<u32>,
     uid: Option<u32>,
     gid: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    integrity: Option<FileIntegrity>,
 }
 
 impl FileSnapshot {
-    pub(super) fn inspect(path: PathBuf) -> anyhow::Result<Self> {
+    pub(in crate::platform) fn inspect(path: PathBuf) -> anyhow::Result<Self> {
         let backup = backup_path(&path);
-        if backup.exists() {
+        if backup.try_exists()? {
             // A durable manifest is the sole authority for rollback. With no
             // manifest, a backup can only be debris after a committed install.
-            std::fs::remove_file(&backup).map_err(|error| {
+            let outcome = persist::remove_file_durable(&backup).map_err(|error| {
                 anyhow::anyhow!(
                     "could not remove stale installer backup {}: {error}",
                     backup.display()
                 )
             })?;
+            persist::require_durable(outcome, "removing a stale installer backup")?;
         }
-        match std::fs::metadata(&path) {
+        match std::fs::symlink_metadata(&path) {
             Ok(metadata) => {
-                if !metadata.is_file() {
+                if !metadata.file_type().is_file() {
                     anyhow::bail!(
-                        "refusing to replace non-file installation target {}",
+                        "refusing to replace non-regular installation target {}",
                         path.display()
                     );
                 }
@@ -46,6 +51,7 @@ impl FileSnapshot {
                     mode: Some(metadata.mode()),
                     uid: Some(metadata.uid()),
                     gid: Some(metadata.gid()),
+                    integrity: None,
                 })
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self {
@@ -55,73 +61,122 @@ impl FileSnapshot {
                 mode: None,
                 uid: None,
                 gid: None,
+                integrity: None,
             }),
             Err(error) => Err(error.into()),
         }
     }
 
-    pub(super) fn prepare(&self) -> anyhow::Result<()> {
+    pub(in crate::platform) fn prepare(&mut self) -> anyhow::Result<()> {
         if !self.existed {
             return Ok(());
         }
-        if let Some(parent) = self.backup.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::copy(&self.path, &self.backup)?;
-        self.apply_metadata(&self.backup)?;
-        std::fs::File::open(&self.backup)?.sync_all()?;
+        let options = self.mode.map_or_else(AtomicWriteOptions::new, |mode| {
+            AtomicWriteOptions::new().with_unix_mode(mode)
+        });
+        let (outcome, integrity) = persist::copy_file_atomic_new_with_options_and_prepare_stage(
+            &self.path,
+            &self.backup,
+            options,
+            |stage| self.apply_metadata(stage).map_err(anyhow_to_io),
+        )?;
+        persist::require_durable(outcome, "checkpointing an installer backup")?;
+        self.integrity = Some(integrity);
         Ok(())
     }
 
-    pub(super) fn validate_backup(&self) -> anyhow::Result<()> {
-        if self.existed && !self.backup.is_file() {
+    pub(in crate::platform) fn validate_backup(
+        &self,
+        require_integrity: bool,
+    ) -> anyhow::Result<()> {
+        if !self.existed {
+            return Ok(());
+        }
+        if !std::fs::symlink_metadata(&self.backup)
+            .is_ok_and(|metadata| metadata.file_type().is_file())
+        {
             anyhow::bail!(
                 "installer recovery is incomplete: expected backup {} for {}",
                 self.backup.display(),
                 self.path.display()
             );
         }
+        match &self.integrity {
+            Some(expected) => {
+                let actual = persist::file_integrity(&self.backup)?;
+                if &actual != expected {
+                    anyhow::bail!(
+                        "installer recovery is unsafe: backup {} for {} changed (expected {} bytes / {}, found {} bytes / {})",
+                        self.backup.display(),
+                        self.path.display(),
+                        expected.len,
+                        expected.sha256,
+                        actual.len,
+                        actual.sha256
+                    );
+                }
+            }
+            None if require_integrity => anyhow::bail!(
+                "installer recovery is unsafe: backup {} for {} has no recorded integrity",
+                self.backup.display(),
+                self.path.display()
+            ),
+            None => {}
+        }
         Ok(())
     }
 
-    pub(super) fn restore(&self) -> anyhow::Result<()> {
+    pub(in crate::platform) fn restore(&self) -> anyhow::Result<()> {
         if !self.existed {
-            match std::fs::remove_file(&self.path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
+            let outcome = persist::remove_file_durable(&self.path)?;
+            persist::require_durable(outcome, "removing a newly installed file during rollback")?;
             return Ok(());
         }
 
-        let staged = staged_restore_path(&self.path);
-        std::fs::copy(&self.backup, &staged)?;
-        self.apply_metadata(&staged)?;
-        std::fs::File::open(&staged)?.sync_all()?;
-        koi_common::persist::replace_file(&staged, &self.path)?;
+        let options = self.mode.map_or_else(AtomicWriteOptions::new, |mode| {
+            AtomicWriteOptions::new().with_unix_mode(mode)
+        });
+        let outcome = if let Some(expected) = &self.integrity {
+            persist::copy_file_atomic_verified_with_options_and_prepare_stage(
+                &self.backup,
+                &self.path,
+                expected,
+                options,
+                |stage| self.apply_metadata(stage).map_err(anyhow_to_io),
+            )?
+        } else {
+            persist::copy_file_atomic_with_options_and_prepare_stage(
+                &self.backup,
+                &self.path,
+                options,
+                |stage| self.apply_metadata(stage).map_err(anyhow_to_io),
+            )?
+            .0
+        };
+        persist::require_durable(outcome, "restoring an installer backup")?;
         Ok(())
     }
 
     fn apply_metadata(&self, path: &Path) -> anyhow::Result<()> {
-        if let Some(mode) = self.mode {
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
-        }
         if let (Some(uid), Some(gid)) = (self.uid, self.gid) {
             chown(path, uid, gid)?;
+        }
+        // chown may clear setuid/setgid bits, so restore the exact mode after
+        // ownership while the stage is still empty and private.
+        if let Some(mode) = self.mode {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
         }
         Ok(())
     }
 
-    pub(super) fn cleanup(&self) -> anyhow::Result<()> {
-        match std::fs::remove_file(&self.backup) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error.into()),
-        }
+    pub(in crate::platform) fn cleanup(&self) -> anyhow::Result<()> {
+        let outcome = persist::remove_file_durable(&self.backup)?;
+        persist::require_durable(outcome, "removing installer backup debris")?;
+        Ok(())
     }
 }
 
-pub(super) fn staged_restore_path(path: &Path) -> PathBuf {
+pub(in crate::platform) fn staged_restore_path(path: &Path) -> PathBuf {
     let mut value: OsString = path.as_os_str().to_os_string();
     value.push(".koi-install-restore");
     PathBuf::from(value)
@@ -144,4 +199,8 @@ fn chown(path: &Path, uid: u32, gid: u32) -> anyhow::Result<()> {
     } else {
         Err(std::io::Error::last_os_error().into())
     }
+}
+
+fn anyhow_to_io(error: anyhow::Error) -> std::io::Error {
+    std::io::Error::other(error.to_string())
 }

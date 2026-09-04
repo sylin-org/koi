@@ -19,7 +19,7 @@ use crate::ca::IssuedCert;
 /// with the hostname — there is no ambient default.
 ///
 /// Returns the directory path where files were written.
-pub fn write_cert_files_to(
+pub(crate) fn write_cert_files_to(
     cert_dir: &Path,
     issued: &IssuedCert,
 ) -> Result<PathBuf, std::io::Error> {

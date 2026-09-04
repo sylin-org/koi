@@ -23,16 +23,17 @@ irm https://raw.githubusercontent.com/sylin-org/koi/main/install.ps1 | iex
 Both installers honor the same knobs as environment variables: `KOI_VERSION` (pin a release tag, e.g. `v1.0.0-rc.2`), `KOI_INSTALL_DIR` (install location), and `KOI_NO_MODIFY_PATH` (skip the PATH change).
 
 These commands download Koi's published native binary; they do not install Rust or
-compile the workspace. The release-candidate line also supports two thin,
-explicitly-versioned package-manager paths:
+compile the workspace. The last published candidate (`1.0.0-rc.2`) also supports two thin,
+explicitly-versioned package-manager paths. Current repository source is
+`1.0.0-dev.0`, not an installable release candidate:
 
-- `cargo binstall koi-net --version 1.0.0-rc.1` consumes the same official archive. It
+- `cargo binstall koi-net --version 1.0.0-rc.2` consumes the same official archive. It
   is configured to fail rather than fall back to an unofficial binary or source build.
-- `npx @sylin-org/koi@1.0.0-rc.1` verifies and invokes the matching native installer, then
+- `npx @sylin-org/koi@1.0.0-rc.2` verifies and invokes the matching native installer, then
   leaves `koi` in the same stable location.
 
-Use an exact version (or npm's `@next` tag) throughout the RC period. Unqualified package
-manager commands intentionally remain on the latest stable release until Koi 1.0.0 ships.
+Use the exact version (or npm's published `@next` tag) for the published candidate.
+Unqualified package-manager commands intentionally remain on the latest stable release.
 
 Prefer a container? The image runs the daemon via its default command — no install needed:
 

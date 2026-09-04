@@ -12,14 +12,25 @@ use crossterm::{
 
 use crate::cli::Config;
 use crate::client::KoiClient;
-use crate::commands::{print_json, with_mode, Mode};
+use crate::commands::{decode_response, print_json, require_ok_response, with_mode, Mode};
 
-use koi_health::{HealthCheck, HealthSnapshot, HealthStatus, ServiceCheckKind};
+use koi_health::{
+    HealthCheck, HealthSnapshot, HealthStatus, HealthTransitionLog, ServiceCheckKind,
+};
 use tokio_util::sync::CancellationToken;
+
+fn health_paths(config: &Config) -> koi_health::HealthPaths {
+    let persistence = koi_compose::cores::PersistencePaths::from_data_dir(config.data_dir.clone());
+    koi_health::HealthPaths::new(
+        persistence.health_state().to_path_buf(),
+        persistence.health_log().to_path_buf(),
+    )
+}
 
 async fn build_core(
     config: &Config,
 ) -> anyhow::Result<(Arc<koi_health::HealthCore>, Option<Arc<koi_mdns::MdnsCore>>)> {
+    let persistence = koi_compose::cores::PersistencePaths::from_data_dir(config.data_dir.clone());
     let mdns = if !config.no_mdns {
         Some(Arc::new(
             koi_compose::mdns::build_core(CancellationToken::new()).await?,
@@ -30,21 +41,29 @@ async fn build_core(
 
     let mdns_bridge: Option<Arc<dyn koi_common::integration::MdnsSnapshot>> =
         if let Some(ref core) = mdns {
-            Some(crate::integrations::MdnsBridge::spawn(core.clone()).await)
+            Some(koi_compose::bridges::MdnsBridge::spawn(core.clone()).await)
         } else {
             None
         };
 
     let dns_bridge: Option<Arc<dyn koi_common::integration::DnsProbe>> = if !config.no_dns {
-        let core =
-            koi_dns::DnsCore::new(config.dns_config(), mdns_bridge.clone(), None, None).await?;
+        let core = koi_dns::DnsCore::open(
+            persistence.dns_state().to_path_buf(),
+            config.dns_config(),
+            mdns_bridge.clone(),
+            None,
+            None,
+        )
+        .await?;
         let runtime = Arc::new(koi_dns::DnsRuntime::new(core));
-        Some(crate::integrations::DnsBridge::new(runtime))
+        Some(koi_compose::bridges::DnsBridge::new(runtime))
     } else {
         None
     };
 
-    let core = koi_health::HealthCore::new(mdns_bridge, dns_bridge, None, None).await;
+    let core =
+        koi_health::HealthCore::open(health_paths(config), mdns_bridge, dns_bridge, None, None)
+            .await?;
     Ok((Arc::new(core), mdns))
 }
 
@@ -54,9 +73,9 @@ pub async fn status(config: &Config, mode: Mode, json: bool) -> anyhow::Result<(
         || async {
             let (core, mdns) = build_core(config).await?;
             core.run_checks_once().await;
-            let snapshot = core.snapshot().await;
+            let snapshot = core.status();
             if json {
-                print_json(&snapshot);
+                print_json(&snapshot)?;
             } else {
                 println!("{}", render_snapshot(&snapshot));
             }
@@ -68,7 +87,7 @@ pub async fn status(config: &Config, mode: Mode, json: bool) -> anyhow::Result<(
         |client| async move {
             let snapshot = client.health_status()?;
             if json {
-                print_json(&snapshot);
+                print_json(&snapshot)?;
             } else {
                 let snapshot: HealthSnapshot = serde_json::from_value(snapshot)?;
                 println!("{}", render_snapshot(&snapshot));
@@ -94,13 +113,13 @@ pub async fn watch(config: &Config, mode: Mode, interval: u64) -> anyhow::Result
                         break;
                     }
                     _ = ticker.tick() => {
-                        let snapshot = core.snapshot().await;
+                        let snapshot = runtime.status();
                         render_watch(&snapshot)?;
                     }
                 }
             }
 
-            let _ = runtime.stop().await;
+            runtime.stop().await?;
             if let Some(mdns) = mdns {
                 let _ = mdns.shutdown().await;
             }
@@ -158,7 +177,7 @@ pub async fn add(
             };
             core.add_check(check).await?;
             if json {
-                print_json(&serde_json::json!({ "status": "ok" }));
+                print_json(&serde_json::json!({ "status": "ok" }))?;
             } else {
                 println!("Added health check {name}");
             }
@@ -169,8 +188,9 @@ pub async fn add(
         },
         |client| async move {
             let resp = client.health_add_check(name, kind, &target_client, interval, timeout)?;
+            require_ok_response(&resp, "health add")?;
             if json {
-                print_json(&resp);
+                print_json(&serde_json::json!({ "status": "ok" }))?;
             } else {
                 println!("Added health check {name}");
             }
@@ -187,7 +207,7 @@ pub async fn remove(name: &str, mode: Mode, json: bool, config: &Config) -> anyh
             let (core, mdns) = build_core(config).await?;
             core.remove_check(name).await?;
             if json {
-                print_json(&serde_json::json!({ "status": "ok" }));
+                print_json(&serde_json::json!({ "status": "ok" }))?;
             } else {
                 println!("Removed health check {name}");
             }
@@ -198,8 +218,9 @@ pub async fn remove(name: &str, mode: Mode, json: bool, config: &Config) -> anyh
         },
         |client| async move {
             let resp = client.health_remove_check(name)?;
+            require_ok_response(&resp, "health remove")?;
             if json {
-                print_json(&resp);
+                print_json(&serde_json::json!({ "status": "ok" }))?;
             } else {
                 println!("Removed health check {name}");
             }
@@ -209,12 +230,33 @@ pub async fn remove(name: &str, mode: Mode, json: bool, config: &Config) -> anyh
     .await
 }
 
-pub fn log() -> anyhow::Result<()> {
-    let contents = koi_health::log::read_log()?;
-    if contents.trim().is_empty() {
+pub async fn log(config: &Config, mode: Mode, json: bool) -> anyhow::Result<()> {
+    with_mode(
+        mode,
+        || async {
+            // Explicit standalone owns an isolated Health aggregate for this
+            // query; no mDNS/DNS provider is armed just to read durable history.
+            let core =
+                koi_health::HealthCore::open(health_paths(config), None, None, None, None).await?;
+            render_transition_log(&core.transition_log().await?, json)
+        },
+        |client| async move {
+            let log: HealthTransitionLog =
+                decode_response(client.health_log()?, "health transition log")?;
+            render_transition_log(&log, json)
+        },
+    )
+    .await
+}
+
+fn render_transition_log(log: &HealthTransitionLog, json: bool) -> anyhow::Result<()> {
+    if json {
+        return print_json(log);
+    }
+    if log.entries.trim().is_empty() {
         println!("No health transitions recorded.");
     } else {
-        print!("{contents}");
+        print!("{}", log.entries);
     }
     Ok(())
 }

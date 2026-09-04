@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use koi_common::pipeline::PipelineResponse;
-use koi_common::types::{ServiceRecord, META_QUERY};
+use koi_common::types::{ServiceRecord, ServiceType, META_QUERY};
 use koi_mdns::events::MdnsEvent;
 use koi_mdns::protocol::{self as mdns_protocol, Response};
 use koi_mdns::MdnsCore;
@@ -53,10 +53,10 @@ pub fn admin(subcmd: &AdminSubcommand, cli: &crate::cli::Cli) -> anyhow::Result<
 pub async fn ping(cli: &crate::cli::Cli, json: bool) -> anyhow::Result<()> {
     let client = super::require_client(cli.endpoint.as_deref(), super::cli_token(cli))?;
     let result = client.post_json("/v1/mdns/browser/query", &serde_json::json!({}))?;
+    let types: u64 = super::decode_field(&result, "types_known", "mDNS ping")?;
     if json {
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
-        let types = result["types_known"].as_u64().unwrap_or(0);
         println!(
             "Pinged the pond — fresh query burst running across {types} known service type(s)."
         );
@@ -73,6 +73,11 @@ pub async fn discover(
 ) -> anyhow::Result<()> {
     let is_meta = service_type.is_none();
     let browse_type = service_type.unwrap_or(META_QUERY);
+    let canonical_type = if is_meta {
+        META_QUERY.to_string()
+    } else {
+        ServiceType::parse(browse_type)?.as_str().to_string()
+    };
 
     match mode {
         Mode::Standalone => {
@@ -80,11 +85,22 @@ pub async fn discover(
             let handle = core.subscribe_type(browse_type).await?;
 
             super::run_streaming(timeout, Some(super::DEFAULT_TIMEOUT), || async {
-                while let Some(event) = handle.recv().await {
-                    if json {
-                        super::print_json(&mdns_protocol::browse_event_to_pipeline(event));
-                    } else {
-                        format_browse_standalone(&event, is_meta);
+                loop {
+                    match handle.recv().await {
+                        Ok(event) => {
+                            if json {
+                                super::print_json(&mdns_protocol::browse_event_to_pipeline(event))?;
+                            } else {
+                                format_browse_standalone(&event, is_meta);
+                            }
+                        }
+                        Err(koi_mdns::BrowseRecvError::Lagged { dropped }) => {
+                            eprintln!(
+                                "mDNS browse missed {dropped} events; resyncing current state"
+                            );
+                            output_discovery_resync(&core, browse_type, json, false)?;
+                        }
+                        Err(koi_mdns::BrowseRecvError::Closed) => break,
                     }
                 }
                 Ok(())
@@ -97,28 +113,20 @@ pub async fn discover(
             let client = KoiClient::with_token(&endpoint, &token);
             let stream = client.browse_stream(browse_type)?;
 
-            super::run_streaming(timeout, Some(super::DEFAULT_TIMEOUT), || async {
-                tokio::task::spawn_blocking(move || {
-                    for event in stream {
-                        match event {
-                            Ok(val) => {
-                                if json {
-                                    println!("{val}");
-                                } else if let Some(line) = format::browse_event_json(&val, is_meta)
-                                {
-                                    print!("{line}");
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!("Error: {e}");
-                                break;
-                            }
-                        }
+            run_client_stream(
+                stream,
+                timeout,
+                Some(super::DEFAULT_TIMEOUT),
+                move |value| {
+                    let line = format::browse_stream_item_json(&value, is_meta, &canonical_type)?;
+                    if json {
+                        println!("{value}");
+                    } else {
+                        print!("{line}");
                     }
-                })
-                .await?;
-                Ok(())
-            })
+                    Ok(())
+                },
+            )
             .await?;
         }
     }
@@ -160,7 +168,7 @@ pub async fn announce(
         Mode::Standalone => {
             let core = standalone_core().await?;
             let result = core.register(payload).await?;
-            print_registration(&result, json);
+            print_registration(&result, json)?;
 
             let dur = super::effective_timeout(timeout, None);
             super::wait_for_signal_or_timeout(dur).await;
@@ -171,7 +179,7 @@ pub async fn announce(
             let client = KoiClient::with_token(&endpoint, &token);
             let result = client.register(&payload)?;
             let id = result.id.clone();
-            print_registration(&result, json);
+            print_registration(&result, json)?;
 
             // Start heartbeat loop if the registration has a lease
             let stop = Arc::new(AtomicBool::new(false));
@@ -219,14 +227,18 @@ pub async fn announce(
 }
 
 /// Print registration result (shared across standalone and client modes).
-fn print_registration(result: &koi_mdns::protocol::RegistrationResult, json: bool) {
+fn print_registration(
+    result: &koi_mdns::protocol::RegistrationResult,
+    json: bool,
+) -> anyhow::Result<()> {
     if json {
         super::print_json(&PipelineResponse::clean(Response::Registered(
             result.clone(),
-        )));
+        )))?;
     } else {
         super::print_register_success(result);
     }
+    Ok(())
 }
 
 // ── Unregister ──────────────────────────────────────────────────────
@@ -246,7 +258,7 @@ pub async fn unregister(id: &str, json: bool, mode: Mode) -> anyhow::Result<()> 
     if json {
         super::print_json(&PipelineResponse::clean(Response::Unregistered(
             id.to_string(),
-        )));
+        )))?;
     } else {
         println!("Unregistered {id}");
     }
@@ -269,7 +281,7 @@ pub async fn resolve(instance: &str, json: bool, mode: Mode) -> anyhow::Result<(
     };
 
     if json {
-        super::print_json(&PipelineResponse::clean(Response::Resolved(record)));
+        super::print_json(&PipelineResponse::clean(Response::Resolved(record)))?;
     } else {
         print!("{}", format::resolved_detail(&record));
     }
@@ -284,17 +296,27 @@ pub async fn subscribe(
     timeout: Option<u64>,
     mode: Mode,
 ) -> anyhow::Result<()> {
+    let canonical_type = ServiceType::parse(service_type)?.as_str().to_string();
     match mode {
         Mode::Standalone => {
             let core = standalone_core().await?;
             let handle = core.subscribe_type(service_type).await?;
 
             super::run_streaming(timeout, Some(super::DEFAULT_TIMEOUT), || async {
-                while let Some(event) = handle.recv().await {
-                    if json {
-                        super::print_json(&mdns_protocol::subscribe_event_to_pipeline(event));
-                    } else {
-                        format_subscribe_standalone(&event);
+                loop {
+                    match handle.recv().await {
+                        Ok(event) => {
+                            if json {
+                                super::print_json(&mdns_protocol::subscribe_event_to_pipeline(event))?;
+                            } else {
+                                format_subscribe_standalone(&event);
+                            }
+                        }
+                        Err(koi_mdns::BrowseRecvError::Lagged { dropped }) => {
+                            eprintln!("mDNS subscription missed {dropped} events; resyncing current state");
+                            output_discovery_resync(&core, service_type, json, true)?;
+                        }
+                        Err(koi_mdns::BrowseRecvError::Closed) => break,
                     }
                 }
                 Ok(())
@@ -307,28 +329,111 @@ pub async fn subscribe(
             let client = KoiClient::with_token(&endpoint, &token);
             let stream = client.events_stream(service_type)?;
 
-            super::run_streaming(timeout, Some(super::DEFAULT_TIMEOUT), || async {
-                tokio::task::spawn_blocking(move || {
-                    for event in stream {
-                        match event {
-                            Ok(val) => {
-                                if json {
-                                    println!("{val}");
-                                } else if let Some(line) = format::subscribe_event_json(&val) {
-                                    print!("{line}");
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!("Error: {e}");
-                                break;
-                            }
-                        }
+            run_client_stream(
+                stream,
+                timeout,
+                Some(super::DEFAULT_TIMEOUT),
+                move |value| {
+                    let line = format::subscribe_stream_item_json(&value, &canonical_type)?;
+                    if json {
+                        println!("{value}");
+                    } else {
+                        print!("{line}");
                     }
-                })
-                .await?;
-                Ok(())
-            })
+                    Ok(())
+                },
+            )
             .await?;
+        }
+    }
+    Ok(())
+}
+
+/// Own one blocking HTTP stream across its complete lifecycle. The cancellation
+/// handle remains on the async side of the boundary, so a CLI deadline or
+/// Ctrl+C both stop and reap the worker instead of merely dropping its join
+/// handle while ureq remains blocked.
+async fn run_client_stream<F>(
+    stream: koi_client::SseStream,
+    timeout: Option<u64>,
+    default_timeout: Option<u64>,
+    mut consume: F,
+) -> anyhow::Result<()>
+where
+    F: FnMut(serde_json::Value) -> anyhow::Result<()> + Send + 'static,
+{
+    let cancellation = stream.cancellation();
+    let mut worker = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        for event in stream {
+            consume(event?)?;
+        }
+        Ok(())
+    });
+    let duration = super::effective_timeout(timeout, default_timeout);
+    let completed = tokio::select! {
+        result = &mut worker => Some(result),
+        _ = tokio::signal::ctrl_c() => None,
+        _ = async {
+            match duration {
+                Some(duration) => tokio::time::sleep(duration).await,
+                None => std::future::pending().await,
+            }
+        } => None,
+    };
+
+    cancellation.cancel();
+    if let Some(result) = completed {
+        return result?;
+    }
+
+    let reap_bound = koi_client::SSE_CANCELLATION_BOUND + Duration::from_millis(250);
+    match tokio::time::timeout(reap_bound, &mut worker).await {
+        Ok(result) => {
+            result??;
+        }
+        Err(_) => {
+            worker.abort();
+            anyhow::bail!(
+                "mDNS stream worker did not stop within its {:?} cancellation bound",
+                koi_client::SSE_CANCELLATION_BOUND
+            );
+        }
+    }
+    Ok(())
+}
+
+fn output_discovery_resync(
+    core: &MdnsCore,
+    service_type: &str,
+    json: bool,
+    subscription: bool,
+) -> anyhow::Result<()> {
+    let snapshot = core.discovery_snapshot();
+    if json {
+        super::print_json(&PipelineResponse::clean(Response::Snapshot(
+            snapshot.as_ref().clone(),
+        )))?;
+        return Ok(());
+    }
+
+    if service_type == META_QUERY {
+        for discovered in &snapshot.service_types {
+            println!("{discovered}");
+        }
+        return Ok(());
+    }
+
+    let canonical = ServiceType::parse(service_type)?.as_str().to_string();
+    for record in snapshot
+        .records
+        .iter()
+        .filter(|record| record.service_type == canonical)
+    {
+        let event = MdnsEvent::Resolved(record.clone());
+        if subscription {
+            format_subscribe_standalone(&event);
+        } else {
+            format_browse_standalone(&event, false);
         }
     }
     Ok(())
@@ -355,5 +460,56 @@ fn format_subscribe_standalone(event: &MdnsEvent) {
                 )
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+
+    #[tokio::test]
+    async fn client_stream_timeout_cancels_reaps_and_disconnects() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind SSE server");
+        let address = listener.local_addr().expect("SSE address");
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept SSE request");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = socket.read(&mut buffer).expect("read SSE request");
+                assert!(read > 0, "request closed before headers completed");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n",
+                )
+                .expect("write SSE headers");
+            for _ in 0..60 {
+                if socket.write_all(b": keepalive\n\n").is_err() {
+                    return;
+                }
+                socket.flush().expect("flush keepalive");
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            panic!("CLI returned without reclaiming its stream socket");
+        });
+
+        let stream = KoiClient::new(&format!("http://{address}"))
+            .browse_stream("_http._tcp")
+            .expect("establish SSE stream");
+        let started = std::time::Instant::now();
+        run_client_stream(stream, Some(1), None, |_| {
+            anyhow::bail!("keepalive comments must not reach the consumer")
+        })
+        .await
+        .expect("timeout is a clean local stop");
+
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "CLI stream owner did not reap promptly"
+        );
+        server.join().expect("SSE server observes disconnect");
     }
 }

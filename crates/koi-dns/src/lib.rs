@@ -7,13 +7,16 @@ mod records;
 mod resolver;
 mod runtime;
 mod safety;
+mod state;
 mod zone;
 
 use koi_common::firewall::{FirewallPort, FirewallProtocol};
 
-pub use koi_config::state::DnsEntry;
-pub use resolver::{DnsConfig, DnsCore, DnsError, DnsEvent, DnsLookupResult};
-pub use runtime::{DnsRuntime, DnsRuntimeState, DnsRuntimeStatus};
+pub use resolver::{
+    DnsCatalogSnapshot, DnsConfig, DnsCore, DnsEntryScope, DnsError, DnsEvent, DnsLookupResult,
+};
+pub use runtime::{DnsRecordSummary, DnsRuntime, DnsRuntimeState, DnsRuntimeStatus, DnsTxtLease};
+pub use state::DnsEntry;
 pub use zone::DnsZone;
 
 /// Product-wide default for Koi's authoritative local DNS zone.

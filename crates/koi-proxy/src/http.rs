@@ -10,7 +10,7 @@ use utoipa::ToSchema;
 use koi_common::error::ErrorCode;
 
 use crate::config::ProxyEntry;
-use crate::{ensure_backend_allowed, ProxyError, ProxyRuntime, ProxyStatus};
+use crate::{ensure_backend_allowed, ProxyError, ProxyRuntime, ProxyRuntimeStatus, ProxyStatus};
 
 #[derive(Debug, Deserialize, ToSchema)]
 struct AddProxyRequest {
@@ -19,11 +19,6 @@ struct AddProxyRequest {
     backend: String,
     #[serde(default)]
     allow_remote: bool,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-struct ProxyStatusResponse {
-    proxies: Vec<ProxyStatus>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -64,17 +59,16 @@ pub fn routes(runtime: Arc<ProxyRuntime>) -> Router {
 
 #[utoipa::path(get, path = "/status", tag = "proxy",
     summary = "Active proxy status",
-    responses((status = 200, body = ProxyStatusResponse)))]
+    responses((status = 200, body = ProxyRuntimeStatus)))]
 async fn status_handler(Extension(runtime): Extension<Arc<ProxyRuntime>>) -> impl IntoResponse {
-    let proxies = runtime.status().await;
-    Json(ProxyStatusResponse { proxies })
+    Json(runtime.status().as_ref().clone())
 }
 
 #[utoipa::path(get, path = "/list", tag = "proxy",
     summary = "List proxy entries",
     responses((status = 200, body = ProxyEntriesResponse)))]
 async fn entries_handler(Extension(runtime): Extension<Arc<ProxyRuntime>>) -> impl IntoResponse {
-    let entries = runtime.core().entries().await;
+    let entries = runtime.entries().await;
     Json(serde_json::json!({ "entries": entries }))
 }
 
@@ -127,6 +121,11 @@ fn map_error(err: ProxyError) -> impl IntoResponse {
         }
         ProxyError::NotFound(msg) => koi_common::http::error_response(ErrorCode::NotFound, msg),
         ProxyError::Io(msg) => koi_common::http::error_response(ErrorCode::IoError, msg),
+        ProxyError::Worker(msg) => koi_common::http::error_response(ErrorCode::Internal, msg),
+        ProxyError::ShutDown => koi_common::http::error_response(
+            ErrorCode::ShuttingDown,
+            "proxy runtime has already shut down",
+        ),
     }
 }
 
@@ -143,9 +142,29 @@ fn map_error(err: ProxyError) -> impl IntoResponse {
         AddProxyRequest,
         ProxyEntry,
         ProxyStatus,
-        ProxyStatusResponse,
+        ProxyRuntimeStatus,
         ProxyEntriesResponse,
         StatusOk,
     ))
 )]
 pub struct ProxyApiDoc;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn worker_failure_is_an_internal_execution_error() {
+        let response = map_error(ProxyError::Worker("lost acknowledgement".into())).into_response();
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read error body");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("decode error body");
+        assert_eq!(body["error"], "internal");
+        assert_eq!(body["message"], "lost acknowledgement");
+    }
+}

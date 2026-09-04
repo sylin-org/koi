@@ -1,15 +1,15 @@
-//! The rich dashboard snapshot — the one detail projection of the live domain cores.
+//! The rich dashboard snapshot — the one detail projection of [`KoiStatus`](crate::status::KoiStatus).
 //!
 //! Both the daemon's dashboard adapter and `koi-embedded` serve their dashboard JSON through
 //! an injected `SnapshotFn`; both now call [`crate::snapshot::build_dashboard_snapshot`] so the embedded
 //! snapshot is no longer a `{capabilities}`-only stub but carries the same health / DNS /
 //! certmesh / proxy / UDP detail the daemon dashboard renders. The capability ladder itself
-//! comes from [`crate::status::assemble_capabilities`] (shared with `/v1/status`), projected
+//! comes from the cached [`crate::status::KoiStatus`] (shared with `/v1/status`), projected
 //! into the four-field card via [`crate::status::CapabilityReport::into_card`].
 
 use serde::Serialize;
 
-use crate::cores::Cores;
+use crate::status::KoiStatus;
 
 // ── Snapshot detail types (private — serialized into opaque JSON) ────
 
@@ -27,17 +27,6 @@ struct DnsDetail {
     static_count: usize,
     certmesh_count: usize,
     mdns_count: usize,
-}
-
-#[derive(Debug, Serialize)]
-struct CertmeshDetail {
-    ca_initialized: bool,
-    ca_locked: bool,
-    auth_method: Option<String>,
-    enrollment_open: bool,
-    requires_approval: bool,
-    member_count: usize,
-    enrollment_state: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -59,6 +48,7 @@ struct ProxyListenerDetail {
     listen_port: u16,
     state: String,
     cert_source: String,
+    cert_revision: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
@@ -74,103 +64,76 @@ struct UdpBindingDetail {
     local_addr: String,
 }
 
-/// Build the dashboard snapshot JSON from the live domain cores: the capability ladder plus
-/// the per-domain detail (health, DNS, certmesh, proxy, UDP). Each detail is `null` when its
-/// capability is disabled.
-pub async fn build_dashboard_snapshot(cores: &Cores) -> serde_json::Value {
-    // The capability ladder is assembled once in koi-compose, shared with `/v1/status`.
-    // The dashboard card adds `enabled` (false only when disabled).
-    let capabilities: Vec<serde_json::Value> = crate::status::assemble_capabilities(cores)
-        .await
-        .into_iter()
+fn project_proxy(status: &koi_proxy::ProxyRuntimeStatus) -> ProxyDetail {
+    ProxyDetail {
+        entries: status
+            .proxies
+            .iter()
+            .map(|entry| ProxyEntryDetail {
+                name: entry.name.clone(),
+                listen_port: entry.listen_port,
+                backend: entry.backend.clone(),
+            })
+            .collect(),
+        listeners: status
+            .proxies
+            .iter()
+            .map(|listener| ProxyListenerDetail {
+                name: listener.name.clone(),
+                listen_port: listener.listen_port,
+                state: listener.state.clone(),
+                cert_source: listener.cert_source.clone(),
+                cert_revision: listener.cert_revision,
+                error: listener.error.clone(),
+            })
+            .collect(),
+    }
+}
+
+/// Build dashboard JSON from one already-captured product snapshot: the capability ladder
+/// plus per-domain detail (health, DNS, certmesh, proxy, UDP). Each detail is `null` when its
+/// capability is disabled. This projector has no access to cores, so it cannot create a torn
+/// view with request-time domain reads.
+pub fn build_dashboard_snapshot(status: &KoiStatus) -> serde_json::Value {
+    let capabilities: Vec<serde_json::Value> = status
+        .capabilities
+        .iter()
+        .cloned()
         .map(|c| c.into_card())
         .collect();
 
     // Domain details
-    let health = if let Some(ref runtime) = cores.health {
-        let snap = runtime.core().snapshot().await;
-        Some(HealthDetail {
-            machines: snap.machines,
-            services: snap.services,
-        })
-    } else {
-        None
-    };
+    let health = status.domains.health.as_ref().map(|snap| HealthDetail {
+        machines: snap.machines.clone(),
+        services: snap.services.clone(),
+    });
 
-    let dns = if let Some(ref runtime) = cores.dns {
-        let core = runtime.core();
-        let snap = core.snapshot();
-        let cfg = core.config();
-        Some(DnsDetail {
-            running: runtime.status().await.running,
-            zone: cfg.zone.clone(),
-            port: cfg.port,
-            static_count: snap.static_entries.len(),
-            certmesh_count: snap.certmesh_entries.len(),
-            mdns_count: snap.mdns_entries.len(),
-        })
-    } else {
-        None
-    };
+    let dns = status.domains.dns.as_ref().map(|dns_status| DnsDetail {
+        running: dns_status.running,
+        zone: dns_status.zone.clone(),
+        port: dns_status.port,
+        static_count: dns_status.records.static_entries,
+        certmesh_count: dns_status.records.certmesh_entries,
+        mdns_count: dns_status.records.mdns_entries,
+    });
 
-    let certmesh = if let Some(ref core) = cores.certmesh {
-        let status = core.certmesh_status().await;
-        Some(CertmeshDetail {
-            ca_initialized: status.ca_initialized,
-            ca_locked: status.ca_locked,
-            auth_method: status.auth_method,
-            enrollment_open: status.enrollment_open,
-            requires_approval: status.requires_approval,
-            member_count: status.member_count,
-            enrollment_state: format!("{:?}", status.enrollment_state),
-        })
-    } else {
-        None
-    };
+    let certmesh = status.domains.certmesh.clone();
 
-    let proxy = if let Some(ref runtime) = cores.proxy {
-        let entries = runtime.core().entries().await;
-        let status = runtime.status().await;
-        Some(ProxyDetail {
-            entries: entries
-                .into_iter()
-                .map(|e| ProxyEntryDetail {
-                    name: e.name,
-                    listen_port: e.listen_port,
-                    backend: e.backend,
-                })
-                .collect(),
-            listeners: status
-                .into_iter()
-                .map(|s| ProxyListenerDetail {
-                    name: s.name,
-                    listen_port: s.listen_port,
-                    state: s.state,
-                    cert_source: s.cert_source,
-                    error: s.error,
-                })
-                .collect(),
-        })
-    } else {
-        None
-    };
+    let proxy = status.domains.proxy.as_deref().map(project_proxy);
 
-    let udp = if let Some(ref runtime) = cores.udp {
-        let bindings = runtime.status().await;
-        Some(UdpDetail {
-            bindings: bindings
-                .into_iter()
-                .map(|b| UdpBindingDetail {
-                    id: b.id,
-                    local_addr: b.local_addr,
-                })
-                .collect(),
-        })
-    } else {
-        None
-    };
+    let udp = status.domains.udp.as_ref().map(|udp_status| UdpDetail {
+        bindings: udp_status
+            .bindings
+            .iter()
+            .map(|b| UdpBindingDetail {
+                id: b.id.clone(),
+                local_addr: b.local_addr.clone(),
+            })
+            .collect(),
+    });
 
     serde_json::json!({
+        "revision": status.revision,
         "capabilities": capabilities,
         "health": health,
         "dns": dns,
@@ -178,4 +141,39 @@ pub async fn build_dashboard_snapshot(cores: &Cores) -> serde_json::Value {
         "proxy": proxy,
         "udp": udp,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn proxy_detail_preserves_the_selected_certificate_revision() {
+        let status = KoiStatus {
+            revision: 21,
+            capabilities: Vec::new(),
+            domains: crate::status::DomainStatuses {
+                proxy: Some(std::sync::Arc::new(koi_proxy::ProxyRuntimeStatus {
+                    revision: 8,
+                    entries_revision: 0,
+                    proxies: vec![koi_proxy::ProxyStatus {
+                        name: "api".to_string(),
+                        listen_port: 9443,
+                        backend: "http://127.0.0.1:8080".to_string(),
+                        allow_remote: false,
+                        cert_source: "certmesh".to_string(),
+                        cert_revision: 17,
+                        state: "running".to_string(),
+                        error: None,
+                    }],
+                })),
+                ..crate::status::DomainStatuses::default()
+            },
+        };
+
+        let json = build_dashboard_snapshot(&status);
+        assert_eq!(json["revision"], 21);
+        assert_eq!(json["proxy"]["listeners"][0]["cert_source"], "certmesh");
+        assert_eq!(json["proxy"]["listeners"][0]["cert_revision"], 17);
+    }
 }

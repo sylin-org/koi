@@ -5,8 +5,10 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::time::Duration;
 
 use tokio::sync::{mpsc, watch};
+use tokio::task::JoinHandle;
 
 use koi_common::mdns_protocol::{MdnsCapabilities, ProviderSessionState};
 
@@ -73,6 +75,76 @@ pub struct ProviderBrowse {
     lease: Option<Box<dyn BrowseLease>>,
 }
 
+/// Exclusive owner for one asynchronous provider worker.
+///
+/// Joining borrows the handle in place. If the caller's shutdown future is
+/// cancelled, the handle therefore remains owned and a later shutdown can
+/// finish the same barrier. A timed-out task is asked to abort but also stays
+/// owned: this matters for `spawn_blocking` workers, where abort is only a
+/// request and the native cancellation signal must be allowed to finish.
+pub(crate) struct ProviderTask {
+    task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
+}
+
+impl ProviderTask {
+    pub(crate) fn new(task: JoinHandle<()>) -> Self {
+        Self {
+            task: tokio::sync::Mutex::new(Some(task)),
+        }
+    }
+
+    pub(crate) async fn join(&self, wait: Duration) -> std::result::Result<(), String> {
+        let mut slot = self.task.lock().await;
+        let Some(task) = slot.as_mut() else {
+            return Ok(());
+        };
+        match tokio::time::timeout(wait, &mut *task).await {
+            Ok(Ok(())) => {
+                slot.take();
+                Ok(())
+            }
+            Ok(Err(error)) if error.is_cancelled() => {
+                slot.take();
+                Ok(())
+            }
+            Ok(Err(error)) => {
+                slot.take();
+                Err(format!("worker failed: {error}"))
+            }
+            Err(_) => {
+                // Normal async workers stop promptly. A blocking worker cannot
+                // be force-stopped after it starts, so retain its handle for a
+                // later acknowledgement instead of silently detaching it.
+                task.abort();
+                Err(format!("worker completion exceeded {wait:?}"))
+            }
+        }
+    }
+
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(crate) async fn is_reaped(&self) -> bool {
+        self.task.lock().await.is_none()
+    }
+
+    pub(crate) fn abort(&self) {
+        if let Ok(slot) = self.task.try_lock() {
+            if let Some(task) = slot.as_ref() {
+                task.abort();
+            }
+        }
+    }
+}
+
+impl Drop for ProviderTask {
+    fn drop(&mut self) {
+        if let Ok(slot) = self.task.try_lock() {
+            if let Some(task) = slot.as_ref() {
+                task.abort();
+            }
+        }
+    }
+}
+
 impl ProviderBrowse {
     pub fn new(events: mpsc::Receiver<ProviderEvent>, lease: Box<dyn BrowseLease>) -> Self {
         Self {
@@ -112,7 +184,7 @@ pub trait ProviderSession: Send + Sync {
             descriptor.name,
             ProviderOperation::Resolve,
             ProviderFailure::Unavailable,
-            "direct resolution is not implemented by this session",
+            "provider session does not advertise direct resolution",
         ))
     }
 
@@ -133,5 +205,77 @@ pub(crate) fn provider_error(
         operation,
         failure,
         detail: detail.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use tokio::sync::Notify;
+
+    use super::ProviderTask;
+
+    #[tokio::test]
+    async fn provider_task_join_is_cancellation_safe() {
+        let release = Arc::new(Notify::new());
+        let task_release = Arc::clone(&release);
+        let owner = Arc::new(ProviderTask::new(tokio::spawn(async move {
+            task_release.notified().await;
+        })));
+
+        let joining = {
+            let owner = Arc::clone(&owner);
+            tokio::spawn(async move { owner.join(Duration::from_secs(5)).await })
+        };
+        tokio::task::yield_now().await;
+        joining.abort();
+        joining.await.expect_err("cancel the first shutdown waiter");
+
+        release.notify_one();
+        owner
+            .join(Duration::from_secs(1))
+            .await
+            .expect("the retained worker is still joinable");
+    }
+
+    #[tokio::test]
+    async fn dropping_provider_task_aborts_async_worker() {
+        struct Dropped(Arc<AtomicBool>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+
+        let dropped = Arc::new(AtomicBool::new(false));
+        let task_dropped = Arc::clone(&dropped);
+        let owner = ProviderTask::new(tokio::spawn(async move {
+            let _guard = Dropped(task_dropped);
+            std::future::pending::<()>().await;
+        }));
+        tokio::task::yield_now().await;
+        drop(owner);
+        for _ in 0..16 {
+            if dropped.load(Ordering::Acquire) {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(dropped.load(Ordering::Acquire), "worker was not aborted");
+    }
+
+    #[tokio::test]
+    async fn timed_out_worker_remains_owned_until_abort_is_reaped() {
+        let owner = ProviderTask::new(tokio::spawn(std::future::pending::<()>()));
+
+        assert!(owner.join(Duration::from_millis(1)).await.is_err());
+        owner
+            .join(Duration::from_secs(1))
+            .await
+            .expect("the timeout-requested abort is explicitly reaped");
+        assert!(owner.is_reaped().await);
     }
 }

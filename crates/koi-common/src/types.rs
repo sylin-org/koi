@@ -4,7 +4,7 @@ use std::collections::HashMap;
 /// A service instance as seen on the network.
 /// Used in browse results, resolve results, register confirmations,
 /// and event payloads. This is THE service representation across all domains.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct ServiceRecord {
     pub name: String,
     #[serde(rename = "type")]

@@ -19,6 +19,10 @@ Required:
                            service changes with exact restoration.
   --peer USER@HOST         Independent LAN host with one installed Koi service.
 
+Required environment:
+  EXPECTED_KOI_SHA256      SHA-256 of the exact subject candidate binary
+  EXPECTED_PEER_KOI_SHA256 SHA-256 of the exact peer candidate binary
+
 Optional environment:
   KOI_API                  Installed Koi API (default http://127.0.0.1:5641)
   KOI_SERVICE_SCOPE        Installed unit scope: system or user (default system)
@@ -38,6 +42,8 @@ Optional environment:
   PEER_SSH_ASKPASS         Executable SSH askpass helper (otherwise key-only)
   SUDO_ASKPASS             Standard non-interactive sudo credential helper
   EVIDENCE_ROOT            Evidence parent (default target/mdns-provider-transition)
+  KOI_GATE_LOCK            Shared installed-service gate lock
+                           (default target/integration/.installed-koi-SCOPE.lock)
 
 Run on the real subject host, not in a container. The caller needs privilege to
 control local system services and preconfigured SSH authentication to the peer.
@@ -74,7 +80,7 @@ if [[ "$ALLOW_MUTATION" != 1 || -z "$PEER" ]]; then
   exit 2
 fi
 
-for command in curl jq ssh sha256sum pgrep flock ss ip readlink; do
+for command in curl git jq ssh sha256sum pgrep flock ss ip readlink; do
   command -v "$command" >/dev/null || {
     echo "missing required command: $command" >&2
     exit 2
@@ -84,6 +90,15 @@ done
 KOI_API="${KOI_API:-http://127.0.0.1:5641}"
 KOI_SERVICE_SCOPE="${KOI_SERVICE_SCOPE:-system}"
 KOI_SERVICE_MANAGER="${KOI_SERVICE_MANAGER:-auto}"
+EXPECTED_KOI_SHA256="${EXPECTED_KOI_SHA256:-}"
+EXPECTED_PEER_KOI_SHA256="${EXPECTED_PEER_KOI_SHA256:-}"
+for expected_name in EXPECTED_KOI_SHA256 EXPECTED_PEER_KOI_SHA256; do
+  expected_value="${!expected_name}"
+  if [[ ! "$expected_value" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "$expected_name must name the exact candidate as 64 lowercase hex characters" >&2
+    exit 2
+  fi
+done
 if [[ "$KOI_SERVICE_MANAGER" == auto ]]; then
   if [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null; then
     KOI_SERVICE_MANAGER=systemd
@@ -198,6 +213,9 @@ PEER_PORT="${PEER_PORT:-22}"
 EVIDENCE_ROOT="${EVIDENCE_ROOT:-target/mdns-provider-transition}"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 EVIDENCE_DIR="$EVIDENCE_ROOT/$RUN_ID"
+ROOT="$(git rev-parse --show-toplevel)"
+mkdir -p "$ROOT/target/integration"
+KOI_GATE_LOCK="${KOI_GATE_LOCK:-$ROOT/target/integration/.installed-koi-$KOI_SERVICE_SCOPE.lock}"
 SERVICE_TYPE="_koi-gate._tcp"
 KOI_NAME="koi-subject-$RUN_ID"
 KOI_EXPLICIT_NAME="koi-explicit-$RUN_ID"
@@ -226,9 +244,9 @@ declare -A BASE_RESOLVED_TRIGGER_ACTIVE=()
 declare -A BASE_RESOLVED_TRIGGER_ENABLED=()
 
 mkdir -p "$EVIDENCE_DIR"
-exec 9>"$EVIDENCE_ROOT/.lock"
+exec 9>"$KOI_GATE_LOCK"
 if ! flock -n 9; then
-  echo "another mDNS provider transition gate is already running" >&2
+  echo "another installed-service integration gate is already running: $KOI_GATE_LOCK" >&2
   exit 2
 fi
 
@@ -631,8 +649,17 @@ REMOTE
 }
 
 assert_peer_koi_unchanged() {
-  local facts
+  local facts peer_hash peer_active peer_enabled
   facts="$(peer_control_facts)"
+  peer_hash="$(awk -F= '$1 == "koi_hash" {print $2; exit}' <<<"$facts")"
+  peer_active="$(awk -F= '$1 == "koi_active" {print $2; exit}' <<<"$facts")"
+  peer_enabled="$(awk -F= '$1 == "koi_enabled" {print $2; exit}' <<<"$facts")"
+  if [[ "$peer_hash" != "$EXPECTED_PEER_KOI_SHA256" \
+     || "$peer_active" != active || "$peer_enabled" != enabled ]]; then
+    printf '%s\n' "$facts" >"$EVIDENCE_DIR/peer-current.txt"
+    echo "peer must be the active, enabled exact candidate $EXPECTED_PEER_KOI_SHA256" >&2
+    return 1
+  fi
   if [[ -n "$PEER_BASELINE" && "$facts" != "$PEER_BASELINE" ]]; then
     printf '%s\n' "$facts" >"$EVIDENCE_DIR/peer-current.txt"
     echo "peer Koi or provider service state changed; compare peer-baseline.txt" >&2
@@ -1002,6 +1029,10 @@ assert_single_koi() {
   fi
   if [[ -n "$INITIAL_HASH" && "$hash" != "$INITIAL_HASH" ]]; then
     echo "Koi executable changed during provider transition" >&2
+    return 1
+  fi
+  if [[ "$hash" != "$EXPECTED_KOI_SHA256" ]]; then
+    echo "installed Koi hash $hash does not match expected candidate $EXPECTED_KOI_SHA256" >&2
     return 1
   fi
 }
@@ -1399,10 +1430,13 @@ for unit in "${RESOLVED_TRIGGER_UNITS[@]}"; do
   BASE_RESOLVED_TRIGGER_ACTIVE[$unit]="$(unit_active "$unit")"
   BASE_RESOLVED_TRIGGER_ENABLED[$unit]="$(unit_enabled "$unit")"
 done
-trap cleanup EXIT INT TERM
 
 if [[ "$BASE_KOI_ACTIVE" != active ]]; then
   echo "installed $KOI_SERVICE_SCOPE koi.service must be active at baseline" >&2
+  exit 2
+fi
+if [[ "$BASE_KOI_ENABLED" != enabled ]]; then
+  echo "installed $KOI_SERVICE_SCOPE koi.service must be enabled at baseline" >&2
   exit 2
 fi
 
@@ -1428,6 +1462,10 @@ peer_mutation probe
 INITIAL_PID="$(koi_pid)"
 [[ "$INITIAL_PID" =~ ^[1-9][0-9]*$ ]]
 INITIAL_HASH="$("${PRIV[@]}" sha256sum "/proc/$INITIAL_PID/exe" | awk '{print $1}')"
+[[ "$INITIAL_HASH" == "$EXPECTED_KOI_SHA256" ]] || {
+  echo "installed Koi hash $INITIAL_HASH does not match expected candidate $EXPECTED_KOI_SHA256" >&2
+  exit 2
+}
 assert_single_koi
 PEER_BASELINE="$(peer_control_facts)"
 printf '%s\n' "$PEER_BASELINE" >"$EVIDENCE_DIR/peer-baseline.txt"
@@ -1441,6 +1479,8 @@ assert_peer_koi_unchanged
   echo "mdns_provider_profile=$MDNS_PROVIDER_PROFILE"
   echo "koi_pid=$INITIAL_PID"
   echo "koi_hash=$INITIAL_HASH"
+  echo "expected_koi_hash=$EXPECTED_KOI_SHA256"
+  echo "expected_peer_koi_hash=$EXPECTED_PEER_KOI_SHA256"
   echo "koi_executable=$("${PRIV[@]}" readlink -f "/proc/$INITIAL_PID/exe")"
   echo "koi_active=$BASE_KOI_ACTIVE"
   echo "koi_enabled=$BASE_KOI_ENABLED"
@@ -1466,6 +1506,11 @@ AUTH="$(token)"
 }
 LOCAL_IP="$(ip -json route get "${PEER#*@}" | jq -r '.[0].prefsrc // empty' 2>/dev/null || true)"
 [[ -n "$LOCAL_IP" ]] || LOCAL_IP="$(hostname -I | awk '{print $1}')"
+
+# Every check above is read-only. Arm restoration only after both installed
+# artifacts and supervisors have been attested, immediately before the first
+# run-owned registration can change either control plane.
+trap cleanup EXIT INT TERM
 
 register_subject() {
   local name="$1" explicit_ip="${2:-}" payload response http_code

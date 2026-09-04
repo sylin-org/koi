@@ -3,10 +3,45 @@
 //! Each container/VM/service runtime implements this trait to provide
 //! lifecycle events and instance metadata in a normalized format.
 
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+
 use tokio::sync::mpsc;
 
 use crate::error::RuntimeError;
 use crate::instance::Instance;
+
+type RuntimeWatch = Pin<Box<dyn Future<Output = Result<(), RuntimeError>> + Send + 'static>>;
+
+/// A losslessly armed backend observation and its point-in-time inventory.
+///
+/// The snapshot and watch future share one adapter-owned observation boundary:
+/// replaying the watch cannot miss lifecycle changes that race with the snapshot.
+/// RuntimeCore publishes the snapshot and its initial semantic facts before polling
+/// the already-armed future, then drains buffered replay through the same owned supervisor.
+#[must_use = "an armed runtime observation must be handed to RuntimeCore"]
+pub struct RuntimeObservation {
+    instances: Vec<Instance>,
+    watch: RuntimeWatch,
+}
+
+impl RuntimeObservation {
+    /// Build an armed observation from its initial inventory and watch future.
+    pub fn new<F>(instances: Vec<Instance>, watch: F) -> Self
+    where
+        F: Future<Output = Result<(), RuntimeError>> + Send + 'static,
+    {
+        Self {
+            instances,
+            watch: Box::pin(watch),
+        }
+    }
+
+    pub(crate) fn into_parts(self) -> (Vec<Instance>, RuntimeWatch) {
+        (self.instances, self.watch)
+    }
+}
 
 /// Lifecycle event emitted by a runtime backend.
 #[derive(Debug, Clone)]
@@ -26,13 +61,15 @@ pub enum RuntimeEvent {
     BackendDisconnected { backend: String, reason: String },
     /// The backend reconnected and completed reconciliation.
     BackendReconnected { backend: String },
+    /// The owned backend watch ended cleanly (normally by cancellation).
+    BackendStopped { backend: String },
 }
 
 /// A runtime backend that watches lifecycle events and resolves instance metadata.
 ///
 /// Implementations are expected to:
 /// - Connect to the runtime API on `connect()`
-/// - Stream lifecycle events via the `mpsc::Sender` in `watch()`
+/// - Establish a lossless snapshot-to-stream boundary in `begin_observation()`
 /// - Handle reconnection internally (emit `BackendDisconnected`/`BackendReconnected`)
 /// - Provide a point-in-time snapshot via `list_instances()`
 #[async_trait::async_trait]
@@ -48,21 +85,25 @@ pub trait RuntimeBackend: Send + Sync {
 
     /// List all currently running instances.
     ///
-    /// Used for reconciliation on startup: the caller diffs this list
-    /// against Koi's current registrations.
+    /// Adapters use this while establishing observation and when reconciling
+    /// after a reconnect. It is also available for direct diagnostics.
     async fn list_instances(&self) -> Result<Vec<Instance>, RuntimeError>;
 
-    /// Watch for lifecycle events, sending them to the provided channel.
+    /// Establish a lossless initial snapshot and lifecycle-event observation.
     ///
-    /// This method should run until the cancellation token is triggered
-    /// or the channel is closed. It should handle transient failures
-    /// (API disconnects) by emitting `BackendDisconnected`, reconnecting,
-    /// and emitting `BackendReconnected` with a fresh reconciliation.
-    async fn watch(
-        &self,
+    /// Before returning, the adapter must capture a replay cursor or otherwise
+    /// arm observation before taking the returned snapshot. The returned watch
+    /// future must resume from that boundary, suppress snapshot/replay duplicates,
+    /// and run until cancellation or channel closure. It must directly own its
+    /// observation resources and event sender rather than detach child tasks, so
+    /// dropping or aborting RuntimeCore's supervisor releases the complete watch.
+    /// Transient failures remain adapter-owned and use the normalized backend
+    /// connectivity events.
+    async fn begin_observation(
+        self: Arc<Self>,
         tx: mpsc::Sender<RuntimeEvent>,
         cancel: tokio_util::sync::CancellationToken,
-    ) -> Result<(), RuntimeError>;
+    ) -> Result<RuntimeObservation, RuntimeError>;
 }
 
 /// Selectable runtime backend kinds.

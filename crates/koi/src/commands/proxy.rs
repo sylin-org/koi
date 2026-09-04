@@ -1,8 +1,21 @@
 //! Proxy command handlers.
 
-use koi_proxy::config::ProxyEntry;
+use std::sync::Arc;
 
-use crate::commands::{print_json, with_mode, Mode};
+use koi_proxy::ProxyEntry;
+
+use crate::cli::Config;
+use crate::commands::{
+    decode_field, decode_response, print_json, require_ok_response, with_mode, Mode,
+};
+
+fn standalone_core(config: &Config) -> anyhow::Result<koi_proxy::ProxyCore> {
+    let persistence = koi_compose::cores::PersistencePaths::from_data_dir(config.data_dir.clone());
+    Ok(koi_proxy::ProxyCore::open(
+        persistence.proxy_config().to_path_buf(),
+        persistence.proxy_certificates().to_path_buf(),
+    )?)
+}
 
 fn build_entry(
     name: &str,
@@ -29,14 +42,17 @@ pub async fn add(
     allow_remote: bool,
     mode: Mode,
     json: bool,
+    config: &Config,
 ) -> anyhow::Result<()> {
     with_mode(
         mode,
         || async {
             let entry = build_entry(name, listen, backend, allow_remote)?;
-            let entries = koi_proxy::config::upsert_entry(entry)?;
+            let runtime = koi_proxy::ProxyRuntime::new(Arc::new(standalone_core(config)?));
+            runtime.configure_for_next_start(entry).await?;
+            let entries = runtime.entries().await;
             if json {
-                print_json(&serde_json::json!({ "entries": entries }));
+                print_json(&serde_json::json!({ "entries": entries }))?;
             } else {
                 println!("Proxy {name} -> {backend} (listen {listen})");
             }
@@ -44,8 +60,9 @@ pub async fn add(
         },
         |client| async move {
             let resp = client.proxy_add(name, listen, backend, allow_remote)?;
+            require_ok_response(&resp, "proxy add")?;
             if json {
-                print_json(&resp);
+                print_json(&serde_json::json!({ "status": "ok" }))?;
             } else {
                 println!("Proxy {name} -> {backend} (listen {listen})");
             }
@@ -55,13 +72,15 @@ pub async fn add(
     .await
 }
 
-pub async fn remove(name: &str, mode: Mode, json: bool) -> anyhow::Result<()> {
+pub async fn remove(name: &str, mode: Mode, json: bool, config: &Config) -> anyhow::Result<()> {
     with_mode(
         mode,
         || async {
-            let entries = koi_proxy::config::remove_entry(name)?;
+            let runtime = koi_proxy::ProxyRuntime::new(Arc::new(standalone_core(config)?));
+            runtime.remove_for_next_start(name).await?;
+            let entries = runtime.entries().await;
             if json {
-                print_json(&serde_json::json!({ "entries": entries }));
+                print_json(&serde_json::json!({ "entries": entries }))?;
             } else {
                 println!("Removed proxy {name}");
             }
@@ -69,8 +88,9 @@ pub async fn remove(name: &str, mode: Mode, json: bool) -> anyhow::Result<()> {
         },
         |client| async move {
             let resp = client.proxy_remove(name)?;
+            require_ok_response(&resp, "proxy remove")?;
             if json {
-                print_json(&resp);
+                print_json(&serde_json::json!({ "status": "ok" }))?;
             } else {
                 println!("Removed proxy {name}");
             }
@@ -80,13 +100,14 @@ pub async fn remove(name: &str, mode: Mode, json: bool) -> anyhow::Result<()> {
     .await
 }
 
-pub async fn list(mode: Mode, json: bool) -> anyhow::Result<()> {
+pub async fn list(mode: Mode, json: bool, config: &Config) -> anyhow::Result<()> {
     with_mode(
         mode,
         || async {
-            let entries = koi_proxy::config::load_entries()?;
+            let core = standalone_core(config)?;
+            let entries = core.entries().await;
             if json {
-                print_json(&serde_json::json!({ "entries": entries }));
+                print_json(&serde_json::json!({ "entries": entries }))?;
             } else if entries.is_empty() {
                 println!("No proxy entries configured.");
             } else {
@@ -101,21 +122,17 @@ pub async fn list(mode: Mode, json: bool) -> anyhow::Result<()> {
         },
         |client| async move {
             let resp = client.proxy_list()?;
+            let entries: Vec<ProxyEntry> = decode_field(&resp, "entries", "proxy list")?;
             if json {
-                print_json(&resp);
-            } else if let Some(entries) = resp.get("entries").and_then(|v| v.as_array()) {
-                if entries.is_empty() {
-                    println!("No proxy entries configured.");
-                } else {
-                    for entry in entries {
-                        let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                        let backend = entry.get("backend").and_then(|v| v.as_str()).unwrap_or("?");
-                        let listen = entry
-                            .get("listen_port")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0);
-                        println!("{} -> {} (listen {})", name, backend, listen);
-                    }
+                print_json(&serde_json::json!({ "entries": entries }))?;
+            } else if entries.is_empty() {
+                println!("No proxy entries configured.");
+            } else {
+                for entry in entries {
+                    println!(
+                        "{} -> {} (listen {})",
+                        entry.name, entry.backend, entry.listen_port
+                    );
                 }
             }
             Ok(())
@@ -124,69 +141,54 @@ pub async fn list(mode: Mode, json: bool) -> anyhow::Result<()> {
     .await
 }
 
-pub async fn status(mode: Mode, json: bool) -> anyhow::Result<()> {
+pub async fn status(mode: Mode, json: bool, config: &Config) -> anyhow::Result<()> {
     with_mode(
         mode,
         || async {
-            let entries = koi_proxy::config::load_entries()?;
+            let runtime = koi_proxy::ProxyRuntime::new(Arc::new(standalone_core(config)?));
+            let status = runtime.status();
             if json {
-                print_json(&serde_json::json!({ "entries": entries }));
-            } else if entries.is_empty() {
-                println!("Proxy: no entries configured");
+                print_json(status.as_ref())?;
+            } else if status.proxies.is_empty() {
+                println!("Proxy: no listeners configured");
             } else {
-                println!("Proxy entries:");
-                for entry in entries {
-                    println!(
-                        "  {} -> {} (listen {})",
-                        entry.name, entry.backend, entry.listen_port
-                    );
-                }
+                let rows: Vec<crate::format::ProxyStatusRow> = status
+                    .proxies
+                    .iter()
+                    .map(|proxy| crate::format::ProxyStatusRow {
+                        name: proxy.name.clone(),
+                        listen_port: proxy.listen_port,
+                        backend: proxy.backend.clone(),
+                        cert_source: proxy.cert_source.clone(),
+                        state: proxy.state.clone(),
+                        error: proxy.error.clone(),
+                    })
+                    .collect();
+                print!("{}", crate::format::proxy_status_table(&rows));
             }
             Ok(())
         },
         |client| async move {
-            let resp = client.proxy_status()?;
+            let status: koi_proxy::ProxyRuntimeStatus =
+                decode_response(client.proxy_status()?, "proxy status")?;
             if json {
-                print_json(&resp);
-            } else if let Some(proxies) = resp.get("proxies").and_then(|v| v.as_array()) {
-                if proxies.is_empty() {
-                    println!("Proxy: no listeners running");
-                } else {
-                    let rows: Vec<crate::format::ProxyStatusRow> = proxies
-                        .iter()
-                        .map(|entry| crate::format::ProxyStatusRow {
-                            name: entry
-                                .get("name")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("?")
-                                .to_string(),
-                            listen_port: entry
-                                .get("listen_port")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(0) as u16,
-                            backend: entry
-                                .get("backend")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("?")
-                                .to_string(),
-                            cert_source: entry
-                                .get("cert_source")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("?")
-                                .to_string(),
-                            state: entry
-                                .get("state")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("?")
-                                .to_string(),
-                            error: entry
-                                .get("error")
-                                .and_then(|v| v.as_str())
-                                .map(|s| s.to_string()),
-                        })
-                        .collect();
-                    print!("{}", crate::format::proxy_status_table(&rows));
-                }
+                print_json(&status)?;
+            } else if status.proxies.is_empty() {
+                println!("Proxy: no listeners running");
+            } else {
+                let rows: Vec<crate::format::ProxyStatusRow> = status
+                    .proxies
+                    .iter()
+                    .map(|proxy| crate::format::ProxyStatusRow {
+                        name: proxy.name.clone(),
+                        listen_port: proxy.listen_port,
+                        backend: proxy.backend.clone(),
+                        cert_source: proxy.cert_source.clone(),
+                        state: proxy.state.clone(),
+                        error: proxy.error.clone(),
+                    })
+                    .collect();
+                print!("{}", crate::format::proxy_status_table(&rows));
             }
             Ok(())
         },

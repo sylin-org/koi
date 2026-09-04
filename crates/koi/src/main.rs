@@ -8,7 +8,6 @@ mod dispatch;
 mod format;
 mod help;
 mod infra;
-mod integrations;
 mod platform;
 mod welcome;
 
@@ -145,11 +144,11 @@ fn main() -> anyhow::Result<()> {
                     }
                     #[cfg(target_os = "linux")]
                     {
-                        platform::unix::uninstall()
+                        platform::unix::uninstall(&config.data_dir)
                     }
                     #[cfg(target_os = "macos")]
                     {
-                        platform::macos::uninstall()
+                        platform::macos::uninstall(&config.data_dir)
                     }
                     #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
                     {
@@ -182,7 +181,7 @@ fn main() -> anyhow::Result<()> {
                 return Ok(());
             }
             Command::FactoryReset => {
-                return commands::factory_reset::run(cli.json, cli.yes);
+                return commands::factory_reset::run(cli.json, cli.yes, &config.data_dir);
             }
             _ => {} // All other commands go through the runtime
         }

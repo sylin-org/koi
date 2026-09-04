@@ -9,7 +9,8 @@
 > ADR with adapter-owned runtime inspection and capability-aware reconciliation.
 > The provider-neutral port, concrete API isolation, and real-provider-only
 > rules below remain architectural inputs; the “no dynamic switch” clauses are
-> retained only as history.
+> retained only as history. ADR-043 later retired the implicit piped mode named
+> below because it created an uncoordinated second control plane.
 
 ## Context
 

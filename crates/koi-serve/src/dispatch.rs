@@ -15,7 +15,7 @@ use koi_common::types::SessionId;
 use koi_mdns::protocol::{
     self as mdns_protocol, MdnsPipelineResponse, RenewalResult, Request, Response,
 };
-use koi_mdns::{LeasePolicy, MdnsCore};
+use koi_mdns::{BrowseRecvError, LeasePolicy, MdnsCore};
 
 /// Dispatch a single NDJSON request line and write responses to the writer.
 pub async fn handle_line<W: AsyncWriteExt + Unpin>(
@@ -47,8 +47,17 @@ pub async fn handle_line<W: AsyncWriteExt + Unpin>(
                 }
             };
 
-            while let Some(event) = handle.recv().await {
-                write_response(writer, &mdns_protocol::browse_event_to_pipeline(event)).await?;
+            loop {
+                match handle.recv().await {
+                    Ok(event) => {
+                        write_response(writer, &mdns_protocol::browse_event_to_pipeline(event))
+                            .await?;
+                    }
+                    Err(BrowseRecvError::Lagged { .. }) => {
+                        write_discovery_resync(core, writer).await?;
+                    }
+                    Err(BrowseRecvError::Closed) => break,
+                }
             }
         }
 
@@ -91,13 +100,22 @@ pub async fn handle_line<W: AsyncWriteExt + Unpin>(
                 }
             };
 
-            while let Some(event) = handle.recv().await {
-                write_response(writer, &mdns_protocol::subscribe_event_to_pipeline(event)).await?;
+            loop {
+                match handle.recv().await {
+                    Ok(event) => {
+                        write_response(writer, &mdns_protocol::subscribe_event_to_pipeline(event))
+                            .await?;
+                    }
+                    Err(BrowseRecvError::Lagged { .. }) => {
+                        write_discovery_resync(core, writer).await?;
+                    }
+                    Err(BrowseRecvError::Closed) => break,
+                }
             }
         }
 
         Request::Heartbeat(id) => {
-            let resp = match core.heartbeat(&id) {
+            let resp = match core.heartbeat(&id).await {
                 Ok(lease_secs) => {
                     PipelineResponse::clean(Response::Renewed(RenewalResult { id, lease_secs }))
                 }
@@ -110,16 +128,26 @@ pub async fn handle_line<W: AsyncWriteExt + Unpin>(
     Ok(())
 }
 
+async fn write_discovery_resync<W: AsyncWriteExt + Unpin>(
+    core: &MdnsCore,
+    writer: &mut W,
+) -> std::io::Result<()> {
+    write_response(
+        writer,
+        &PipelineResponse::clean(Response::Snapshot(
+            core.discovery_snapshot().as_ref().clone(),
+        )),
+    )
+    .await
+}
+
 /// Serialize a pipeline response as NDJSON and write it to the writer.
 pub async fn write_response<W: AsyncWriteExt + Unpin>(
     writer: &mut W,
     resp: &MdnsPipelineResponse,
 ) -> std::io::Result<()> {
-    // PipelineResponse<Response> serialization is infallible for well-formed types,
-    // but we handle the error rather than panicking in production code.
-    let out = serde_json::to_string(resp).unwrap_or_else(|e| {
-        format!("{{\"error\":\"internal\",\"message\":\"serialization failed: {e}\"}}")
-    });
+    let out = serde_json::to_string(resp)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
     writer.write_all(out.as_bytes()).await?;
     writer.write_all(b"\n").await?;
     writer.flush().await

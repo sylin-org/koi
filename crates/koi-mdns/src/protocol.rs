@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize, Serializer};
 
 use koi_common::api::{error_body, ErrorBody};
 use koi_common::error::ErrorCode;
+use koi_common::integration::MdnsDiscoverySnapshot;
 use koi_common::types::{EventKind, ServiceRecord};
 
 use crate::error::MdnsError;
@@ -51,6 +52,8 @@ pub enum Response {
         service: ServiceRecord,
     },
     Renewed(RenewalResult),
+    /// Authoritative latest-value recovery frame after a subscriber lags.
+    Snapshot(MdnsDiscoverySnapshot),
     Error(ErrorBody),
 }
 
@@ -86,6 +89,11 @@ impl Serialize for Response {
             Response::Renewed(result) => {
                 let mut map = serializer.serialize_map(Some(1))?;
                 map.serialize_entry("renewed", result)?;
+                map.end()
+            }
+            Response::Snapshot(snapshot) => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry("snapshot", snapshot)?;
                 map.end()
             }
             Response::Error(body) => {
@@ -322,6 +330,18 @@ mod tests {
         let renewed = json.get("renewed").unwrap();
         assert_eq!(renewed.get("id").unwrap(), "a1b2c3");
         assert_eq!(renewed.get("lease_secs").unwrap(), 300);
+    }
+
+    #[test]
+    fn snapshot_response_is_an_explicit_lag_recovery_frame() {
+        let resp = MdnsPipelineResponse::clean(Response::Snapshot(MdnsDiscoverySnapshot {
+            revision: 7,
+            service_types: vec!["_http._tcp.local.".to_string()],
+            records: vec![test_record()],
+        }));
+        let value = serde_json::to_value(resp).unwrap();
+        assert_eq!(value["snapshot"]["revision"], 7);
+        assert_eq!(value["snapshot"]["records"][0]["name"], "Server A");
     }
 
     #[test]

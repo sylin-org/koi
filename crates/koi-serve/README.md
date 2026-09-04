@@ -3,8 +3,8 @@
 The **serving layer** of [Koi](https://github.com/sylin-org/koi): it exposes the composed
 domain cores over the network.
 
-koi-serve owns Koi's transport adapters — the HTTP/OpenAPI router, IPC and piped-stdio
-NDJSON, the in-process MCP HTTP transport, the inter-node mTLS and ACME (RFC 8555)
+koi-serve owns Koi's transport adapters — the HTTP/OpenAPI router, authenticated local
+IPC, the in-process MCP HTTP transport, the inter-node mTLS and ACME (RFC 8555)
 listeners, Prometheus service discovery, and the dashboard/browser wiring — plus the
 posture-reactive **trust-plane** supervisor.
 

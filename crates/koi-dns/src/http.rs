@@ -8,12 +8,11 @@ use hickory_proto::rr::RecordType;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
+use crate::{DnsEntry, DnsError};
 use koi_common::error::ErrorCode;
 use koi_common::http::error_response;
-use koi_config::state::DnsEntry;
 
 use crate::runtime::DnsRuntime;
-use crate::zone::DnsZone;
 
 #[derive(Debug, Deserialize, IntoParams)]
 struct LookupParams {
@@ -39,32 +38,6 @@ struct TxtRequest {
 struct TxtResponse {
     name: String,
     values: Vec<String>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-struct LookupResponse {
-    name: String,
-    ips: Vec<String>,
-    source: String,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-struct StatusResponse {
-    running: bool,
-    desired: bool,
-    state: crate::DnsRuntimeState,
-    endpoints: Vec<String>,
-    reason: Option<String>,
-    zone: String,
-    port: u16,
-    records: RecordSummary,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-struct RecordSummary {
-    static_entries: usize,
-    certmesh_entries: usize,
-    mdns_entries: usize,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -130,31 +103,20 @@ pub fn routes(runtime: Arc<DnsRuntime>) -> Router {
 
 #[utoipa::path(get, path = "/status", tag = "dns",
     summary = "DNS resolver status",
-    responses((status = 200, body = StatusResponse)))]
+    responses((status = 200, body = crate::DnsRuntimeStatus)))]
 async fn status_handler(Extension(runtime): Extension<Arc<DnsRuntime>>) -> impl IntoResponse {
-    let runtime_status = runtime.status().await;
-    let core = runtime.core();
-    let snapshot = core.snapshot();
-    Json(StatusResponse {
-        running: runtime_status.running,
-        desired: runtime_status.desired,
-        state: runtime_status.state,
-        endpoints: runtime_status.endpoints,
-        reason: runtime_status.reason,
-        zone: core.config().zone.clone(),
-        port: core.config().port,
-        records: RecordSummary {
-            static_entries: snapshot.static_entries.len(),
-            certmesh_entries: snapshot.certmesh_entries.len(),
-            mdns_entries: snapshot.mdns_entries.len(),
-        },
-    })
+    Json(runtime.status().as_ref().clone())
 }
 
 #[utoipa::path(get, path = "/lookup", tag = "dns",
     summary = "Resolve a local name",
     params(LookupParams),
-    responses((status = 200, body = LookupResponse)))]
+    responses(
+        (status = 200, body = crate::DnsLookupResult),
+        (status = 400, description = "Malformed DNS name or record type", body = koi_common::api::ErrorBody),
+        (status = 404, description = "Verified DNS record absence", body = koi_common::api::ErrorBody),
+        (status = 500, description = "DNS observation or transport failure", body = koi_common::api::ErrorBody),
+    ))]
 async fn lookup_handler(
     Extension(runtime): Extension<Arc<DnsRuntime>>,
     Query(params): Query<LookupParams>,
@@ -164,26 +126,18 @@ async fn lookup_handler(
         Err(code) => return error_response(code, "invalid_record_type").into_response(),
     };
 
-    let core = runtime.core();
-    let Some(result) = core.lookup(&params.name, record_type).await else {
-        return error_response(ErrorCode::NotFound, "record_not_found").into_response();
-    };
-
-    let ips = result.ips.into_iter().map(|ip| ip.to_string()).collect();
-    Json(LookupResponse {
-        name: result.name,
-        ips,
-        source: result.source,
-    })
-    .into_response()
+    match runtime.lookup(&params.name, record_type).await {
+        Ok(Some(result)) => Json(result).into_response(),
+        Ok(None) => error_response(ErrorCode::NotFound, "record_not_found").into_response(),
+        Err(error) => map_error(error),
+    }
 }
 
 #[utoipa::path(get, path = "/list", tag = "dns",
     summary = "List all resolvable names",
     responses((status = 200, body = NamesResponse)))]
 async fn list_handler(Extension(runtime): Extension<Arc<DnsRuntime>>) -> impl IntoResponse {
-    let core = runtime.core();
-    let names = core.list_names();
+    let names = runtime.list_names();
     Json(NamesResponse { names })
 }
 
@@ -192,7 +146,7 @@ async fn list_handler(Extension(runtime): Extension<Arc<DnsRuntime>>) -> impl In
     responses((status = 200, body = EntriesResponse)))]
 async fn entries_handler(Extension(runtime): Extension<Arc<DnsRuntime>>) -> impl IntoResponse {
     Json(EntriesResponse {
-        entries: runtime.core().list_entries(),
+        entries: runtime.list_entries(),
     })
 }
 
@@ -221,7 +175,7 @@ async fn zone_handler(
 ) -> impl IntoResponse {
     use axum::http::header;
 
-    let snapshot = runtime.core().snapshot();
+    let snapshot = runtime.records_snapshot();
     match params.format.as_deref().unwrap_or("json") {
         "hosts" => (
             [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
@@ -304,14 +258,7 @@ async fn add_entry_handler(
     Extension(runtime): Extension<Arc<DnsRuntime>>,
     Json(payload): Json<EntryRequest>,
 ) -> impl IntoResponse {
-    let zone = match DnsZone::new(&runtime.core().config().zone) {
-        Ok(zone) => zone,
-        Err(e) => {
-            return error_response(ErrorCode::InvalidName, e.to_string()).into_response();
-        }
-    };
-
-    let name = match zone.normalize_name(&payload.name) {
+    let name = match runtime.normalize_name(&payload.name) {
         Some(name) => name,
         None => {
             return error_response(ErrorCode::InvalidName, "name_outside_zone").into_response();
@@ -328,7 +275,7 @@ async fn add_entry_handler(
         ttl: payload.ttl,
     };
 
-    match runtime.core().add_entry(entry) {
+    match runtime.add_entry(entry) {
         Ok(entries) => Json(EntriesResponse { entries }).into_response(),
         Err(e) => error_response(ErrorCode::IoError, e.to_string()).into_response(),
     }
@@ -342,21 +289,14 @@ async fn remove_entry_handler(
     Extension(runtime): Extension<Arc<DnsRuntime>>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    let zone = match DnsZone::new(&runtime.core().config().zone) {
-        Ok(zone) => zone,
-        Err(e) => {
-            return error_response(ErrorCode::InvalidName, e.to_string()).into_response();
-        }
-    };
-
-    let name = match zone.normalize_name(&name) {
+    let name = match runtime.normalize_name(&name) {
         Some(name) => name,
         None => {
             return error_response(ErrorCode::InvalidName, "name_outside_zone").into_response();
         }
     };
 
-    match runtime.core().remove_entry(&name) {
+    match runtime.remove_entry(&name) {
         Ok(Some(entries)) => Json(EntriesResponse { entries }).into_response(),
         Ok(None) => error_response(ErrorCode::NotFound, "entry_not_found").into_response(),
         Err(e) => error_response(ErrorCode::IoError, e.to_string()).into_response(),
@@ -367,9 +307,7 @@ fn validate_txt_request(
     runtime: &DnsRuntime,
     payload: &TxtRequest,
 ) -> Result<String, (ErrorCode, String)> {
-    let zone = DnsZone::new(&runtime.core().config().zone)
-        .map_err(|error| (ErrorCode::InvalidName, error.to_string()))?;
-    let name = zone
+    let name = runtime
         .normalize_name(&payload.name)
         .ok_or_else(|| (ErrorCode::InvalidName, "name_outside_zone".to_string()))?;
     if payload.value.is_empty() || payload.value.len() > 255 {
@@ -393,9 +331,9 @@ async fn set_txt_handler(
         Ok(name) => name,
         Err((code, message)) => return error_response(code, message).into_response(),
     };
-    runtime.core().add_txt(&name, &payload.value);
+    runtime.set_txt(&name, &payload.value);
     Json(TxtResponse {
-        values: runtime.core().get_txt(&name),
+        values: runtime.get_txt(&name),
         name,
     })
     .into_response()
@@ -413,9 +351,9 @@ async fn remove_txt_handler(
         Ok(name) => name,
         Err((code, message)) => return error_response(code, message).into_response(),
     };
-    runtime.core().remove_txt_value(&name, &payload.value);
+    runtime.remove_txt_value(&name, &payload.value);
     Json(TxtResponse {
-        values: runtime.core().get_txt(&name),
+        values: runtime.get_txt(&name),
         name,
     })
     .into_response()
@@ -427,7 +365,7 @@ async fn remove_txt_handler(
 async fn start_handler(Extension(runtime): Extension<Arc<DnsRuntime>>) -> impl IntoResponse {
     match runtime.start().await {
         Ok(started) => Json(serde_json::json!({ "started": started })).into_response(),
-        Err(e) => error_response(ErrorCode::Internal, e.to_string()).into_response(),
+        Err(error) => map_error(error),
     }
 }
 
@@ -435,8 +373,21 @@ async fn start_handler(Extension(runtime): Extension<Arc<DnsRuntime>>) -> impl I
     summary = "Stop the DNS resolver",
     responses((status = 200, body = StoppedResponse)))]
 async fn stop_handler(Extension(runtime): Extension<Arc<DnsRuntime>>) -> impl IntoResponse {
-    let stopped = runtime.stop().await;
-    Json(serde_json::json!({ "stopped": stopped }))
+    match runtime.stop().await {
+        Ok(stopped) => Json(serde_json::json!({ "stopped": stopped })).into_response(),
+        Err(error) => map_error(error),
+    }
+}
+
+fn map_error(error: DnsError) -> axum::response::Response {
+    let code = match &error {
+        DnsError::ShutDown => ErrorCode::ShuttingDown,
+        DnsError::InvalidName(_) => ErrorCode::InvalidName,
+        DnsError::InvalidZone(_) | DnsError::InvalidEntry(_) => ErrorCode::InvalidPayload,
+        DnsError::Io(_) => ErrorCode::IoError,
+        DnsError::Bind(_) | DnsError::Upstream(_) | DnsError::Worker(_) => ErrorCode::Internal,
+    };
+    error_response(code, error.to_string())
 }
 
 /// Parse the `type` query param. On an unrecognized value, returns the
@@ -468,18 +419,18 @@ fn parse_record_type(input: Option<&str>) -> Result<RecordType, ErrorCode> {
         stop_handler,
     ),
     components(schemas(
-        StatusResponse,
-        LookupResponse,
+        crate::DnsRuntimeStatus,
+        crate::DnsRecordSummary,
+        crate::DnsLookupResult,
         NamesResponse,
         EntriesResponse,
         ZoneJson,
         EntryRequest,
         TxtRequest,
         TxtResponse,
-        RecordSummary,
         StartedResponse,
         StoppedResponse,
-        koi_config::state::DnsEntry,
+        crate::DnsEntry,
     ))
 )]
 pub struct DnsApiDoc;
@@ -489,7 +440,163 @@ mod tests {
     use super::*;
     use crate::records::RecordsSnapshot;
     use std::collections::HashMap;
-    use std::net::IpAddr;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    #[tokio::test]
+    async fn status_endpoint_serializes_the_authoritative_runtime_snapshot() {
+        let core = crate::DnsCore::open(
+            std::env::temp_dir().join(format!("koi-dns-http-status-{}.json", std::process::id())),
+            crate::DnsConfig {
+                bind_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                port: 0,
+                ..Default::default()
+            },
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("DNS core");
+        let runtime = Arc::new(DnsRuntime::new(core));
+        let expected = runtime.status();
+
+        let response = status_handler(Extension(runtime)).await.into_response();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("status body");
+        let actual: crate::DnsRuntimeStatus =
+            serde_json::from_slice(&bytes).expect("DNS runtime status JSON");
+        assert_eq!(&actual, expected.as_ref());
+    }
+
+    #[tokio::test]
+    async fn domain_errors_keep_their_wire_meaning() {
+        for (error, expected_status, expected_code) in [
+            (
+                DnsError::ShutDown,
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "shutting_down",
+            ),
+            (
+                DnsError::Worker("stop ended before acknowledgement".into()),
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+            ),
+            (
+                DnsError::InvalidName("bad name".into()),
+                axum::http::StatusCode::BAD_REQUEST,
+                "invalid_name",
+            ),
+            (
+                DnsError::Upstream("resolver unavailable".into()),
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+            ),
+        ] {
+            let response = map_error(error);
+            assert_eq!(response.status(), expected_status);
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("error body");
+            let body: serde_json::Value =
+                serde_json::from_slice(&bytes).expect("standard error JSON");
+            assert_eq!(body["error"], expected_code);
+        }
+    }
+
+    #[tokio::test]
+    async fn lookup_endpoint_distinguishes_invalid_name_and_authoritative_absence() {
+        let core = crate::DnsCore::open(
+            std::env::temp_dir().join(format!(
+                "koi-dns-http-lookup-{}.json",
+                koi_common::id::generate_short_id()
+            )),
+            crate::DnsConfig {
+                bind_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                port: 0,
+                ..Default::default()
+            },
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("DNS core");
+        let runtime = Arc::new(DnsRuntime::new(core));
+
+        for (name, expected_status, expected_code) in [
+            (
+                "bad name",
+                axum::http::StatusCode::BAD_REQUEST,
+                "invalid_name",
+            ),
+            (
+                "missing.internal",
+                axum::http::StatusCode::NOT_FOUND,
+                "not_found",
+            ),
+        ] {
+            let response = lookup_handler(
+                Extension(Arc::clone(&runtime)),
+                Query(LookupParams {
+                    name: name.into(),
+                    record_type: Some("A".into()),
+                }),
+            )
+            .await
+            .into_response();
+            assert_eq!(response.status(), expected_status);
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("lookup error body");
+            let body: serde_json::Value =
+                serde_json::from_slice(&bytes).expect("standard error JSON");
+            assert_eq!(body["error"], expected_code);
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_endpoint_distinguishes_an_accepted_noop_from_closed_admission() {
+        let core = crate::DnsCore::open(
+            std::env::temp_dir().join(format!(
+                "koi-dns-http-stop-{}.json",
+                koi_common::id::generate_short_id()
+            )),
+            crate::DnsConfig {
+                bind_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                port: 0,
+                ..Default::default()
+            },
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("DNS core");
+        let runtime = Arc::new(DnsRuntime::new(core));
+
+        let response = stop_handler(Extension(Arc::clone(&runtime)))
+            .await
+            .into_response();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("no-op body");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("no-op JSON");
+        assert_eq!(body["stopped"], false);
+
+        runtime.shutdown().await;
+        let response = stop_handler(Extension(runtime)).await.into_response();
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("shutdown body");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("shutdown JSON");
+        assert_eq!(body["error"], "shutting_down");
+    }
 
     #[test]
     fn txt_request_json_round_trip_preserves_exact_value() {

@@ -6,10 +6,13 @@
 //! refuses to print the secret to a non-tty unless `--force`, and `write`
 //! creates the file owner-only (0600 on Unix; ACL-restricted on Windows).
 
-use std::io::IsTerminal;
+use std::io::{self, IsTerminal};
 use std::path::Path;
 
 use crate::cli::{TokenCommand, TokenSubcommand};
+use koi_common::persist;
+
+const TOKEN_FILE_UNIX_MODE: u32 = 0o600;
 
 pub fn run(cmd: &TokenCommand, json: bool) -> anyhow::Result<()> {
     match &cmd.command {
@@ -28,14 +31,16 @@ pub fn run(cmd: &TokenCommand, json: bool) -> anyhow::Result<()> {
 /// Reads the current daemon token from the breadcrumb, or returns a friendly
 /// error if the daemon is not running.
 fn load_token() -> anyhow::Result<String> {
-    koi_client::local_daemon_access()
-        .map(|access| access.token)
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "no daemon token found — is the Koi daemon running? The token is \
-                 available from the trusted local daemon while it is running."
-            )
-        })
+    match koi_client::observe_local_daemon_access() {
+        koi_client::LocalDaemonObservation::Present(access) => Ok(access.token),
+        koi_client::LocalDaemonObservation::Absent => anyhow::bail!(
+            "no daemon token found — is the Koi daemon running? The token is \
+             available from the trusted local daemon while it is running."
+        ),
+        koi_client::LocalDaemonObservation::Uncertain(error) => anyhow::bail!(
+            "the local daemon token could not be read safely because ownership is uncertain: {error}"
+        ),
+    }
 }
 
 fn show(force: bool, json: bool) -> anyhow::Result<()> {
@@ -51,7 +56,7 @@ fn show(force: bool, json: bool) -> anyhow::Result<()> {
     }
 
     if json {
-        crate::commands::print_json(&serde_json::json!({ "token": token }));
+        crate::commands::print_json(&serde_json::json!({ "token": token }))?;
     } else {
         println!("{token}");
     }
@@ -66,63 +71,117 @@ fn write(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(unix)]
 fn write_secret_file(path: &Path, token: &str) -> anyhow::Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
-        }
-    }
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)?;
-    f.write_all(token.as_bytes())?;
-    f.write_all(b"\n")?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn write_secret_file(path: &Path, token: &str) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
-        }
-    }
-    std::fs::write(path, format!("{token}\n"))?;
     #[cfg(windows)]
-    restrict_acl(path);
+    let outcome = write_secret_file_with_prepare_stage(
+        path,
+        token,
+        persist::restrict_windows_local_secret_acl,
+    )?;
+    #[cfg(not(windows))]
+    let outcome = write_secret_file_with_prepare_stage(path, token, |_| Ok(()))?;
+
+    if let persist::AtomicCommit::DurabilityUncertain(error) = outcome {
+        // Replacement already happened. Reporting a write failure here would contradict the
+        // file containers and subsequent commands can immediately consume.
+        tracing::error!(
+            path = %path.display(),
+            %error,
+            "token file is visible, but its crash durability could not be confirmed"
+        );
+    }
     Ok(())
 }
 
-/// Best-effort ACL restriction on Windows using icacls (mirrors the breadcrumb).
-#[cfg(windows)]
-fn restrict_acl(path: &Path) {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
+fn write_secret_file_with_prepare_stage(
+    path: &Path,
+    token: &str,
+    prepare_stage: impl FnOnce(&Path) -> io::Result<()>,
+) -> io::Result<persist::AtomicCommit> {
+    let contents = format!("{token}\n");
+    persist::write_bytes_atomic_with_options_and_prepare_stage(
+        path,
+        contents.as_bytes(),
+        persist::AtomicWriteOptions::new().with_unix_mode(TOKEN_FILE_UNIX_MODE),
+        prepare_stage,
+    )
+}
 
-    let mut args = vec![
-        path.display().to_string(),
-        "/inheritance:r".to_string(),
-        "/grant:r".to_string(),
-        "SYSTEM:F".to_string(),
-        "/grant:r".to_string(),
-        "BUILTIN\\Administrators:F".to_string(),
-    ];
-    if let Ok(user) = std::env::var("USERNAME") {
-        if !user.eq_ignore_ascii_case("SYSTEM") {
-            args.push("/grant:r".to_string());
-            args.push(format!("{user}:F"));
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_root(name: &str) -> std::path::PathBuf {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        std::env::temp_dir().join(format!(
+            "koi-token-{name}-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ))
     }
-    let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    let _ = std::process::Command::new("icacls")
-        .args(&args_ref)
-        .creation_flags(CREATE_NO_WINDOW)
-        .output();
+
+    #[test]
+    fn secret_file_atomically_replaces_the_complete_token() {
+        let root = temp_root("atomic-replace");
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("token");
+        std::fs::write(&target, b"old-complete-token\n").unwrap();
+
+        let outcome = write_secret_file_with_prepare_stage(&target, "replacement-token", |stage| {
+            assert_ne!(stage, target);
+            assert_eq!(std::fs::metadata(stage)?.len(), 0);
+            assert_eq!(std::fs::read(&target)?, b"old-complete-token\n");
+            Ok(())
+        })
+        .unwrap();
+
+        assert!(matches!(outcome, persist::AtomicCommit::Durable));
+        assert_eq!(std::fs::read(&target).unwrap(), b"replacement-token\n");
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secret_file_repairs_a_permissive_existing_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = temp_root("mode-repair");
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("token");
+        std::fs::write(&target, b"old-token\n").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o666)).unwrap();
+
+        let outcome =
+            write_secret_file_with_prepare_stage(&target, "replacement-token", |_| Ok(())).unwrap();
+
+        assert!(matches!(outcome, persist::AtomicCommit::Durable));
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            TOKEN_FILE_UNIX_MODE
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn secret_file_preparation_failure_preserves_the_old_target() {
+        let root = temp_root("prepare-failure");
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("token");
+        std::fs::write(&target, b"old-complete-token\n").unwrap();
+
+        let error = write_secret_file_with_prepare_stage(&target, "must-not-be-exposed", |stage| {
+            assert_eq!(std::fs::metadata(stage)?.len(), 0);
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "injected token hardening failure",
+            ))
+        })
+        .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(std::fs::read(&target).unwrap(), b"old-complete-token\n");
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

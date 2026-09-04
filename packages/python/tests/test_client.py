@@ -13,6 +13,55 @@ from koi_client import KoiClient, KoiHttpError
 REPO_ROOT = Path(__file__).resolve().parents[3]
 TOKEN = "secret-lab-token"
 
+CERTMESH_STATUS = {
+    "revision": 7,
+    "role": "authority",
+    "posture": {"signed": True, "encrypted": False},
+    "identity": {
+        "condition": "healthy",
+        "info": {
+            "hostname": "ca-01",
+            "ca_fingerprint": "f" * 64,
+            "renewal": {
+                "expires_at": "2026-09-10T00:00:00Z",
+                "next_renewal_at": "2026-09-07T00:00:00Z",
+                "expires_in_days": 7,
+                "renew_overdue": False,
+                "expired": False,
+            },
+        },
+    },
+    "diagnosis": {
+        "posture": {"signed": True, "encrypted": False},
+        "overall": "healthy",
+        "checks": [],
+    },
+    "authority": {
+        "locked": False,
+        "ca_fingerprint": "f" * 64,
+        "auth_method": "totp",
+        "enrollment_open": True,
+        "requires_approval": False,
+        "enrollment_state": "open",
+        "member_count": 1,
+        "seq": 3,
+        "policy": {
+            "leaf_lifetime_days": 7,
+            "renew_threshold_days": 3,
+            "grace_days": 1,
+        },
+        "members": [],
+    },
+}
+
+CERTMESH_BOOTSTRAP = {
+    "revision": 7,
+    "authority_available": True,
+    "ca_fingerprint": "f" * 64,
+    "enrollment_open": True,
+    "requires_approval": False,
+}
+
 
 class StubDaemon:
     """One stub daemon per test: records requests, replays scripted responses."""
@@ -102,26 +151,40 @@ class TestKoiClient(unittest.TestCase):
         expected["version"] = "9.9.9"
         self.assertEqual(card, expected)
 
-    def test_status_and_posture_carry_the_token_header_and_parse_json(self):
+    def test_status_surfaces_use_the_authoritative_shapes_and_right_auth_boundary(self):
         daemon = StubDaemon(
             {
                 "/v1/status": json_response({"daemon": True, "webhooks": {"enabled": False, "sinks": 0}}),
                 "/v1/certmesh/posture": json_response(
                     {"signed": True, "encrypted": False, "level": "authenticated"}
                 ),
+                "/v1/certmesh/status": json_response(CERTMESH_STATUS),
+                "/v1/certmesh/bootstrap": json_response(CERTMESH_BOOTSTRAP),
             }
         )
         try:
             client = KoiClient(daemon.base, token=TOKEN)
             status = client.status()
             posture = client.posture()
+            certmesh = client.certmesh_status()
+            bootstrap = client.certmesh_bootstrap()
         finally:
             daemon.close()
         self.assertTrue(status["daemon"])
         self.assertEqual(posture["level"], "authenticated")
-        self.assertEqual(len(daemon.seen), 2)
-        for request in daemon.seen:
+        self.assertEqual(certmesh["role"], "authority")
+        self.assertEqual(certmesh["identity"]["condition"], "healthy")
+        self.assertEqual(certmesh["authority"]["member_count"], 1)
+        self.assertTrue(bootstrap["authority_available"])
+        self.assertNotIn("members", bootstrap)
+        self.assertEqual(len(daemon.seen), 4)
+        for request in daemon.seen[:3]:
             self.assertEqual(request["headers"].get("x-koi-token"), TOKEN)
+        self.assertEqual(daemon.seen[3]["url"], "/v1/certmesh/bootstrap")
+        self.assertIsNone(
+            daemon.seen[3]["headers"].get("x-koi-token"),
+            "public remote preflight must not receive the local daemon token",
+        )
 
     def test_healthy_is_truthful_about_liveness(self):
         daemon = StubDaemon({"/healthz": lambda: (204, b"", None, None)})

@@ -1,7 +1,7 @@
 {
   "name": "@sylin-org/koi-client",
   "version": "0.1.0-beta.1",
-  "description": "TypeScript/JavaScript client for Koi's frozen HTTP API: status, health, certmesh posture, events, and Agent-Door MCP discovery",
+  "description": "TypeScript/JavaScript client for Koi's versioned HTTP API: status, health, certmesh bootstrap/posture, events, and Agent-Door MCP discovery",
   "type": "module",
   "main": "lib/client.js",
   "types": "lib/client.d.ts",

@@ -5,8 +5,9 @@
 //! identity, and the lifecycle policy. It is served at `GET /v1/certmesh/trust-bundle`
 //! (a DAT-exempt read: it is integrity-protected by its own signature, like a CRL)
 //! and pulled by members on an interval. A member verifies the detached ES256
-//! signature against its **pinned** CA fingerprint and rejects any bundle with
-//! `seq <= last_seen` (anti-rollback). The CA's `roster.json` is the private
+//! signature against its **pinned** CA fingerprint, rejects older sequences,
+//! and accepts an equal sequence only when its semantic digest matches the
+//! generation already applied. The CA's `roster.json` is the private
 //! superset; this bundle is its public, integrity-protected projection.
 //!
 //! Signing uses the CA's P-256 key (`koi_crypto::signing`), **not** HKDF — so the
@@ -83,6 +84,8 @@ pub enum BundleError {
     Canonicalize,
     #[error("bundle seq {got} is older than last seen {last_seen} (rollback)")]
     Rollback { got: u64, last_seen: u64 },
+    #[error("bundle seq {seq} has different semantic contents than the accepted generation")]
+    Equivocation { seq: u64 },
 }
 
 impl TrustBundle {
@@ -143,6 +146,19 @@ impl TrustBundle {
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {
         let sorted = serde_json::to_value(self)?;
         serde_json::to_vec(&sorted)
+    }
+
+    /// Stable digest of the sequence-owned trust contents. `issued_at` is
+    /// deliberately excluded: serving the same authoritative generation at a
+    /// later wall-clock time remains an idempotent replay, while changing any
+    /// membership, revocation, policy, or CA fact at the same `seq` is detected.
+    pub(crate) fn semantic_digest(&self) -> Result<String, serde_json::Error> {
+        use sha2::{Digest, Sha256};
+
+        let mut semantic = self.clone();
+        semantic.issued_at.clear();
+        let bytes = semantic.canonical_bytes()?;
+        Ok(koi_common::encoding::hex_encode(&Sha256::digest(bytes)))
     }
 
     /// Whether `hostname` is listed as revoked (or absent) in this bundle.
@@ -216,7 +232,9 @@ fn ca_spki_pem(ca_cert_pem: &str) -> Result<String, BundleError> {
 ///
 /// Checks, in order: the embedded CA cert's fingerprint equals `pinned_ca_fingerprint`;
 /// the ES256 signature verifies against that CA cert's public key over the bundle's
-/// canonical bytes; and (when `last_seen_seq` is `Some`) `bundle.seq > last_seen`.
+/// canonical bytes; and the sequence is not older than `last_seen_seq`. The member
+/// aggregate additionally compares `TrustBundle::semantic_digest` for equal
+/// sequences because this standalone verifier does not own the applied projection.
 pub fn verify(
     signed: &SignedBundle,
     pinned_ca_fingerprint: &str,
@@ -249,8 +267,9 @@ pub fn verify(
     }
 
     // 3. Anti-rollback: reject a *strictly older* bundle (a replayed snapshot that
-    //    would hide a revocation). An equal `seq` is the same bundle — accepted as
-    //    a benign no-op so the member's periodic re-pull is idempotent.
+    //    would hide a revocation). Equal sequences proceed to the aggregate's
+    //    semantic-digest check so repeated serving timestamps remain idempotent
+    //    without permitting same-sequence equivocation.
     if let Some(last_seen) = last_seen_seq {
         if signed.bundle.seq < last_seen {
             return Err(BundleError::Rollback {

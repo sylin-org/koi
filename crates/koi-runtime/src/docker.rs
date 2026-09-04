@@ -5,7 +5,7 @@
 //! Podman exposes a Docker-compatible API on a different socket path.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::Arc;
 use std::time::Duration;
 
 use bollard::query_parameters::{EventsOptions, InspectContainerOptions, ListContainersOptions};
@@ -15,7 +15,7 @@ use futures_util::StreamExt;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::backend::{RuntimeBackend, RuntimeEvent};
+use crate::backend::{RuntimeBackend, RuntimeEvent, RuntimeObservation};
 use crate::error::RuntimeError;
 use crate::instance::{
     ComposeInfo, Instance, InstanceState, KoiMetadata, PortMapping, PortProtocol,
@@ -26,10 +26,6 @@ pub struct DockerBackend {
     client: Option<Docker>,
     socket_path: Option<String>,
     is_podman: bool,
-    /// Last point-in-time inventory, seeded by RuntimeCore's startup listing.
-    /// The watch loop owns a clone and uses it to emit exact stop/start/update
-    /// deltas after an event-stream reconnect.
-    known_instances: Mutex<HashMap<String, Instance>>,
 }
 
 impl Default for DockerBackend {
@@ -45,7 +41,6 @@ impl DockerBackend {
             client: None,
             socket_path: None,
             is_podman: false,
-            known_instances: Mutex::new(HashMap::new()),
         }
     }
 
@@ -55,7 +50,6 @@ impl DockerBackend {
             client: None,
             socket_path: Some(path),
             is_podman: false,
-            known_instances: Mutex::new(HashMap::new()),
         }
     }
 
@@ -65,7 +59,6 @@ impl DockerBackend {
             client: None,
             socket_path: None,
             is_podman: true,
-            known_instances: Mutex::new(HashMap::new()),
         }
     }
 
@@ -216,36 +209,55 @@ impl RuntimeBackend for DockerBackend {
 
         let mut instances = Vec::with_capacity(containers.len());
         for container in &containers {
-            if let Some(ref id) = container.id {
-                match self.container_to_instance(client, id).await {
-                    Ok(instance) => instances.push(instance),
-                    Err(e) => {
-                        tracing::warn!(id, error = %e, "Failed to inspect container, skipping");
-                    }
-                }
-            }
+            let id = listed_container_id(container.id.as_deref())?;
+            instances.push(self.container_to_instance(client, id).await?);
         }
 
-        if let Ok(mut known) = self.known_instances.lock() {
-            *known = instances_by_id(&instances);
-        }
         Ok(instances)
     }
 
-    async fn watch(
+    async fn begin_observation(
+        self: Arc<Self>,
+        tx: mpsc::Sender<RuntimeEvent>,
+        cancel: CancellationToken,
+    ) -> Result<RuntimeObservation, RuntimeError> {
+        // Establish the replay boundary before taking the snapshot. Docker's
+        // inclusive `since` cursor then closes the snapshot-to-stream window;
+        // snapshot-seeded normalization removes anything seen by both sides.
+        let observation_started_at = Utc::now().timestamp();
+        let instances = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                return Err(RuntimeError::EventStream(
+                    "Docker observation cancelled before it was armed".to_string(),
+                ));
+            }
+            instances = self.list_instances() => instances?,
+        };
+        let known = instances_by_id(&instances);
+        let resume_since = Some(replay_cursor(observation_started_at));
+        let backend = Arc::clone(&self);
+        let watch = async move {
+            backend
+                .watch_seeded(tx, cancel, known, observation_started_at, resume_since)
+                .await
+        };
+
+        Ok(RuntimeObservation::new(instances, watch))
+    }
+}
+
+impl DockerBackend {
+    async fn watch_seeded(
         &self,
         tx: mpsc::Sender<RuntimeEvent>,
         cancel: CancellationToken,
+        mut known: HashMap<String, Instance>,
+        mut last_event_time: i64,
+        mut resume_since: Option<String>,
     ) -> Result<(), RuntimeError> {
         let client = self.client()?;
-        let mut known = self
-            .known_instances
-            .lock()
-            .map(|known| known.clone())
-            .unwrap_or_default();
         let mut reconnect_attempt = 0_u32;
-        let mut last_event_time = Utc::now().timestamp();
-        let mut resume_since = None;
         loop {
             let event_filters =
                 HashMap::from([("type".to_string(), vec!["container".to_string()])]);
@@ -267,7 +279,9 @@ impl RuntimeBackend for DockerBackend {
                             if let Some(observed) = event.time {
                                 last_event_time = last_event_time.max(observed);
                             }
-                            match self.normalize_docker_event(client, &event).await {
+                            match require_complete_event_observation(
+                                self.normalize_docker_event(client, &event).await,
+                            ) {
                                 Ok(Some(event)) => {
                                     if let Some(event) = apply_event_to_snapshot(&mut known, event) {
                                         if tx.send(event).await.is_err() {
@@ -276,9 +290,7 @@ impl RuntimeBackend for DockerBackend {
                                     }
                                 }
                                 Ok(None) => {}
-                                Err(error) => {
-                                    tracing::warn!(%error, "Error handling Docker event");
-                                }
+                                Err(reason) => break reason,
                             }
                         }
                         Some(Err(error)) => break error.to_string(),
@@ -381,21 +393,16 @@ impl DockerBackend {
         }
 
         match action {
-            "start" => match self.container_to_instance(client, id).await {
-                Ok(instance) => {
-                    tracing::info!(
-                        name = %instance.name,
-                        ports = ?instance.ports.len(),
-                        backend = self.name(),
-                        "Instance started"
-                    );
-                    Ok(Some(RuntimeEvent::Started(instance)))
-                }
-                Err(e) => {
-                    tracing::warn!(id, error = %e, "Failed to inspect started container");
-                    Ok(None)
-                }
-            },
+            "start" => {
+                let instance = self.container_to_instance(client, id).await?;
+                tracing::info!(
+                    name = %instance.name,
+                    ports = ?instance.ports.len(),
+                    backend = self.name(),
+                    "Instance started"
+                );
+                Ok(Some(RuntimeEvent::Started(instance)))
+            }
             "die" | "stop" | "kill" | "destroy" => {
                 let name = actor
                     .and_then(|a| a.attributes.as_ref())
@@ -418,6 +425,24 @@ impl DockerBackend {
             _ => Ok(None),
         }
     }
+}
+
+/// A Docker list response without a stable engine identity cannot contribute to
+/// an authoritative inventory. Treat it as an incomplete observation so the
+/// caller retains prior truth and retries the complete snapshot.
+fn listed_container_id(id: Option<&str>) -> Result<&str, RuntimeError> {
+    id.filter(|id| !id.is_empty()).ok_or_else(|| {
+        RuntimeError::Internal("Docker listed a container without an identity".to_string())
+    })
+}
+
+/// Event inspection is part of the observation, not optional enrichment. An
+/// error therefore ends this stream generation and enters the existing exact
+/// inventory reconciliation path instead of silently dropping the event.
+fn require_complete_event_observation(
+    observation: Result<Option<RuntimeEvent>, RuntimeError>,
+) -> Result<Option<RuntimeEvent>, String> {
+    observation.map_err(|error| format!("Docker event observation is incomplete: {error}"))
 }
 
 const RECONNECT_MIN_DELAY: Duration = Duration::from_millis(250);
@@ -467,6 +492,7 @@ fn apply_event_to_snapshot(
         RuntimeEvent::BackendReconnected { backend } => {
             Some(RuntimeEvent::BackendReconnected { backend })
         }
+        RuntimeEvent::BackendStopped { backend } => Some(RuntimeEvent::BackendStopped { backend }),
     }
 }
 
@@ -669,6 +695,38 @@ mod tests {
     }
 
     #[test]
+    fn incomplete_list_identity_is_an_observation_error() {
+        assert_eq!(
+            listed_container_id(Some("container-1")).unwrap(),
+            "container-1"
+        );
+        for missing in [None, Some("")] {
+            assert!(matches!(
+                listed_container_id(missing),
+                Err(RuntimeError::Internal(message))
+                    if message == "Docker listed a container without an identity"
+            ));
+        }
+    }
+
+    #[test]
+    fn failed_event_observation_requires_reconciliation() {
+        assert!(matches!(
+            require_complete_event_observation(Ok(None)),
+            Ok(None)
+        ));
+
+        let reason = require_complete_event_observation(Err(RuntimeError::Internal(
+            "inspect started container failed".to_string(),
+        )))
+        .unwrap_err();
+        assert_eq!(
+            reason,
+            "Docker event observation is incomplete: runtime internal error: inspect started container failed"
+        );
+    }
+
+    #[test]
     fn reconnect_reconciliation_emits_exact_stops_updates_and_starts() {
         let previous = HashMap::from([
             ("gone".to_string(), instance("gone", "old-service")),
@@ -754,6 +812,29 @@ mod tests {
             },
         )
         .is_none());
+    }
+
+    #[test]
+    fn startup_snapshot_seed_deduplicates_replay_and_keeps_window_changes() {
+        let initial = instance("existing", "existing-service");
+        let mut replayed_initial = initial.clone();
+        replayed_initial.discovered_at += chrono::Duration::seconds(1);
+        let mut known = instances_by_id(&[initial]);
+
+        // An inclusive Docker cursor deliberately replays facts that may also
+        // be represented by the snapshot. They must not escape the adapter.
+        assert!(
+            apply_event_to_snapshot(&mut known, RuntimeEvent::Started(replayed_initial),).is_none()
+        );
+
+        // A start that landed after the snapshot is retained, closing the
+        // bootstrap window without corrupting the snapshot-seeded inventory.
+        let window_change = instance("window", "window-service");
+        assert!(matches!(
+            apply_event_to_snapshot(&mut known, RuntimeEvent::Started(window_change)),
+            Some(RuntimeEvent::Started(instance)) if instance.id == "window"
+        ));
+        assert_eq!(known.len(), 2);
     }
 
     #[test]

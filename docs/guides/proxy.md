@@ -2,7 +2,7 @@
 
 Here's the problem: you have a service running on `127.0.0.1:3000`, and you want clients to reach it over TLS using a certificate the rest of your network already trusts. Setting that up by hand means managing certificates, wiring reload hooks, and maintaining yet another config file.
 
-Koi's proxy collapses that into a single command. It binds a TLS listener, terminates the connection with a certmesh-issued certificate (or a generated self-signed one when no cert is present), and pipes the decrypted bytes straight to your backend over plain TCP. When the certificate changes on disk, the proxy serves the new one on the next handshake — no restart.
+Koi's proxy collapses that into a single command. It binds a TLS listener, terminates the connection with a certmesh-issued certificate (or a generated self-signed one when no cert is present), and pipes the decrypted bytes straight to your backend over plain TCP. Certmesh rotation is delivered through Koi's live domain boundary, and an explicit Proxy-owned certificate override is watched on disk; either change is served on the next handshake without a restart.
 
 It is a **passthrough**, not an application proxy. Once TLS is terminated, Koi copies bytes in both directions and never looks at them. That has a deliberate consequence: **WebSockets and any other bidirectional or upgraded protocol just work** — and equally, Koi does **not** do path routing, header injection, or request rewriting. It is the pre-wired TLS endpoint for certmesh certs, not a Caddy/Traefik replacement.
 
@@ -20,7 +20,7 @@ All CLI commands use the `koi proxy` prefix. All HTTP endpoints live under `/v1/
 2. Koi binds a TLS listener on the listen port.
 3. Koi resolves a certificate (see [Certificates](#certificates) below) and terminates TLS with it.
 4. For each accepted connection, Koi opens a plain `TcpStream` to the backend and pumps bytes both ways until either side closes.
-5. When the certificate files change on disk, the next handshake serves the new certificate — no restart, no dropped connections.
+5. When Certmesh rotates the composed identity, or a Proxy override changes on disk, the next handshake serves the new certificate — no restart, no dropped connections.
 
 Because step 4 is a byte-level copy, the proxy is protocol-agnostic above TLS: HTTP/1.1, HTTP/2 (h2c is not negotiated, but HTTP/2-over-TLS to an h2 backend passes through), WebSockets, gRPC, and raw TCP all work.
 
@@ -30,15 +30,15 @@ Because step 4 is a byte-level copy, the proxy is protocol-agnostic above TLS: H
 
 The proxy resolves its certificate in priority order:
 
-1. `<data-dir>/certs/<entry-name>/{fullchain.pem,key.pem}` — an explicit per-entry cert you (or an external tool) placed there.
-2. `<data-dir>/certs/<hostname>/{fullchain.pem,key.pem}` — the **local certmesh member certificate**. This is where `koi certmesh join` writes your machine's cert, so on a mesh member the proxy picks it up automatically.
+1. `<data-dir>/proxy-certs/<entry-name>/{fullchain.pem,key.pem}` — an explicit per-entry override owned by Proxy and placed there by you or an external tool.
+2. The **local certmesh member identity**, supplied live by Certmesh through Koi's typed composition boundary. Proxy does not inspect Certmesh's private storage.
 3. A **generated self-signed certificate** — the zero-config fallback so a proxy always starts and serves TLS, even with no certmesh at all.
 
-`koi proxy status` reports which one is in use as the `TLS` column: `certmesh` when a cert file was found on disk, `self-signed` when Koi generated one.
+`koi proxy status` reports which one is in use as the `TLS` column: `override`, `certmesh`, or `self-signed`. The HTTP status also includes `cert_revision`, which advances when the selected bytes or source changes.
 
 > The certmesh integration is the point. When the proxy serves the certmesh member cert, it presents a certificate that every other certmesh member already trusts — no manual distribution, no per-client trust store fiddling. A self-signed cert is fine for local development (you just need TLS to be *present*), but external clients will see a warning until they trust it.
 
-Certificate renewal is transparent: when certmesh rotates the member cert on disk, the proxy's cert watcher reloads it and the next handshake uses the new cert.
+Certificate renewal is transparent: when Certmesh rotates the member identity, its latest-value feed wakes Proxy and the next handshake uses the new certificate. Removing or invalidating that identity immediately selects the next usable source instead of retaining stale key material.
 
 ---
 
@@ -109,7 +109,7 @@ When the daemon is running, proxy endpoints live under `/v1/proxy/`:
 
 | Method   | Path                      | Purpose                       |
 | -------- | ------------------------- | ----------------------------- |
-| `GET`    | `/v1/proxy/status`        | Runtime status of all proxies |
+| `GET`    | `/v1/proxy/status`        | Revisioned runtime status of all proxies |
 | `GET`    | `/v1/proxy/list`          | Configured proxy entries      |
 | `POST`   | `/v1/proxy/add`           | Add or update a proxy         |
 | `DELETE` | `/v1/proxy/remove/{name}` | Remove a proxy                |
@@ -132,7 +132,7 @@ Mutating endpoints require the daemon access token (`x-koi-token`) — see the s
 The proxy is most powerful combined with certmesh:
 
 1. You create a certmesh (`koi certmesh create`).
-2. Other machines join (`koi certmesh join`) — each receives a cert at `certs/<hostname>/`.
+2. Other machines join (`koi certmesh join`) — Certmesh publishes each local member identity through its private typed port.
 3. You add a proxy on any member (`koi proxy add web --listen 8443 --backend 127.0.0.1:8080`).
 4. The proxy serves that member's certmesh cert.
 5. Every other mesh member already trusts the mesh CA.
@@ -160,7 +160,7 @@ Either stop the conflicting process or `proxy add` the entry again with a differ
 
 ### Certificate not trusted by clients
 
-The `TLS` column shows `self-signed`, or the client isn't a certmesh member. Members trust the mesh CA automatically; non-members (external browsers, API clients) need the CA in their trust store. Install Koi's CA via `koi certmesh` on that machine, or import the CA certificate from the data directory's `certs/` tree and trust it (`curl --cacert <ca>.pem`, system store, etc.).
+The `TLS` column shows `self-signed`, or the client isn't a certmesh member. Members trust the mesh CA automatically; non-members (external browsers, API clients) need the CA in their trust store. Install Koi's CA through `koi trust` on that machine, or export the root with `koi trust export --ca` and trust it (`curl --cacert <ca>.pem`, system store, etc.).
 
 ### Proxy shows `self-signed` despite certmesh
 
@@ -170,7 +170,7 @@ Either the CA is locked after a daemon restart, or the member cert hasn't been i
 koi certmesh unlock
 ```
 
-Once the member cert lands in `certs/<hostname>/`, the proxy's cert watcher picks it up and the next handshake serves it — no restart needed. (If you placed a per-entry cert at `certs/<entry-name>/`, that one takes priority.)
+Once Certmesh has a healthy local identity, the composed feed wakes Proxy and the next handshake serves it — no restart needed. (If you placed a per-entry override at `proxy-certs/<entry-name>/`, that one takes priority.)
 
 ### A backend on another host is refused
 

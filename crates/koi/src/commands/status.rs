@@ -1,26 +1,31 @@
 //! Unified status command handler.
 //!
-//! Shows the status of all capabilities - connecting to a running daemon
-//! if available, otherwise reporting offline status.
+//! Shows the status of all capabilities from a running daemon. When no daemon
+//! can be observed, it preserves the product ladder but does not infer domain
+//! state from configuration or files.
 
 use koi_common::capability::CapabilityStatus;
 
-use crate::cli::{Cli, Config};
+use crate::cli::Cli;
 use crate::client::KoiClient;
 use crate::format;
 
-pub fn status(cli: &Cli, config: &Config) -> anyhow::Result<()> {
-    if let Some(status_json) = try_daemon_status(cli) {
+pub fn status(cli: &Cli) -> anyhow::Result<()> {
+    if let Some(status_json) = try_daemon_status(cli)? {
+        let human = format::unified_status(&status_json)?;
         if cli.json {
             println!("{}", serde_json::to_string_pretty(&status_json)?);
         } else {
-            print!("{}", format::unified_status(&status_json));
+            print!("{human}");
         }
         return Ok(());
     }
 
-    // No daemon - report offline status
-    let capabilities = offline_capabilities(config);
+    // No daemon means there is no authoritative domain status to project. Keep
+    // the stable product shape, but mark every rung as unobserved rather than
+    // guessing from launch configuration or private persistence.
+    let observation = offline_observation(cli);
+    let capabilities = offline_capabilities(observation);
 
     let status = LocalStatus {
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -34,7 +39,14 @@ pub fn status(cli: &Cli, config: &Config) -> anyhow::Result<()> {
     } else {
         println!("Koi v{}", status.version);
         println!("  Platform:  {}", status.platform);
-        println!("  Daemon:    not running");
+        println!(
+            "  Daemon:    {}",
+            if cli.standalone {
+                "not queried (--standalone)"
+            } else {
+                "not observed"
+            }
+        );
         for cap in &status.capabilities {
             let marker = if cap.healthy { "+" } else { "-" };
             println!("  [{}] {}:  {}", marker, cap.name, cap.summary);
@@ -53,260 +65,96 @@ struct LocalStatus {
 }
 
 /// Probe for a running daemon and return unified status JSON if reachable.
-pub fn try_daemon_status(cli: &Cli) -> Option<serde_json::Value> {
+///
+/// Failure to discover a local service is ordinary absence. Once a service is
+/// explicitly selected—or a discovered service answers its liveness probe—its
+/// transport and protocol failures remain real errors rather than being
+/// rewritten as an offline status.
+pub fn try_daemon_status(cli: &Cli) -> anyhow::Result<Option<serde_json::Value>> {
     if cli.standalone {
-        return None;
+        return Ok(None);
     }
 
-    let client = match &cli.endpoint {
-        Some(endpoint) => KoiClient::with_token(endpoint, super::cli_token(cli).unwrap_or("")),
-        None => KoiClient::from_local().ok()?,
-    };
-    if client.health().is_err() {
-        return None;
+    if let Some(endpoint) = &cli.endpoint {
+        let client = KoiClient::with_token(endpoint, super::cli_token(cli).unwrap_or(""));
+        client.health()?;
+        return Ok(Some(client.unified_status()?));
     }
 
-    match client.unified_status() {
-        Ok(status_json) => Some(status_json),
-        Err(e) => {
-            tracing::debug!(error = %e, "Could not fetch unified status");
-            None
+    let access = match koi_client::observe_local_daemon_access() {
+        koi_client::LocalDaemonObservation::Present(access) => access,
+        koi_client::LocalDaemonObservation::Absent => return Ok(None),
+        koi_client::LocalDaemonObservation::Uncertain(error) => {
+            anyhow::bail!("the local Koi service owner could not be verified: {error}")
         }
+    };
+    let client = KoiClient::with_token(&access.endpoint, &access.token);
+    if let Err(error) = client.health() {
+        anyhow::bail!(
+            "the local Koi owner is published at {}, but its health boundary is unavailable: {error}",
+            access.endpoint
+        );
+    }
+    Ok(Some(client.unified_status()?))
+}
+
+fn offline_observation(cli: &Cli) -> &'static str {
+    if cli.standalone {
+        "standalone mode"
+    } else {
+        "daemon status unavailable"
     }
 }
 
-fn offline_capabilities(config: &Config) -> Vec<CapabilityStatus> {
-    let mut caps = Vec::new();
-
-    if config.no_mdns {
-        caps.push(CapabilityStatus {
-            name: "mdns".to_string(),
-            summary: "disabled".to_string(),
+fn offline_capabilities(observation: &str) -> Vec<CapabilityStatus> {
+    koi_compose::status::CAPABILITY_LADDER
+        .into_iter()
+        .map(|name| CapabilityStatus {
+            name: name.to_string(),
+            summary: format!("not observed: {observation}"),
             healthy: false,
-        });
-    } else {
-        caps.push(CapabilityStatus {
-            name: "mdns".to_string(),
-            summary: "not running".to_string(),
-            healthy: false,
-        });
-    }
-
-    if config.no_certmesh {
-        caps.push(CapabilityStatus {
-            name: "certmesh".to_string(),
-            summary: "disabled".to_string(),
-            healthy: false,
-        });
-    } else {
-        let certmesh_summary =
-            if koi_certmesh::CertmeshPaths::with_data_dir(config.data_dir.clone())
-                .is_ca_initialized()
-            {
-                "CA initialized (daemon not running)".to_string()
-            } else {
-                "CA not initialized".to_string()
-            };
-        caps.push(CapabilityStatus {
-            name: "certmesh".to_string(),
-            summary: certmesh_summary,
-            healthy: false,
-        });
-    }
-
-    if config.no_dns {
-        caps.push(CapabilityStatus {
-            name: "dns".to_string(),
-            summary: "disabled".to_string(),
-            healthy: false,
-        });
-    } else {
-        caps.push(CapabilityStatus {
-            name: "dns".to_string(),
-            summary: "not running".to_string(),
-            healthy: false,
-        });
-    }
-
-    if config.no_health {
-        caps.push(CapabilityStatus {
-            name: "health".to_string(),
-            summary: "disabled".to_string(),
-            healthy: false,
-        });
-    } else {
-        caps.push(CapabilityStatus {
-            name: "health".to_string(),
-            summary: "not running".to_string(),
-            healthy: false,
-        });
-    }
-
-    if config.no_proxy {
-        caps.push(CapabilityStatus {
-            name: "proxy".to_string(),
-            summary: "disabled".to_string(),
-            healthy: false,
-        });
-    } else {
-        caps.push(CapabilityStatus {
-            name: "proxy".to_string(),
-            summary: "not running".to_string(),
-            healthy: false,
-        });
-    }
-
-    if config.no_udp {
-        caps.push(CapabilityStatus {
-            name: "udp".to_string(),
-            summary: "disabled".to_string(),
-            healthy: false,
-        });
-    } else {
-        caps.push(CapabilityStatus {
-            name: "udp".to_string(),
-            summary: "not running".to_string(),
-            healthy: false,
-        });
-    }
-
-    if config.no_runtime {
-        caps.push(CapabilityStatus {
-            name: "runtime".to_string(),
-            summary: "disabled".to_string(),
-            healthy: false,
-        });
-    } else {
-        caps.push(CapabilityStatus {
-            name: "runtime".to_string(),
-            summary: "not running".to_string(),
-            healthy: false,
-        });
-    }
-
-    caps
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
 
     #[test]
-    fn offline_all_enabled_shows_not_running() {
-        let config = Config::default();
-        let caps = offline_capabilities(&config);
-        assert_eq!(caps[0].name, "mdns");
-        assert!(!caps[0].healthy);
-        assert!(
-            caps[0].summary.contains("not running"),
-            "mdns summary: {}",
-            caps[0].summary
-        );
-        assert_eq!(caps[1].name, "certmesh");
-        assert!(!caps[1].healthy);
-        assert_eq!(caps[2].name, "dns");
-        assert!(!caps[2].healthy);
-        assert_eq!(caps[3].name, "health");
-        assert!(!caps[3].healthy);
-        assert_eq!(caps[4].name, "proxy");
-        assert!(!caps[4].healthy);
-        assert_eq!(caps[5].name, "udp");
-        assert!(!caps[5].healthy);
+    fn status_has_no_local_domain_or_configuration_input() {
+        // The status entry point accepts only connection intent. It cannot be
+        // handed a data root or a domain core, so its offline branch is
+        // structurally unable to replay durable state or mutate a platform.
+        let entry_point: fn(&Cli) -> anyhow::Result<()> = status;
+        let _ = entry_point;
     }
 
     #[test]
-    fn offline_mdns_disabled() {
-        let config = Config {
-            no_mdns: true,
-            ..Config::default()
-        };
-        let caps = offline_capabilities(&config);
-        assert_eq!(caps[0].name, "mdns");
-        assert_eq!(caps[0].summary, "disabled");
+    fn offline_status_preserves_the_canonical_product_ladder_without_inference() {
+        let caps = offline_capabilities("daemon status unavailable");
+        let names: Vec<&str> = caps
+            .iter()
+            .map(|capability| capability.name.as_str())
+            .collect();
+
+        assert_eq!(names, koi_compose::status::CAPABILITY_LADDER);
+        assert!(caps.iter().all(|capability| !capability.healthy));
+        assert!(caps
+            .iter()
+            .all(|capability| capability.summary == "not observed: daemon status unavailable"));
     }
 
     #[test]
-    fn offline_certmesh_disabled() {
-        let config = Config {
-            no_certmesh: true,
-            ..Config::default()
-        };
-        let caps = offline_capabilities(&config);
-        assert_eq!(caps[1].name, "certmesh");
-        assert_eq!(caps[1].summary, "disabled");
-    }
+    fn standalone_status_says_the_daemon_was_not_queried() {
+        let cli = Cli::try_parse_from(["koi", "--standalone", "status"]).unwrap();
+        let observation = offline_observation(&cli);
+        let caps = offline_capabilities(observation);
 
-    #[test]
-    fn offline_dns_disabled() {
-        let config = Config {
-            no_dns: true,
-            ..Config::default()
-        };
-        let caps = offline_capabilities(&config);
-        assert_eq!(caps[2].name, "dns");
-        assert_eq!(caps[2].summary, "disabled");
-    }
-
-    #[test]
-    fn offline_health_disabled() {
-        let config = Config {
-            no_health: true,
-            ..Config::default()
-        };
-        let caps = offline_capabilities(&config);
-        assert_eq!(caps[3].name, "health");
-        assert_eq!(caps[3].summary, "disabled");
-    }
-
-    #[test]
-    fn offline_proxy_disabled() {
-        let config = Config {
-            no_proxy: true,
-            ..Config::default()
-        };
-        let caps = offline_capabilities(&config);
-        assert_eq!(caps[4].name, "proxy");
-        assert_eq!(caps[4].summary, "disabled");
-    }
-
-    #[test]
-    fn offline_udp_disabled() {
-        let config = Config {
-            no_udp: true,
-            ..Config::default()
-        };
-        let caps = offline_capabilities(&config);
-        assert_eq!(caps[5].name, "udp");
-        assert_eq!(caps[5].summary, "disabled");
-    }
-
-    #[test]
-    fn offline_both_disabled() {
-        let config = Config {
-            no_mdns: true,
-            no_certmesh: true,
-            ..Config::default()
-        };
-        let caps = offline_capabilities(&config);
-        assert_eq!(caps[0].summary, "disabled");
-        assert_eq!(caps[1].summary, "disabled");
-    }
-
-    #[test]
-    fn offline_returns_seven_capabilities() {
-        let config = Config::default();
-        let caps = offline_capabilities(&config);
-        assert_eq!(caps.len(), 7);
-    }
-
-    #[test]
-    fn offline_runtime_disabled() {
-        let config = Config {
-            no_runtime: true,
-            ..Config::default()
-        };
-        let caps = offline_capabilities(&config);
-        assert_eq!(caps[6].name, "runtime");
-        assert_eq!(caps[6].summary, "disabled");
+        assert_eq!(observation, "standalone mode");
+        assert!(caps
+            .iter()
+            .all(|capability| capability.summary == "not observed: standalone mode"));
     }
 }

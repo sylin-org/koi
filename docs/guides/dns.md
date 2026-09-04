@@ -74,7 +74,7 @@ When the daemon is running, DNS endpoints live under `/v1/dns/`:
 
 | Method   | Path                                 | Purpose                      |
 | -------- | ------------------------------------ | ---------------------------- |
-| `GET`    | `/v1/dns/status`                     | Resolver state               |
+| `GET`    | `/v1/dns/status`                     | Revisioned listener state, configuration, and record counts |
 | `GET`    | `/v1/dns/lookup?name=grafana&type=A` | Query a name                 |
 | `GET`    | `/v1/dns/list`                       | All entries from all sources |
 | `GET`    | `/v1/dns/entries`                    | Static entries only          |

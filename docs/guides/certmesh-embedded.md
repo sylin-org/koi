@@ -21,7 +21,7 @@ embedded API, [embedded.md](embedded.md); one-screen map: the
 | Surface | In embedded? | How |
 | --- | --- | --- |
 | **The whole `CertmeshCore`** — create, unlock, `mint_invite`, `enroll`, `prepare_member_csr`, `install_member_cert`, `revoke_member`, `renew_self_if_due` (member-side), `renew_member` (CA-side, transport-agnostic — ADR-021), `member_cert_expiry`, `pull_trust_bundle`, `apply_trust_bundle` (ingest a `SignedBundle` over your own transport — ADR-023), `is_certmesh_member` / `is_self_revoked` (cheap membership / self-revocation predicates), `self_enroll`, open/close-enrollment, `certmesh_status`, audit log, destroy | **Yes — automatic** | `handle.certmesh()?.core()?` → `Arc<CertmeshCore>` |
-| **Plain-HTTP routes** (`/v1/certmesh/{create,status,join,trust-bundle,revoke,member-csr,member-cert,invite,…}`) | **Yes** when `.http(true)` | Mounted at `/v1/certmesh`. **No DAT token gate** — see [Authentication](#authentication) |
+| **Plain-HTTP routes** (`/v1/certmesh/{create,bootstrap,status,join,trust-bundle,revoke,member-csr,member-cert,invite,…}`) | **Yes** when `.http(true)` | Mounted at `/v1/certmesh`. **No DAT token gate** — see [Authentication](#authentication) |
 | **mTLS inter-node listener** (`/renew`, `/promote`, `/health`, `/set-hook` — how a CA serves member renewals) | **You wire it** | `koi_certmesh::mtls::serve(core.inter_node_routes(), …)` |
 | **Self-management** (trust-bundle pull → policy refresh + cross-member revocation honoring + self-stand-down, plus auto-renewal) | **On by default once a member** (ADR-023); a no-op until then | opt out with `.certmesh_managed(false)` to drive it yourself |
 | **ACME (RFC 8555) facade** | **No** | Binary-only adapter |
@@ -71,9 +71,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 1. Preflight + PIN: confirm the CA you reached is the one the invite names,
     //    BEFORE sending a CSR (defeats a LAN MITM of discovery).
-    let status: serde_json::Value =
-        http.get(format!("{ca}/v1/certmesh/status")).send().await?.json().await?;
-    let advertised = status["ca_fingerprint"].as_str().unwrap_or_default();
+    let bootstrap: serde_json::Value =
+        http.get(format!("{ca}/v1/certmesh/bootstrap")).send().await?.json().await?;
+    let advertised = bootstrap["ca_fingerprint"].as_str().unwrap_or_default();
     if !fingerprints_match(advertised, pinned_fp) {
         return Err("CA fingerprint mismatch — refusing to join".into());
     }
@@ -165,7 +165,7 @@ use tokio_util::sync::CancellationToken;
 let koi = Builder::new()
     .data_dir("/var/lib/myapp/koi")
     .certmesh(true)
-    .http(true).http_port(5641)   // serves /v1/certmesh/{create,status,join,trust-bundle,…}
+    .http(true).http_port(5641)   // serves /v1/certmesh/{create,bootstrap,status,join,trust-bundle,…}
     .build()?;
 let handle = koi.start().await?;
 let core = handle.certmesh()?.core()?;

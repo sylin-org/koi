@@ -617,12 +617,13 @@ The daemon must be running for the dashboard to load.",
         name: "status",
         summary: "Show status of all capabilities",
         long_description: "\
-Displays a dashboard of all Koi capabilities: mDNS, certmesh, DNS,
-health, and proxy. Shows whether each subsystem is running, along with
-key metrics (registration counts, CA state, listener counts, etc.).
+Displays the canonical Koi capability ladder: mDNS, certmesh, trust,
+DNS, health, proxy, UDP, runtime, IPC, and Pond. Shows whether each
+subsystem is running, along with key metrics.
 
-When the daemon is running, status is fetched via IPC. In standalone
-mode, it reads local state files directly.",
+Live status comes from the running daemon's composed status boundary.
+Without a reachable daemon, every row is marked not observed; the CLI
+does not infer domain truth from configuration or private state files.",
         category: KoiCategory::Core,
         tags: &[KoiTag::ReadOnly],
         scope: KoiScope::Public,
@@ -1840,7 +1841,7 @@ transitions (healthy → unhealthy and back).",
         summary: "Remove a service health check",
         long_description: "\
 Removes a health check registration. The check stops running immediately
-and its history is removed from the transition log.",
+while its already-recorded transition history remains available in the log.",
         category: KoiCategory::Health,
         tags: &[KoiTag::Mutating],
         scope: KoiScope::Admin,
@@ -1872,7 +1873,7 @@ name, old state, new state, and reason.",
         see_also: &["health status", "health watch"],
         api: &[ApiEndpoint {
             method: "GET",
-            path: koi_health::http::paths::STATUS,
+            path: koi_health::http::paths::LOG,
         }],
         confirmation: None,
     },
@@ -2154,7 +2155,9 @@ Requires elevated privileges (Administrator / sudo).",
         long_description: "\
 Lists the CA roots that Koi installed into the OS trust store, with their
 fingerprints and install timestamps. This shows only Koi's own footprint
-(tracked in state/trust.json) — not the entire OS trust store.",
+(tracked in state/trust.json) — not the entire OS trust store. The read is
+observational: it never replays a pending platform transition; use
+`koi trust diagnose --fix` for explicit recovery.",
         category: KoiCategory::TrustStore,
         tags: &[KoiTag::ReadOnly, KoiTag::CliOnly],
         scope: KoiScope::Public,
@@ -2202,8 +2205,10 @@ container's CA bundle:
 
   koi trust export --ca > koi-root.pem
 
-The certmesh CA must exist (run `koi certmesh create` first). See the ACME
-guide for how this fits the ACME bootstrap recipes.",
+The certmesh CA must exist (run `koi certmesh create` first). If the daemon is
+unavailable, this reads Certmesh's observation-only snapshot; an unfinished
+Certmesh transaction must be recovered by starting the service first. See the
+ACME guide for how this fits the bootstrap recipes.",
         category: KoiCategory::TrustStore,
         tags: &[KoiTag::ReadOnly, KoiTag::CliOnly],
         scope: KoiScope::Public,
@@ -2228,9 +2233,11 @@ with a distinct status and, where there is something to do, an exact remedy:
   • renewal health (expired / overdue / soon / healthy)
   • CA trust-install + the local clock / freshness window
 
-Exits non-zero when anything is RED, so it slots into scripts and CI. `--fix`
-installs the mesh CA into the OS trust store (the one auto-fixable remedy). Runs
-locally (reads on-disk state); no daemon required.",
+Exits non-zero when anything is RED, so it slots into scripts and CI. Without
+`--fix` this is observational, including for a pending trust-store transition.
+`--fix` explicitly replays that transition and installs the mesh CA into the OS
+trust store (the auto-fixable remedies). No daemon is required for a stable
+Certmesh generation; unfinished Certmesh transactions remain daemon-owned.",
         category: KoiCategory::TrustStore,
         tags: &[KoiTag::CliOnly],
         scope: KoiScope::Public,

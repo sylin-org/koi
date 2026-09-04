@@ -1,0 +1,33 @@
+[package]
+name = "koi-trust"
+description = "Koi's OS trust-store domain: durable desired state, reconciliation, status, and events"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["certificate", "trust-store", "pki", "koi"]
+categories = ["cryptography", "os"]
+
+[features]
+default = []
+test-util = []
+
+[dependencies]
+koi-common.workspace = true
+os-truststore.workspace = true
+axum.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+utoipa.workspace = true
+
+[dev-dependencies]
+rcgen.workspace = true
+serde_json.workspace = true
+tower = { version = "0.5", features = ["util"] }

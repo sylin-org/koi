@@ -18,12 +18,16 @@ use crate::cores::Cores;
 /// without touching mDNS when it is false, when mDNS is disabled, or when registration
 /// fails. `dashboard_enabled` is the value the caller actually serves — the daemon and the
 /// Windows service always host the dashboard (`true`); embedded passes its config flag.
+/// `session` owns this process-derived record and provides fail-safe reaping if an explicit
+/// withdrawal cannot settle during provider churn.
 ///
 /// The trust stamp (`koi_common::peer::stamp`) writes the node's posture, CA fingerprint,
 /// and leaf expiry so peers discovering it read the mesh's trust map directly (ADR-020 §8).
 /// These are advisory hints; `verify`/mTLS adjudicates actual trust.
 pub async fn http_record(
     cores: &Cores,
+    session: &koi_mdns::RegistrationSession,
+    hostname: &str,
     http_port: u16,
     dashboard_enabled: bool,
     enabled: bool,
@@ -32,11 +36,6 @@ pub async fn http_record(
         return None;
     }
     let mdns = cores.mdns.as_ref()?;
-
-    let hostname = hostname::get()
-        .ok()
-        .and_then(|os| os.into_string().ok())
-        .unwrap_or_else(|| "unknown".to_string());
 
     let mut txt = std::collections::HashMap::new();
     txt.insert("path".to_string(), "/".to_string());
@@ -47,12 +46,13 @@ pub async fn http_record(
     // Stamp this node's trust posture so peers discovering it read the mesh's trust map
     // directly (ADR-020 §8). Advisory hints; verify/mTLS adjudicates actual trust.
     if let Some(ref certmesh) = cores.certmesh {
-        let id = certmesh.local_identity().await;
+        let status = certmesh.status();
+        let identity = status.identity.info.as_ref();
         koi_common::peer::stamp(
             &mut txt,
-            certmesh.posture(),
-            id.as_ref().map(|i| i.ca_fingerprint.as_str()),
-            id.as_ref().map(|i| i.renewal.expires_at),
+            status.posture,
+            identity.map(|info| info.ca_fingerprint.as_str()),
+            identity.map(|info| info.renewal.expires_at),
         );
     }
 
@@ -64,7 +64,16 @@ pub async fn http_record(
         lease_secs: None,
         txt,
     };
-    match mdns.register(payload).await {
+    match mdns
+        .register_with_policy(
+            payload,
+            koi_mdns::LeasePolicy::Session {
+                grace: std::time::Duration::ZERO,
+            },
+            Some(session.id().clone()),
+        )
+        .await
+    {
         Ok(result) => {
             tracing::info!(
                 id = %result.id,
@@ -80,32 +89,25 @@ pub async fn http_record(
     }
 }
 
-/// Register this host's `_mcp._tcp` transport-discovery record (plus the in-zone
-/// `_mcp.<host>.<zone>` unicast DNS TXT when DNS serves the zone) and return the mDNS
-/// registration id, or `None` when it was not published.
+/// Register this host's `_mcp._tcp` transport-discovery record and return the
+/// mDNS registration id, or `None` when it was not published. The independent
+/// in-zone DNS descriptor is owned by [`mcp_txt_lease`].
 ///
 /// Publishes EXACTLY ONE `_mcp._tcp` record per host (never one per service, which would
 /// flood the link). Unlike [`crate::announce::http_record`] it carries **no posture stamp** — the MCP endpoint
 /// is transport-discovery, not trust-gated — so it does not need re-announcing on posture
 /// flips. `enabled` folds the caller's gate (MCP transport mounted + HTTP on). Pair with
 /// [`withdraw_mcp`] for a clean shutdown (the prior one-shot announce leaked the record).
+/// The supplied registration session remains the fallback owner on every abnormal exit.
 pub async fn mcp_record(
     cores: &Cores,
+    session: &koi_mdns::RegistrationSession,
     hostname: &str,
     http_port: u16,
-    dns_zone: &str,
     enabled: bool,
 ) -> Option<String> {
     if !enabled {
         return None;
-    }
-
-    // Unicast in-zone descriptor (only meaningful when DNS serves the zone).
-    if let Some(ref dns) = cores.dns {
-        let name = mcp_dns_name(hostname, dns_zone);
-        dns.core()
-            .add_txt(&name, "transport=streamable-http;path=/v1/mcp");
-        tracing::debug!(name = %name, "published in-zone MCP TXT descriptor");
     }
 
     // One `_mcp._tcp` record per host. TXT vocabulary matches what koi-mcp's own
@@ -124,7 +126,16 @@ pub async fn mcp_record(
         lease_secs: None,
         txt,
     };
-    match mdns.register(payload).await {
+    match mdns
+        .register_with_policy(
+            payload,
+            koi_mdns::LeasePolicy::Session {
+                grace: std::time::Duration::ZERO,
+            },
+            Some(session.id().clone()),
+        )
+        .await
+    {
         Ok(result) => {
             tracing::info!(id = %result.id, port = http_port, "MCP endpoint announced via mDNS (_mcp._tcp)");
             Some(result.id)
@@ -136,27 +147,34 @@ pub async fn mcp_record(
     }
 }
 
-/// Withdraw the `_mcp._tcp` mDNS record (by `mcp_id`) and remove the in-zone
-/// `_mcp.<host>.<zone>` DNS TXT. `hostname` must be the one used at registration (the caller
-/// captures it once) so the removed name matches even if the OS hostname changed mid-run.
-/// Best-effort; safe to call when nothing was published.
-pub async fn withdraw_mcp(cores: &Cores, hostname: &str, dns_zone: &str, mcp_id: Option<&str>) {
+/// Publish the process-derived in-zone MCP descriptor under synchronous lease
+/// ownership. Aborting its supervisor drops the lease and removes exactly this
+/// value without disturbing another TXT value at the same owner name.
+pub fn mcp_txt_lease(
+    cores: &Cores,
+    hostname: &str,
+    dns_zone: &str,
+    enabled: bool,
+) -> Option<koi_dns::DnsTxtLease> {
+    if !enabled {
+        return None;
+    }
+    let dns = cores.dns.as_ref()?;
+    let name = mcp_dns_name(hostname, dns_zone);
+    let lease = dns.publish_txt(&name, "transport=streamable-http;path=/v1/mcp");
+    tracing::debug!(name = %name, "published in-zone MCP TXT descriptor");
+    Some(lease)
+}
+
+/// Withdraw the `_mcp._tcp` mDNS record. The in-zone TXT has its own
+/// [`koi_dns::DnsTxtLease`] and is removed when its supervisor exits on every
+/// graceful, panic, and abort path.
+pub async fn withdraw_mcp(cores: &Cores, mcp_id: Option<&str>) {
     if let (Some(id), Some(mdns)) = (mcp_id, cores.mdns.as_ref()) {
         if let Err(e) = mdns.unregister(id).await {
             tracing::debug!(error = %e, "failed to withdraw _mcp._tcp announce");
         }
     }
-    if let Some(ref dns) = cores.dns {
-        dns.core().remove_txt(&mcp_dns_name(hostname, dns_zone));
-    }
-}
-
-/// This host's name for the announce records (`"unknown"` if it can't be read).
-pub(crate) fn local_hostname() -> String {
-    hostname::get()
-        .ok()
-        .and_then(|os| os.into_string().ok())
-        .unwrap_or_else(|| "unknown".to_string())
 }
 
 /// The in-zone unicast DNS name for the MCP descriptor.

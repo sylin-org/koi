@@ -7,11 +7,21 @@
 //! `Removed` from `Absent`.
 
 use std::collections::HashSet;
+use std::io::Read as _;
+use std::os::windows::io::AsRawHandle as _;
+use std::os::windows::process::CommandExt as _;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
+use windows_sys::Win32::Foundation::{CloseHandle, ERROR_TIMEOUT, HANDLE};
+use windows_sys::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+    SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+};
 
 pub const MANAGED_RULE_PREFIX: &str = "Koi ";
 
@@ -60,10 +70,24 @@ trait CommandRunner {
     fn run(&self, program: &str, args: &[String]) -> std::io::Result<ProcessResult>;
 }
 
-struct SystemRunner;
+#[derive(Debug, Clone, Copy, Default)]
+struct SystemRunner {
+    deadline: Option<Instant>,
+}
+
+impl SystemRunner {
+    fn until(deadline: Instant) -> Self {
+        Self {
+            deadline: Some(deadline),
+        }
+    }
+}
 
 impl CommandRunner for SystemRunner {
     fn run(&self, program: &str, args: &[String]) -> std::io::Result<ProcessResult> {
+        if let Some(deadline) = self.deadline {
+            return run_owned_until(program, args, deadline);
+        }
         let output = Command::new(program).args(args).output()?;
         Ok(ProcessResult {
             success: output.status.success(),
@@ -74,12 +98,261 @@ impl CommandRunner for SystemRunner {
     }
 }
 
+/// A private Windows Job Object is the process-tree ownership boundary for a bounded
+/// firewall query. Closing the last handle kills every associated process, so no
+/// PowerShell helper can outlive either its deadline or an error path.
+struct ProcessJob {
+    handle: HANDLE,
+}
+
+impl ProcessJob {
+    fn new() -> std::io::Result<Self> {
+        // SAFETY: null security attributes and name request a private, non-inheritable job.
+        let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if handle.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        // SAFETY: `limits` has the exact layout and size required by this information class;
+        // `handle` remains owned by `job` until Drop.
+        let configured = unsafe {
+            SetInformationJobObject(
+                handle,
+                JobObjectExtendedLimitInformation,
+                (&raw const limits).cast(),
+                std::mem::size_of_val(&limits) as u32,
+            )
+        };
+        if configured == 0 {
+            let error = std::io::Error::last_os_error();
+            // SAFETY: `handle` was returned by CreateJobObjectW and has not been closed.
+            unsafe {
+                CloseHandle(handle);
+            }
+            return Err(error);
+        }
+        Ok(Self { handle })
+    }
+
+    fn assign(&self, child: &Child) -> std::io::Result<()> {
+        let child_handle = child.as_raw_handle() as HANDLE;
+        // SAFETY: both handles are live. `std::process::Child` grants the process rights
+        // required by AssignProcessToJobObject for a process it created.
+        if unsafe { AssignProcessToJobObject(self.handle, child_handle) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    fn terminate(&self) -> std::io::Result<()> {
+        if self.handle.is_null() {
+            return Ok(());
+        }
+        // SAFETY: the owned job handle is live; ERROR_TIMEOUT becomes the process-tree exit
+        // code and cannot be handled or postponed by members of the job.
+        if unsafe { TerminateJobObject(self.handle, ERROR_TIMEOUT) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    fn close(&mut self) -> std::io::Result<()> {
+        if self.handle.is_null() {
+            return Ok(());
+        }
+        // SAFETY: this is the only owned handle. KILL_ON_JOB_CLOSE is a second independent
+        // process-tree termination route, including for a parent that exited normally.
+        if unsafe { CloseHandle(self.handle) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        self.handle = std::ptr::null_mut();
+        Ok(())
+    }
+}
+
+impl Drop for ProcessJob {
+    fn drop(&mut self) {
+        if self.handle.is_null() {
+            return;
+        }
+        let _ = self.terminate();
+        let _ = self.close();
+    }
+}
+
+struct OwnedJobChild {
+    child: Child,
+    job: ProcessJob,
+    reaped: bool,
+}
+
+impl OwnedJobChild {
+    fn spawn(program: &str, args: &[String]) -> std::io::Result<Self> {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+        let job = ProcessJob::new()?;
+        let mut command = Command::new(program);
+        command
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .creation_flags(CREATE_NO_WINDOW);
+        let child = command.spawn()?;
+        let owned = Self {
+            child,
+            job,
+            reaped: false,
+        };
+        owned.job.assign(&owned.child)?;
+        Ok(owned)
+    }
+
+    fn wait_until(&mut self, deadline: Instant, program: &str) -> std::io::Result<ExitStatus> {
+        loop {
+            match self.child.try_wait() {
+                Ok(Some(status)) => {
+                    self.reaped = true;
+                    // A query must not intentionally leave helpers behind. Terminating the job
+                    // after the direct child exits also closes inherited pipe writers promptly.
+                    let terminated = self.job.terminate();
+                    let closed = self.job.close();
+                    if let (Err(terminate_error), Err(close_error)) = (terminated, closed) {
+                        return Err(std::io::Error::other(format!(
+                            "could not close completed {program} process tree: {}; {}",
+                            terminate_error, close_error
+                        )));
+                    }
+                    return Ok(status);
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let _ = self.terminate_and_reap();
+                    return Err(error);
+                }
+            }
+
+            let now = Instant::now();
+            if now >= deadline {
+                self.terminate_and_reap()?;
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("{program} exceeded its firewall assessment deadline"),
+                ));
+            }
+            std::thread::sleep(
+                deadline
+                    .saturating_duration_since(now)
+                    .min(Duration::from_millis(20)),
+            );
+        }
+    }
+
+    fn terminate_and_reap(&mut self) -> std::io::Result<()> {
+        let tree_result = self.job.terminate();
+        let close_result = self.job.close();
+        let tree_failure = match (tree_result, close_result) {
+            (Err(terminate_error), Err(close_error)) => Some((terminate_error, close_error)),
+            _ => None,
+        };
+        if tree_failure.is_some() {
+            // The Child handle is an independent last-resort termination route. Job Drop still
+            // retries tree termination through KILL_ON_JOB_CLOSE on every return path.
+            self.child.kill()?;
+        }
+        self.child.wait()?;
+        self.reaped = true;
+        if let Some((terminate_error, close_error)) = tree_failure {
+            return Err(std::io::Error::other(format!(
+                "could not terminate firewall command process tree: {}; {}",
+                terminate_error, close_error
+            )));
+        }
+        Ok(())
+    }
+}
+
+impl Drop for OwnedJobChild {
+    fn drop(&mut self) {
+        if self.reaped {
+            return;
+        }
+        let _ = self.job.terminate();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        self.reaped = true;
+    }
+}
+
+fn run_owned_until(
+    program: &str,
+    args: &[String],
+    deadline: Instant,
+) -> std::io::Result<ProcessResult> {
+    if Instant::now() >= deadline {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!("firewall assessment deadline elapsed before {program}"),
+        ));
+    }
+
+    let mut owned = OwnedJobChild::spawn(program, args)?;
+    let mut stdout = owned
+        .child
+        .stdout
+        .take()
+        .expect("bounded command configured stdout as piped");
+    let mut stderr = owned
+        .child
+        .stderr
+        .take()
+        .expect("bounded command configured stderr as piped");
+
+    std::thread::scope(|scope| {
+        // Pipes are drained while the process runs so a large firewall ruleset cannot fill a
+        // kernel pipe buffer and turn an otherwise healthy query into a false timeout.
+        let stdout_reader = scope.spawn(move || {
+            let mut bytes = Vec::new();
+            stdout.read_to_end(&mut bytes).map(|_| bytes)
+        });
+        let stderr_reader = scope.spawn(move || {
+            let mut bytes = Vec::new();
+            stderr.read_to_end(&mut bytes).map(|_| bytes)
+        });
+
+        let status = owned.wait_until(deadline, program);
+        // Release the kill-on-close job boundary before joining readers. This guarantees EOF
+        // even if an unexpected descendant inherited one of the output pipe writers.
+        drop(owned);
+        let stdout = join_output_reader(stdout_reader, "stdout")?;
+        let stderr = join_output_reader(stderr_reader, "stderr")?;
+        let status = status?;
+        Ok(ProcessResult {
+            success: status.success(),
+            code: status.code(),
+            stdout: String::from_utf8_lossy(&stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&stderr).into_owned(),
+        })
+    })
+}
+
+fn join_output_reader(
+    reader: std::thread::ScopedJoinHandle<'_, std::io::Result<Vec<u8>>>,
+    stream: &str,
+) -> std::io::Result<Vec<u8>> {
+    reader.join().map_err(|_| {
+        std::io::Error::other(format!("{stream} reader for firewall command panicked"))
+    })?
+}
+
 pub fn snapshot_managed() -> anyhow::Result<Vec<RuleSnapshot>> {
-    snapshot_managed_with(&SystemRunner)
+    snapshot_managed_with(&SystemRunner::default())
 }
 
 pub fn remove(name: &str) -> anyhow::Result<Removal> {
-    remove_with(&SystemRunner, name)
+    remove_with(&SystemRunner::default(), name)
 }
 
 /// Replace every same-name rule with one intentional application-scoped allow rule.
@@ -90,7 +363,7 @@ pub fn replace_managed(
     port: u16,
     executable: &Path,
 ) -> anyhow::Result<Removal> {
-    replace_managed_with(&SystemRunner, name, protocol, port, executable)
+    replace_managed_with(&SystemRunner::default(), name, protocol, port, executable)
 }
 
 /// Restore a complete prior set. All snapshots are validated and all target names are
@@ -99,7 +372,7 @@ pub fn restore_snapshot_set(
     added_names: &[String],
     snapshots: &[RuleSnapshot],
 ) -> anyhow::Result<()> {
-    restore_snapshot_set_with(&SystemRunner, added_names, snapshots)
+    restore_snapshot_set_with(&SystemRunner::default(), added_names, snapshots)
 }
 
 pub fn validate_snapshots(snapshots: &[RuleSnapshot]) -> anyhow::Result<()> {
@@ -115,7 +388,28 @@ pub fn assess_managed(
     port: u16,
     executable: &Path,
 ) -> anyhow::Result<Assessment> {
-    assess_managed_with(&SystemRunner, name, protocol, port, executable)
+    assess_managed_with(&SystemRunner::default(), name, protocol, port, executable)
+}
+
+/// Assess one managed rule under an adapter-owned wall-clock deadline.
+///
+/// The call returns only after the PowerShell process tree has exited and its direct child
+/// has been reaped. Callers therefore do not need a cancellable outer timeout that can detach
+/// blocking process work.
+pub fn assess_managed_until(
+    name: &str,
+    protocol: &str,
+    port: u16,
+    executable: &Path,
+    deadline: Instant,
+) -> anyhow::Result<Assessment> {
+    assess_managed_with(
+        &SystemRunner::until(deadline),
+        name,
+        protocol,
+        port,
+        executable,
+    )
 }
 
 /// Assess several managed rules from one Windows Firewall query.
@@ -125,7 +419,7 @@ pub fn assess_managed_rules(
     rules: &[(&str, &str, u16)],
     executable: &Path,
 ) -> anyhow::Result<Vec<Assessment>> {
-    assess_managed_rules_with(&SystemRunner, rules, executable)
+    assess_managed_rules_with(&SystemRunner::default(), rules, executable)
 }
 
 fn snapshot_managed_with(runner: &impl CommandRunner) -> anyhow::Result<Vec<RuleSnapshot>> {
@@ -534,6 +828,60 @@ mod tests {
             stdout: String::new(),
             stderr: stderr.to_string(),
         })
+    }
+
+    #[test]
+    fn expired_deadline_refuses_to_spawn_a_process() {
+        let error = run_owned_until(
+            "koi-command-that-must-not-exist.exe",
+            &[],
+            Instant::now() - Duration::from_millis(1),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(error
+            .to_string()
+            .contains("deadline elapsed before koi-command-that-must-not-exist.exe"));
+    }
+
+    #[test]
+    fn bounded_process_owner_terminates_and_reaps_at_deadline() {
+        let args = vec![
+            "-NoProfile".to_string(),
+            "-NonInteractive".to_string(),
+            "-Command".to_string(),
+            "Start-Sleep -Seconds 30".to_string(),
+        ];
+        let mut owned = OwnedJobChild::spawn("powershell.exe", &args).unwrap();
+        let started = Instant::now();
+        let error = owned
+            .wait_until(
+                Instant::now() + Duration::from_millis(100),
+                "powershell.exe",
+            )
+            .unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(owned.reaped, "deadline return must acknowledge child reap");
+        assert!(owned.child.try_wait().unwrap().is_some());
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "terminated child was not reaped promptly"
+        );
+    }
+
+    #[test]
+    fn powershell_query_is_headless_and_noninteractive() {
+        let runner = FakeRunner::new(vec![ok("")]);
+        powershell(&runner, "Write-Output 'ok'").unwrap();
+
+        let calls = runner.calls.borrow();
+        assert_eq!(calls[0].0, "powershell.exe");
+        assert_eq!(
+            &calls[0].1[..3],
+            &["-NoProfile", "-NonInteractive", "-Command"]
+        );
     }
 
     fn snapshot(name: &str, profile: Option<&str>) -> RuleSnapshot {

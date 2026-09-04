@@ -6,7 +6,7 @@ The design philosophy is intentionally narrow. Koi doesn't try to replace Promet
 
 **When to use health checks**: You have services running on your LAN and you want to know immediately when one goes down. You want a live terminal dashboard showing service state. You want transition history - not just whether something is down _now_, but when it went down and when it came back.
 
-All CLI commands use the `koi health` prefix. All HTTP endpoints live under `/v1/health/`. Health commands require a running daemon - use `koi install` or `koi --daemon` first.
+All CLI commands use the `koi health` prefix. All HTTP endpoints live under `/v1/health/`. By default, commands use the one installed Koi service (or an explicit `--endpoint`). An intentional local-only session requires `--standalone`, and Koi refuses it while a local service may already own the same state.
 
 ---
 
@@ -76,7 +76,7 @@ Every time a check changes state - healthy to unhealthy, or back - Koi logs the 
 koi health log
 ```
 
-This is your incident timeline. When you come back Monday morning and a service is down, the log tells you exactly when it went unhealthy and whether it's been flapping. The distinction between "went down once at 3 AM Saturday" and "has been bouncing every 20 minutes since Friday" changes how you respond.
+This is your incident timeline. The command reads the running daemon's domain-owned history; `koi --standalone health log` explicitly opens an isolated Health aggregate only after proving that no local service owns it. When you come back Monday morning and a service is down, the log tells you exactly when it went unhealthy and whether it's been flapping. The distinction between "went down once at 3 AM Saturday" and "has been bouncing every 20 minutes since Friday" changes how you respond.
 
 ---
 
@@ -128,7 +128,8 @@ When the daemon is running, health endpoints live under `/v1/health/`:
 
 | Method   | Path                       | Purpose                              |
 | -------- | -------------------------- | ------------------------------------ |
-| `GET`    | `/v1/health/status`        | Snapshot of all checks               |
+| `GET`    | `/v1/health/status`        | Revisioned runtime snapshot (`running`, machines, services) |
+| `GET`    | `/v1/health/log`           | Durable state-transition history       |
 | `GET`    | `/v1/health/list`          | List registered checks (config only) |
 | `POST`   | `/v1/health/add`           | Register a check                     |
 | `DELETE` | `/v1/health/remove/{name}` | Remove a check                       |
@@ -145,7 +146,7 @@ x-koi-token: <daemon access token>
 
 The body fields are `name`, `kind` (`"http"` or `"tcp"`), `target` (the URL or `host:port`), plus optional `interval_secs` and `timeout_secs`. For a TCP check, use `{"name": "db", "kind": "tcp", "target": "127.0.0.1:5432"}`.
 
-Mutating endpoints (`POST /v1/health/add`, `DELETE /v1/health/remove/{name}`) require the daemon access token in the `x-koi-token` header — see the [security model](../reference/security-model.md) for how to read it from the breadcrumb. `GET` reads (status, list) are unauthenticated.
+Mutating endpoints (`POST /v1/health/add`, `DELETE /v1/health/remove/{name}`) require the daemon access token in the `x-koi-token` header — see the [security model](../reference/security-model.md) for how to read it from the breadcrumb. `GET` reads (status, list, transition log) are unauthenticated. The status `revision` advances after configuration, completed check-batch, or lifecycle changes.
 
 ---
 

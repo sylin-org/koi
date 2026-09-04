@@ -1,7 +1,11 @@
 # Docker Adapter (koi-docker)
 
-**Status:** Idea
-**Scope:** Separate sidecar/companion - no changes to Koi core
+**Status:** Superseded by ADR-013
+**Scope:** Historical sidecar proposal
+
+> Koi now owns runtime observation behind the `koi-runtime` provider port and
+> reconciles runtime facts in `koi-compose`. This proposal is retained as prior
+> design context; it is not an implementation plan.
 
 ---
 
@@ -19,8 +23,8 @@ to duplicate port information that Docker already knows.
 
 ## Why not build it into Koi?
 
-Koi is a DNS-SD daemon. It speaks a runtime-agnostic JSON protocol over
-HTTP, IPC, and stdin/stdout. Baking Docker awareness into Koi would:
+The original proposal treated Koi as only a DNS-SD daemon with HTTP, IPC, and
+stdin/stdout adapters. It argued that baking Docker awareness into Koi would:
 
 - Create a hard dependency on the Docker socket (`/var/run/docker.sock`)
 - Require container runtime detection heuristics (fragile across Docker,

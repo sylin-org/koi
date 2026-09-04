@@ -9,7 +9,7 @@
 When the user says **"run fleet/task.md"**, execute
 [`fleet/task.md`](../fleet/task.md). It is the universal self-routing entry point:
 the local hostname selects the hat and brief, and
-[`fleet/epics/001-productization-hardening.md`](../fleet/epics/001-productization-hardening.md)
+[`fleet/epics/002-observable-domain-boundaries.md`](../fleet/epics/002-observable-domain-boundaries.md)
 supplies the current objective, dependencies, and exit gates. Do not ask the user to
 restate an OS assignment already encoded there.
 
@@ -18,7 +18,7 @@ restate an OS assignment already encoded there.
 When the user says **"continue the epic to v1"**, read
 [`SESSION-HANDOFF.md`](../SESSION-HANDOFF.md) before doing new discovery or implementation.
 That ledger preserves the earlier v1 campaign and its release-gated residue. It does
-not supersede PH-001 when the fleet-task prompt is used. Verify either ledger against
+not supersede the active fleet epic when the fleet-task prompt is used. Verify either ledger against
 Git and the live lab before relying on historical facts.
 
 **Project memory map**: [`docs/MEMORY.md`](../docs/MEMORY.md) indexes durable state
@@ -39,7 +39,7 @@ Never commit `local/`.
 - [cli.md](../docs/reference/cli.md) - every command, flag, and environment variable
 - [ceremony-protocol.md](../docs/reference/ceremony-protocol.md) - ceremony engine, input types, session flow
 - [envelope-encryption.md](../docs/reference/envelope-encryption.md) - CA key protection, slot types
-- [domain-template.md](../docs/reference/domain-template.md) - **adding a new domain crate**: crate layout, the shared `koi-common` primitives to use (`DomainRuntime`, async `Capability`, `event_channel`, `http::error_response`, `integration` traits), the per-crate conventions that stay, and the binary-side touchpoints
+- [domain-template.md](../docs/reference/domain-template.md) - **adding a new domain crate**: crate layout, the three-faced command/status/event boundary, the small shared primitives (`StatusFeed`, `event_channel`, `http::error_response`, `integration` traits), domain-owned lifecycle, and composition touchpoints
 
 **Check design decisions**: `docs/adr/`
 
@@ -63,6 +63,7 @@ crates/
 ├── koi-mdns/         # mDNS domain - core, daemon, registry, protocol, http routes
 ├── koi-config/       # Config & state - breadcrumb discovery
 ├── koi-certmesh/     # Certificate mesh domain - CA, enrollment, roster
+├── koi-trust/        # OS trust domain - managed roots, durable intent, platform presence
 ├── koi-crypto/       # Cryptographic primitives - key gen, signing, TOTP, FIDO2, auth adapters
 ├── koi-dns/          # Local DNS resolver - zone management, resolution, rate limiting
 ├── koi-health/       # Machine & service health monitoring - HTTP/TCP checks, transitions
@@ -71,7 +72,7 @@ crates/
 ├── koi-runtime/      # Container/service runtime adapter - Docker, Podman lifecycle events
 ├── koi-client/       # HTTP client for daemon communication (blocking ureq)
 ├── koi-compose/      # Composition root - build_cores, cross-domain bridges, orchestrator, ordered_shutdown, snapshot, self-announce, status
-├── koi-serve/        # Serving layer - the one HTTP/OpenAPI router + serve(), IPC/stdio NDJSON, MCP HTTP, inter-node mTLS + ACME, Prometheus SD, dashboard wiring, posture-reactive trust plane
+├── koi-serve/        # Serving layer - HTTP/OpenAPI, authenticated local IPC, MCP HTTP, inter-node mTLS + ACME, Prometheus SD, dashboard wiring, posture-reactive trust plane
 ├── koi-mcp/          # MCP server (stdio) - exposes the LAN substrate to AI agents
 ├── koi-dashboard/    # Presentation - dashboard + mDNS browser (HTML, SSE, event forwarder, lazy meta-browse)
 └── koi-embedded/     # Embed Koi in Rust applications - builder, handles, events
@@ -101,12 +102,13 @@ Each domain crate exposes three faces:
 ### 3. Crate Dependency Graph
 
 ```
-koi (bin) → koi-serve, koi-compose, koi-common, koi-mcp, koi-dashboard, koi-mdns, koi-certmesh, koi-crypto, koi-config, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi-client, os-truststore (external)
-koi-compose   → koi-common, koi-config, koi-crypto, koi-dashboard, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, hickory-proto, tokio
+koi (bin) → koi-serve, koi-compose, koi-common, koi-mcp, koi-dashboard, koi-mdns, koi-certmesh, koi-trust, koi-crypto, koi-config, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi-client
+koi-compose   → koi-common, koi-config, koi-crypto, koi-dashboard, koi-mdns, koi-certmesh, koi-trust, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, hickory-proto, tokio
 koi-serve     → koi-compose, koi-common, koi-config, koi-dashboard, koi-mcp, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, axum, utoipa, utoipa-scalar, tokio-rustls, rustls, hyper-util, subtle, tokio  (the serving layer; depends on koi-compose, not the reverse)
 koi-mcp       → koi-common, koi-client, koi-config, rmcp, hickory-proto, if-addrs, tokio  (depends on NO domain crate)
 koi-mdns      → koi-common, mdns-sd, socket2, zbus (Linux Avahi + resolve1), axum, utoipa, tokio
-koi-certmesh  → koi-common, koi-crypto, os-truststore (external), axum, utoipa, tokio
+koi-certmesh  → koi-common, koi-crypto, axum, utoipa, tokio
+koi-trust     → koi-common, os-truststore (external), chrono, serde, tokio
 koi-crypto    → (standalone: ring/rcgen/totp-rs/p256)
 # os-truststore: platform trust-store install — spun out to the os-tools repo (ADR-019);
 # consumed via a crates.io version dependency, not a workspace member.
@@ -117,22 +119,23 @@ koi-proxy     → koi-common, koi-config, tokio-rustls, rustls, rcgen, axum, uto
 koi-udp       → koi-common, axum, utoipa, tokio
 koi-runtime   → koi-common, bollard, axum, utoipa, tokio, chrono, async-trait
 koi-client    → koi-common, ureq (blocking)
-koi-dashboard → koi-common, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-runtime, axum, tokio
-koi-embedded  → koi-serve, koi-compose, koi-common, koi-dashboard, koi-crypto, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi-config, koi-client, reqwest, tokio
+koi-dashboard → koi-common, koi-mdns, koi-certmesh, koi-trust, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, axum, tokio
+koi-embedded  → koi-serve, koi-compose, koi-common, koi-dashboard, koi-crypto, koi-mdns, koi-certmesh, koi-trust, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi-config, koi-client, reqwest, tokio
 ```
 
 **Domain** crates depend on `koi-common` but **never** on each other.
 `koi-serve` is the **serving layer** — it owns every transport (the one HTTP/OpenAPI router
-+ `serve()`, IPC/stdio NDJSON, MCP HTTP, inter-node mTLS + ACME, Prometheus SD, dashboard
++ `serve()`, authenticated local IPC, MCP HTTP, inter-node mTLS + ACME, Prometheus SD, dashboard
 wiring) plus the posture-reactive trust plane; it depends on `koi-compose` (never the
 reverse). `koi-dashboard` is a **composition/presentation** crate (not a domain): it
 depends on the event-bearing domain crates so the single event forwarder + mDNS browse
 adapter exist once. Only the serving/composition layers and the two top-level consumers
 (`koi`, `koi-embedded`) depend on these wiring crates, so the kernel and domain closures
-stay clean. `koi-common` is a **types plus lifecycle/event utilities kernel** — it carries
-no presentation deps (`tokio-stream`/`async-stream`/`hostname` left with the dashboard in
-P06); its small lifecycle/event layer intentionally uses `tokio`/`tokio-util`. The
-dashboard/browser HTML, SSE, and browse cache live in `koi-dashboard`.
+stay clean. `koi-common` is a **types plus small status/event coordination kernel** — it
+carries no presentation deps (`tokio-stream`/`async-stream`/`hostname` left with the
+dashboard in P06). Its `StatusFeed` and event-channel helper intentionally use Tokio's
+synchronization primitives, but domain lifecycle state machines remain inside their owning
+domains. The dashboard/browser HTML, SSE, and browse cache live in `koi-dashboard`.
 
 ### 4. mDNS Provider Isolation (CRITICAL)
 
@@ -245,16 +248,17 @@ cargo clippy -- -D warnings
 
 ## Execution Modes
 
-Koi operates in four modes - understand which one your change affects:
+Koi has three process-ownership modes - understand which one your change affects:
 
-| Mode           | Detection                            | Core Owner          | Transport           |
-| -------------- | ------------------------------------ | ------------------- | ------------------- |
-| **Daemon**     | No subcommand                        | All cores (shared)  | HTTP + Pipe/UDS     |
-| **Standalone** | `koi mdns <cmd>` + no daemon         | MdnsCore (local)    | Direct              |
-| **Client**     | `koi <domain> <cmd>` + daemon running | KoiClient → HTTP   | HTTP to daemon      |
-| **Piped**      | stdin is piped                       | MdnsCore (local)    | NDJSON stdin/stdout |
+| Mode           | Selection                                      | Core Owner         | Transport       |
+| -------------- | ---------------------------------------------- | ------------------ | --------------- |
+| **Daemon**     | Installed service or explicit `--daemon`       | All cores (shared) | HTTP + Pipe/UDS |
+| **Client**     | Command + local service or explicit endpoint   | KoiClient          | HTTP to daemon  |
+| **Standalone** | Explicit `--standalone`, local service stopped | This invocation    | Direct          |
 
 Daemon mode also serves an embedded dashboard (`GET /`) and mDNS browser (`GET /mdns-browser`).
+Bare `koi` renders status/catalog. Redirected stdin does not create another core;
+explicit `koi mcp serve` is a daemon-backed stdio protocol.
 
 ---
 
@@ -370,27 +374,31 @@ pub struct DomainCore { state: Arc<InternalState> }
 impl DomainCore { pub async fn do_thing(&self) -> Result<T> { ... } }
 ```
 
-### Adapter Dispatch Dedup
+### Local IPC dispatch
 
-The pipe and CLI adapters share identical NDJSON request dispatch logic. This is factored into `adapters::dispatch`:
+The authenticated Named Pipe / UDS adapter keeps its verb-oriented NDJSON request
+dispatch in `koi-serve::dispatch`:
 
 - `new_session_id()` - uses `koi_common::id::generate_short_id()`
 - `handle_line()` - parses request, dispatches to MdnsCore, writes responses
 - `write_response()` - serializes with graceful error handling (no `.unwrap()`)
 
-Each adapter only keeps its own session grace period and transport setup.
+The local IPC adapter owns its session grace period and transport setup. There is
+no implicit stdin responder; `koi mcp serve` is a separate daemon-backed protocol.
 
 ### Binary Crate Module Structure
 
 The binary crate (`crates/koi/src/`) is organized by responsibility:
 
 ```
-main.rs            - Pure orchestrator: CLI parse, routing, daemon wiring, shutdown
+main.rs            - CLI parse and top-level host entry
 cli.rs             - clap definitions (Cli, Command, Config)
 client.rs          - Re-exports koi-client (HTTP client for client mode)
 format.rs          - ALL human-readable CLI output (single source of truth)
 admin.rs           - Admin command execution (delegates to KoiClient)
-openapi.rs         - Manifest-driven OpenAPI spec builder (utoipa)
+daemon.rs          - Foreground daemon composition and terminal lifecycle edge
+dispatch.rs        - Top-level command routing
+infra.rs           - Signals, logging, diagnostics, and host wiring helpers
 help/              - Terminal-profile-aware help rendering + command/API metadata
                      (folded in from the former command-surface crate in P09)
 commands/
@@ -403,13 +411,6 @@ commands/
   udp.rs           - UDP commands (bind, unbind, send, status, heartbeat)
   ceremony_cli.rs  - Ceremony protocol CLI handling
   status.rs        - Unified status command
-adapters/
-  mod.rs
-  http.rs          - HTTP server (AppState, routes, health, status, OpenAPI/Scalar)
-  pipe.rs          - Named Pipe / UDS adapter
-  cli.rs           - Piped stdin/stdout adapter
-  dispatch.rs      - Shared NDJSON dispatch logic
-  dashboard.rs     - Dashboard wiring (snapshot builder + DashboardState); HTML/SSE/forwarder live in koi-dashboard
 platform/
   mod.rs           - Platform abstraction
   windows.rs       - SCM, firewall, service paths
@@ -419,7 +420,7 @@ platform/
 
 Key design rules:
 
-- `main.rs` contains zero business logic - only routing and wiring
+- `main.rs`, `dispatch.rs`, and `daemon.rs` contain host routing/composition, not domain logic
 - `format.rs` is the only file with `println!`-based presentation
 - Platform paths live in their respective `platform/` modules, not in `cli.rs`
 - Commands are organized by domain (`commands/mdns.rs`, `commands/certmesh.rs`, `commands/dns.rs`, etc.)

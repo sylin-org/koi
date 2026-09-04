@@ -94,8 +94,8 @@ async fn udp_bind_and_status() {
     let udp = handle.udp().expect("udp enabled");
 
     // Initially no bindings
-    let status = udp.status().await;
-    assert!(status.is_empty(), "expected no bindings initially");
+    let status = udp.status();
+    assert!(status.bindings.is_empty(), "expected no bindings initially");
 
     // Bind port 0 (OS-assigned)
     let bind_req = koi_udp::UdpBindRequest {
@@ -113,15 +113,18 @@ async fn udp_bind_and_status() {
     assert_eq!(info.lease_secs, 300);
 
     // Status shows exactly one binding
-    let status = udp.status().await;
-    assert_eq!(status.len(), 1);
-    assert_eq!(status[0].id, info.id);
-    assert_eq!(status[0].local_addr, info.local_addr);
+    let status = udp.status();
+    assert_eq!(status.bindings.len(), 1);
+    assert_eq!(status.bindings[0].id, info.id);
+    assert_eq!(status.bindings[0].local_addr, info.local_addr);
 
     // Unbind
     udp.unbind(&info.id).await.expect("unbind should succeed");
-    let status = udp.status().await;
-    assert!(status.is_empty(), "binding should be removed after unbind");
+    let status = udp.status();
+    assert!(
+        status.bindings.is_empty(),
+        "binding should be removed after unbind"
+    );
 
     handle.shutdown().await.unwrap();
 }
@@ -141,7 +144,7 @@ async fn udp_send_and_recv() {
     let info = udp.bind(bind_req).await.expect("bind");
 
     // Subscribe to incoming datagrams
-    let mut rx = udp.subscribe(&info.id).await.expect("subscribe");
+    let mut rx = udp.subscribe_datagrams(&info.id).await.expect("subscribe");
 
     // Send a datagram to the bound address from a separate socket
     let sender = tokio::net::UdpSocket::bind("127.0.0.1:0")
@@ -238,13 +241,13 @@ async fn udp_heartbeat_extends_lease() {
         .expect("heartbeat should succeed");
 
     // Binding should still be alive
-    let status = udp.status().await;
-    assert_eq!(status.len(), 1);
-    assert_eq!(status[0].id, info.id);
+    let status = udp.status();
+    assert_eq!(status.bindings.len(), 1);
+    assert_eq!(status.bindings[0].id, info.id);
 
     // last_heartbeat should be more recent than created_at
     assert!(
-        status[0].last_heartbeat >= status[0].created_at,
+        status.bindings[0].last_heartbeat >= status.bindings[0].created_at,
         "heartbeat timestamp should be >= created_at"
     );
 
@@ -268,7 +271,7 @@ async fn udp_subscribe_nonexistent_returns_error() {
     let (handle, _dir) = udp_handle().await;
     let udp = handle.udp().expect("udp enabled");
 
-    let result = udp.subscribe("nonexistent-id").await;
+    let result = udp.subscribe_datagrams("nonexistent-id").await;
     assert!(result.is_err(), "subscribe to nonexistent ID should fail");
 
     handle.shutdown().await.unwrap();
@@ -308,8 +311,8 @@ async fn udp_multiple_bindings() {
         ids.push(info.id);
     }
 
-    let status = udp.status().await;
-    assert_eq!(status.len(), 3, "should have three bindings");
+    let status = udp.status();
+    assert_eq!(status.bindings.len(), 3, "should have three bindings");
 
     // All IDs should be distinct
     let mut unique_ids: Vec<_> = ids.clone();
@@ -319,10 +322,10 @@ async fn udp_multiple_bindings() {
 
     // Remove middle one
     udp.unbind(&ids[1]).await.expect("unbind middle");
-    let status = udp.status().await;
-    assert_eq!(status.len(), 2);
+    let status = udp.status();
+    assert_eq!(status.bindings.len(), 2);
     assert!(
-        status.iter().all(|b| b.id != ids[1]),
+        status.bindings.iter().all(|b| b.id != ids[1]),
         "removed binding should not appear in status"
     );
 
@@ -347,8 +350,14 @@ async fn udp_multi_subscriber_receives_same_datagram() {
     let info = udp.bind(bind_req).await.expect("bind");
 
     // Two subscribers
-    let mut rx1 = udp.subscribe(&info.id).await.expect("subscribe 1");
-    let mut rx2 = udp.subscribe(&info.id).await.expect("subscribe 2");
+    let mut rx1 = udp
+        .subscribe_datagrams(&info.id)
+        .await
+        .expect("subscribe 1");
+    let mut rx2 = udp
+        .subscribe_datagrams(&info.id)
+        .await
+        .expect("subscribe 2");
 
     // Send a datagram
     let sender = tokio::net::UdpSocket::bind("127.0.0.1:0")

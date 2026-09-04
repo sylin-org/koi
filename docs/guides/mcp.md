@@ -94,7 +94,7 @@ All tools operate against the running daemon. Read tools are marked read-only; w
 
 | Tool | Kind | What it does |
 | --- | --- | --- |
-| `lan_inventory` | read | One consolidated view: capability status + health + the DNS name table. The agent's first orienting call. |
+| `lan_inventory` | read | Capability status + health + the DNS name table projected from one product revision. Optional `include` selects any subset of `status`, `health`, and `dns`. |
 | `lan_discover` | read | Browse mDNS for a service type (or all types) for up to `timeout_secs` (default 5, max 10). Returns deduplicated service records. |
 | `lan_resolve` | read | Resolve one instance name to host/IP/port/TXT. |
 | `dns_lookup` | read | Resolve a name through Koi's local DNS resolver (A/AAAA/ANY). |
@@ -122,7 +122,7 @@ Alongside tools, the server exposes Koi's live state as MCP **resources** — a 
 
 | Resource URI | What it is |
 | --- | --- |
-| `koi://lan/inventory` | The joined view (status + health + DNS) — same as `lan_inventory`. |
+| `koi://lan/inventory` | The coherent status + health + DNS view from one product revision — same as `lan_inventory` without filtering. |
 | `koi://health` | All health checks. |
 | `koi://dns/zone` | All names resolvable by the local DNS resolver. |
 | `koi://mdns/services` | Cached mDNS-discovered services on the network. |

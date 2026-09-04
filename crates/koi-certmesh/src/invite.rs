@@ -48,8 +48,9 @@ pub(crate) fn encode_code(secret: &str, ca_fingerprint: &str) -> String {
 /// The CA fingerprint is `Some` only when the code carries one (the F3 form
 /// `<secret>.<fp>`); a bare secret (no separator) yields `None` so callers
 /// degrade to an unpinned join. The **secret** is always the part the CA hashes
-/// and consumes — [`verify_and_consume`] applies this same split, so a caller may
-/// present either the full code or just the secret and the CA behaves identically.
+/// and consumes. The aggregate enrollment command applies this same split, so a
+/// caller may present either the full code or just the secret and the CA behaves
+/// identically.
 pub fn decode_code(code: &str) -> (&str, Option<&str>) {
     match code.split_once(CODE_SEP) {
         Some((secret, fp)) if !fp.is_empty() => (secret, Some(fp)),
@@ -86,26 +87,58 @@ fn token_hash(token: &str) -> String {
     koi_common::encoding::hex_encode(&hasher.finalize()[..])
 }
 
-fn load(path: &Path) -> InviteStore {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+fn load(path: &Path) -> Result<InviteStore, CertmeshError> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(InviteStore::default());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    serde_json::from_slice(&bytes).map_err(|error| {
+        CertmeshError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("invalid invite store {}: {error}", path.display()),
+        ))
+    })
 }
 
+#[cfg(test)]
 fn save(path: &Path, store: &InviteStore) -> Result<(), CertmeshError> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
     let json = serde_json::to_string_pretty(store)
         .map_err(|e| CertmeshError::Internal(format!("serialize invites: {e}")))?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, json.as_bytes())?;
-    std::fs::rename(&tmp, path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    save_bytes(path, json.as_bytes())
+}
+
+#[cfg(test)]
+fn save_bytes(path: &Path, json: &[u8]) -> Result<(), CertmeshError> {
+    save_bytes_with(path, json, |path, bytes| {
+        koi_common::persist::write_bytes_atomic_with_options(
+            path,
+            bytes,
+            koi_common::persist::AtomicWriteOptions::new().with_unix_mode(0o600),
+        )
+    })
+}
+
+#[cfg(test)]
+fn save_bytes_with(
+    path: &Path,
+    json: &[u8],
+    write: impl FnOnce(&Path, &[u8]) -> std::io::Result<koi_common::persist::AtomicCommit>,
+) -> Result<(), CertmeshError> {
+    match write(path, json)? {
+        koi_common::persist::AtomicCommit::Durable => {}
+        koi_common::persist::AtomicCommit::DurabilityUncertain(error) => {
+            // The store replacement is visible. Minting must still return its
+            // one-time secret, and consumption must report the token burned;
+            // rejecting either would put caller truth behind durable state.
+            tracing::error!(
+                path = %path.display(),
+                %error,
+                "Invite store is visible, but its crash durability could not be confirmed"
+            );
+        }
     }
     Ok(())
 }
@@ -122,12 +155,23 @@ pub struct MintedInvite {
     pub expires_at: DateTime<Utc>,
 }
 
+/// A verified one-shot invite consumption that has not yet been persisted.
+pub(crate) struct PreparedInviteConsumption {
+    pub(crate) role: Option<String>,
+    pub(crate) store_bytes: Vec<u8>,
+}
+
 /// Mint a fresh single-use invite for `hostname`, returning the plaintext token
 /// and its expiry.
 ///
 /// The plaintext is returned exactly once (for the operator to copy); only its
 /// hash is persisted. Expired/used entries are pruned opportunistically.
-pub fn mint(path: &Path, hostname: &str, ttl_mins: i64) -> Result<MintedInvite, CertmeshError> {
+#[cfg(test)]
+pub(crate) fn mint(
+    path: &Path,
+    hostname: &str,
+    ttl_mins: i64,
+) -> Result<MintedInvite, CertmeshError> {
     mint_with_role(path, hostname, ttl_mins, None)
 }
 
@@ -136,12 +180,26 @@ pub fn mint(path: &Path, hostname: &str, ttl_mins: i64) -> Result<MintedInvite, 
 ///
 /// An unknown role is rejected loudly at mint time — never persisted to be
 /// silently treated as unbound later.
-pub fn mint_with_role(
+#[cfg(test)]
+pub(crate) fn mint_with_role(
     path: &Path,
     hostname: &str,
     ttl_mins: i64,
     role: Option<&str>,
 ) -> Result<MintedInvite, CertmeshError> {
+    let (minted, bytes) = prepare_mint_with_role(path, hostname, ttl_mins, role)?;
+    save_bytes(path, &bytes)?;
+    Ok(minted)
+}
+
+/// Prepare a mint without writing it, for inclusion in a Certmesh aggregate
+/// repository transaction.
+pub(crate) fn prepare_mint_with_role(
+    path: &Path,
+    hostname: &str,
+    ttl_mins: i64,
+    role: Option<&str>,
+) -> Result<(MintedInvite, Vec<u8>), CertmeshError> {
     let bound_role = role.map(|r| r.to_ascii_lowercase());
     match bound_role.as_deref() {
         None | Some("member") | Some("client") => {}
@@ -164,7 +222,7 @@ pub fn mint_with_role(
     let now = Utc::now();
     let expires_at = now + Duration::minutes(ttl);
 
-    let mut store = load(path);
+    let mut store = load(path)?;
     store.invites.retain(|i| !i.used && i.expires_at > now);
     store.invites.push(Invite {
         hostname: hostname.to_string(),
@@ -173,24 +231,40 @@ pub fn mint_with_role(
         used: false,
         role: bound_role,
     });
-    save(path, &store)?;
-    Ok(MintedInvite { token, expires_at })
+    let bytes = serde_json::to_vec_pretty(&store)
+        .map_err(|error| CertmeshError::Internal(format!("serialize invites: {error}")))?;
+    Ok((MintedInvite { token, expires_at }, bytes))
 }
 
 /// Verify `token` for `hostname` and burn it. Returns the consumed invite's
 /// bound role on success (`None` inside = unbound — any host role), or `None`
-/// overall when no matching, unexpired, unused invite existed. Fail-closed: any
-/// I/O or parse error yields `None`.
-pub fn verify_and_consume_details(
+/// overall when no matching, unexpired, unused invite existed. Storage failures
+/// are returned distinctly so callers cannot mistake damage for bad credentials.
+#[cfg(test)]
+pub(crate) fn verify_and_consume_details(
     path: &Path,
     token: &str,
     hostname: &str,
-) -> Option<Option<String>> {
+) -> Result<Option<Option<String>>, CertmeshError> {
+    let Some(prepared) = prepare_consumption(path, token, hostname)? else {
+        return Ok(None);
+    };
+    save_bytes(path, &prepared.store_bytes)?;
+    Ok(Some(prepared.role))
+}
+
+/// Verify and mark an invite consumed in memory. The aggregate command places
+/// `store_bytes` in the same durable transaction as the admitted member.
+pub(crate) fn prepare_consumption(
+    path: &Path,
+    token: &str,
+    hostname: &str,
+) -> Result<Option<PreparedInviteConsumption>, CertmeshError> {
     // Accept either the bare secret or the full F3 code (`<secret>.<fp>`): the CA
     // only ever hashes + consumes the secret half; the fingerprint is a
     // client-side pinning hint the CA does not need.
     let (secret, _fp) = decode_code(token);
-    let mut store = load(path);
+    let mut store = load(path)?;
     let h = token_hash(secret);
     let now = Utc::now();
     let pos = store.invites.iter().position(|i| {
@@ -202,20 +276,25 @@ pub fn verify_and_consume_details(
     match pos {
         Some(idx) => {
             store.invites[idx].used = true;
-            match save(path, &store) {
-                Ok(()) => Some(store.invites[idx].role.clone()),
-                Err(_) => None,
-            }
+            let role = store.invites[idx].role.clone();
+            let store_bytes = serde_json::to_vec_pretty(&store).map_err(|error| {
+                CertmeshError::Internal(format!("serialize invite consumption: {error}"))
+            })?;
+            Ok(Some(PreparedInviteConsumption { role, store_bytes }))
         }
-        None => None,
+        None => Ok(None),
     }
 }
 
 /// Verify `token` for `hostname` and burn it. Returns `true` iff a matching,
-/// unexpired, unused invite existed and was just consumed. Fail-closed: any
-/// I/O or parse error yields `false`.
-pub fn verify_and_consume(path: &Path, token: &str, hostname: &str) -> bool {
-    verify_and_consume_details(path, token, hostname).is_some()
+/// unexpired, unused invite existed and was just consumed.
+#[cfg(test)]
+pub(crate) fn verify_and_consume(
+    path: &Path,
+    token: &str,
+    hostname: &str,
+) -> Result<bool, CertmeshError> {
+    Ok(verify_and_consume_details(path, token, hostname)?.is_some())
 }
 
 #[cfg(test)]
@@ -233,10 +312,107 @@ mod tests {
     fn mint_then_verify_consumes_once() {
         let p = store_path("roundtrip");
         let token = mint(&p, "host-a", 60).unwrap().token;
-        assert!(verify_and_consume(&p, &token, "host-a"), "first use ok");
         assert!(
-            !verify_and_consume(&p, &token, "host-a"),
+            verify_and_consume(&p, &token, "host-a").unwrap(),
+            "first use ok"
+        );
+        assert!(
+            !verify_and_consume(&p, &token, "host-a").unwrap(),
             "single-use: second use rejected"
+        );
+    }
+
+    #[test]
+    fn corrupt_store_blocks_mint_and_consumption_fails_closed() {
+        let p = store_path("corrupt-store");
+        let corrupt = b"{not valid invite json";
+        std::fs::write(&p, corrupt).unwrap();
+
+        let error = mint(&p, "host-a", 60).unwrap_err();
+
+        assert!(
+            matches!(error, CertmeshError::Io(ref error) if error.kind() == std::io::ErrorKind::InvalidData),
+            "mint must surface corrupt durable invite state: {error}"
+        );
+        assert_eq!(std::fs::read(&p).unwrap(), corrupt);
+        assert!(
+            verify_and_consume(&p, "unknown", "host-a").is_err(),
+            "verification must distinguish damaged storage from bad credentials"
+        );
+    }
+
+    #[test]
+    fn invite_read_failures_are_not_treated_as_missing_credentials() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("invites.json");
+        std::fs::create_dir_all(&path).unwrap();
+
+        assert!(matches!(load(&path), Err(CertmeshError::Io(_))));
+        assert!(matches!(
+            prepare_consumption(&path, "token", "host-a"),
+            Err(CertmeshError::Io(_))
+        ));
+    }
+
+    #[test]
+    fn pre_replace_failure_preserves_the_previous_invite_store() {
+        let p = store_path("pre-replace-failure");
+        let old = mint(&p, "old-host", 60).unwrap();
+        let before = std::fs::read(&p).unwrap();
+        let (replacement, replacement_bytes) =
+            prepare_mint_with_role(&p, "new-host", 60, None).unwrap();
+
+        let result = save_bytes_with(&p, &replacement_bytes, |_, _| {
+            Err(std::io::Error::other("injected pre-replace failure"))
+        });
+
+        assert!(
+            matches!(result, Err(CertmeshError::Io(ref error)) if error.to_string().contains("injected"))
+        );
+        assert_eq!(std::fs::read(&p).unwrap(), before);
+        assert!(
+            !verify_and_consume(&p, &replacement.token, "new-host").unwrap(),
+            "a rejected write cannot expose the prepared invite"
+        );
+        assert!(
+            verify_and_consume(&p, &old.token, "old-host").unwrap(),
+            "the previously committed invite remains usable"
+        );
+    }
+
+    #[test]
+    fn visible_uncertain_commit_is_accepted_and_reload_observes_the_invite() {
+        let p = store_path("visible-uncertain");
+        let (minted, bytes) = prepare_mint_with_role(&p, "host-a", 60, None).unwrap();
+
+        save_bytes_with(&p, &bytes, |target, bytes| {
+            let outcome = koi_common::persist::write_bytes_atomic_with_options(
+                target,
+                bytes,
+                koi_common::persist::AtomicWriteOptions::new().with_unix_mode(0o600),
+            )?;
+            Ok(match outcome {
+                koi_common::persist::AtomicCommit::Durable => {
+                    koi_common::persist::AtomicCommit::DurabilityUncertain(std::io::Error::other(
+                        "injected post-replace sync failure",
+                    ))
+                }
+                uncertain @ koi_common::persist::AtomicCommit::DurabilityUncertain(_) => uncertain,
+            })
+        })
+        .expect("a visible invite replacement is an accepted commit");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        assert!(
+            verify_and_consume(&p, &minted.token, "host-a").unwrap(),
+            "reload observes the invite from the accepted visible replacement"
         );
     }
 
@@ -244,16 +420,16 @@ mod tests {
     fn verify_rejects_wrong_host() {
         let p = store_path("wronghost");
         let token = mint(&p, "host-a", 60).unwrap().token;
-        assert!(!verify_and_consume(&p, &token, "host-b"));
+        assert!(!verify_and_consume(&p, &token, "host-b").unwrap());
         // still valid for the right host
-        assert!(verify_and_consume(&p, &token, "host-a"));
+        assert!(verify_and_consume(&p, &token, "host-a").unwrap());
     }
 
     #[test]
     fn verify_rejects_unknown_token() {
         let p = store_path("unknown");
         let _ = mint(&p, "host-a", 60).unwrap();
-        assert!(!verify_and_consume(&p, "deadbeefdeadbeef", "host-a"));
+        assert!(!verify_and_consume(&p, "deadbeefdeadbeef", "host-a").unwrap());
     }
 
     #[test]
@@ -261,10 +437,10 @@ mod tests {
         let p = store_path("expired");
         let token = mint(&p, "host-a", 60).unwrap().token;
         // Force the entry's expiry into the past.
-        let mut store = load(&p);
+        let mut store = load(&p).unwrap();
         store.invites[0].expires_at = Utc::now() - Duration::minutes(5);
         save(&p, &store).unwrap();
-        assert!(!verify_and_consume(&p, &token, "host-a"));
+        assert!(!verify_and_consume(&p, &token, "host-a").unwrap());
     }
 
     // ── F3 invite-code encode/decode ─────────────────────────────────
@@ -305,11 +481,11 @@ mod tests {
         let secret = mint(&p, "host-a", 60).unwrap().token;
         let code = encode_code(&secret, "anyfingerprint");
         assert!(
-            verify_and_consume(&p, &code, "host-a"),
+            verify_and_consume(&p, &code, "host-a").unwrap(),
             "full code consumes"
         );
         assert!(
-            !verify_and_consume(&p, &secret, "host-a"),
+            !verify_and_consume(&p, &secret, "host-a").unwrap(),
             "single-use: the underlying secret is already burned"
         );
     }
@@ -323,7 +499,7 @@ mod tests {
             .unwrap()
             .token;
         assert_eq!(
-            verify_and_consume_details(&p, &token, "agent-1"),
+            verify_and_consume_details(&p, &token, "agent-1").unwrap(),
             Some(Some("client".to_string())),
             "the consumed invite reports its client binding"
         );
@@ -336,14 +512,14 @@ mod tests {
         let p = store_path("unbound-legacy");
         let legacy = mint(&p, "host-a", 60).unwrap().token;
         assert_eq!(
-            verify_and_consume_details(&p, &legacy, "host-a"),
+            verify_and_consume_details(&p, &legacy, "host-a").unwrap(),
             Some(None)
         );
 
         let p2 = store_path("unbound-explicit");
         let explicit = mint_with_role(&p2, "host-b", 60, None).unwrap().token;
         assert_eq!(
-            verify_and_consume_details(&p2, &explicit, "host-b"),
+            verify_and_consume_details(&p2, &explicit, "host-b").unwrap(),
             Some(None)
         );
     }
@@ -357,7 +533,7 @@ mod tests {
             "unknown roles fail at mint time with named expectations: {err}"
         );
         // Nothing was persisted — a failed mint cannot leave an invite behind.
-        assert!(load(&p).invites.is_empty());
+        assert!(load(&p).unwrap().invites.is_empty());
     }
 
     #[test]
@@ -368,7 +544,7 @@ mod tests {
             .unwrap()
             .token;
         assert_eq!(
-            verify_and_consume_details(&p, &token, "agent-9"),
+            verify_and_consume_details(&p, &token, "agent-9").unwrap(),
             Some(Some("client".to_string()))
         );
     }

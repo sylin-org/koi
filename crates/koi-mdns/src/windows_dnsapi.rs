@@ -21,7 +21,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use tokio::sync::{mpsc as tokio_mpsc, watch};
+use tokio::sync::{mpsc as tokio_mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 use windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER;
 use windows_sys::Win32::NetworkManagement::Dns::{
@@ -43,7 +43,7 @@ use crate::adapter::{
 use crate::error::{MdnsError, ProviderFailure, ProviderOperation};
 use crate::provider::{
     provider_error, Announcement, BrowseLease, ProviderAddress, ProviderBrowse, ProviderEvent,
-    ProviderService, ProviderSession, PublicationLease,
+    ProviderService, ProviderSession, ProviderTask, PublicationLease,
 };
 use crate::Result;
 
@@ -52,6 +52,9 @@ const HEALTH_INTERVAL: Duration = Duration::from_secs(2);
 const RESOLVE_WAIT: Duration = Duration::from_secs(6);
 const EVENT_BRIDGE_POLL: Duration = Duration::from_millis(50);
 const BROWSE_CHANNEL_CAPACITY: usize = 512;
+const HEALTH_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
+const BROWSE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(8);
+const CALL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(7);
 
 const DESCRIPTOR: ProviderDescriptor = ProviderDescriptor::new(
     "windows-dns-sd",
@@ -250,21 +253,28 @@ struct DnsApiSession {
     state_tx: watch::Sender<ProviderSessionState>,
     state_rx: watch::Receiver<ProviderSessionState>,
     capabilities: MdnsCapabilities,
-    bridges: Mutex<Vec<BridgeRegistration>>,
-    health: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    browses: DnsApiBrowseRegistry,
+    calls: DnsApiCallRegistry,
+    health_cancel: CancellationToken,
+    health: ProviderTask,
 }
 
 impl DnsApiSession {
     fn start(capabilities: MdnsCapabilities) -> Self {
         let (state_tx, state_rx) = watch::channel(ProviderSessionState::Ready);
         let health_tx = state_tx.clone();
-        let health = tokio::spawn(async move {
+        let health_cancel = CancellationToken::new();
+        let health_stop = health_cancel.clone();
+        let health = ProviderTask::new(tokio::spawn(async move {
             let mut was_running = dnscache_running();
             let mut interval = tokio::time::interval(HEALTH_INTERVAL);
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             interval.tick().await; // the first tick fires immediately; skip it
             loop {
-                interval.tick().await;
+                tokio::select! {
+                    _ = health_stop.cancelled() => break,
+                    _ = interval.tick() => {}
+                }
                 let running = dnscache_running();
                 if running == was_running {
                     continue;
@@ -284,13 +294,15 @@ impl DnsApiSession {
                 }
                 was_running = running;
             }
-        });
+        }));
         Self {
             state_tx,
             state_rx,
             capabilities,
-            bridges: Mutex::new(Vec::new()),
-            health: Mutex::new(Some(health)),
+            browses: DnsApiBrowseRegistry::default(),
+            calls: DnsApiCallRegistry::default(),
+            health_cancel,
+            health,
         }
     }
 }
@@ -329,11 +341,14 @@ impl ProviderSession for DnsApiSession {
                 "the DNS Client is recovering; browse reconnects when it returns",
             ));
         }
-        let (browse, registration) = open_dnsapi_browse(service_type, is_meta).await?;
-        self.bridges
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push(registration);
+        let (browse, owner) = open_dnsapi_browse(service_type, is_meta).await?;
+        if !self.browses.track(Arc::clone(&owner)) {
+            let _ = owner.close().await;
+            return Err(dnsapi_lost(
+                ProviderOperation::Browse,
+                "session shutdown began during browse startup",
+            ));
+        }
         Ok(browse)
     }
 
@@ -346,41 +361,182 @@ impl ProviderSession for DnsApiSession {
                 "the DNS Client is recovering; resolution reconnects when it returns",
             ));
         }
-        let name = name.to_string();
-        let service_type = service_type.to_string();
-        tokio::task::spawn_blocking(move || blocking_resolve(&name, &service_type))
+        let (reply, task) = self
+            .calls
+            .start(name.to_string(), service_type.to_string())?;
+        let outcome = reply.await.map_err(|_| {
+            dnsapi_lost(
+                ProviderOperation::Resolve,
+                "resolve worker dropped its reply",
+            )
+        });
+        let reaped = task
+            .join(CALL_SHUTDOWN_TIMEOUT)
             .await
-            .map_err(|error| {
-                provider_error(
-                    DESCRIPTOR.name,
-                    ProviderOperation::Resolve,
-                    ProviderFailure::Lost,
-                    format!("resolve task failed: {error}"),
-                )
-            })?
+            .map_err(|detail| dnsapi_lost(ProviderOperation::Resolve, detail));
+        if reaped.is_ok() {
+            self.calls.release(&task);
+        }
+        reaped?;
+        outcome?
     }
 
     async fn shutdown(&self) -> Result<()> {
-        if let Some(health) = self
-            .health
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take()
-        {
-            health.abort();
-        }
-        let bridges = self
-            .bridges
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .drain(..)
-            .collect::<Vec<_>>();
-        for bridge in bridges {
-            bridge.cancel.cancel();
-            let _ = bridge.reaper.await;
-        }
         self.state_tx.send_replace(ProviderSessionState::Lost);
-        Ok(())
+        self.health_cancel.cancel();
+        let mut first_error = self
+            .health
+            .join(HEALTH_SHUTDOWN_TIMEOUT)
+            .await
+            .err()
+            .map(|detail| dnsapi_lost(ProviderOperation::Shutdown, detail));
+        let browses = self.browses.begin_shutdown();
+        for browse in &browses {
+            if let Err(error) = browse.request_stop() {
+                first_error.get_or_insert(error);
+            }
+        }
+        let browse_deadline = tokio::time::Instant::now() + BROWSE_SHUTDOWN_TIMEOUT;
+        for browse in &browses {
+            let remaining = browse_deadline.saturating_duration_since(tokio::time::Instant::now());
+            if let Err(error) = browse.reap(remaining).await {
+                first_error.get_or_insert(error);
+            }
+        }
+        let calls = self.calls.begin_shutdown();
+        let call_deadline = tokio::time::Instant::now() + CALL_SHUTDOWN_TIMEOUT;
+        for call in &calls {
+            let remaining = call_deadline.saturating_duration_since(tokio::time::Instant::now());
+            if let Err(detail) = call.join(remaining).await {
+                first_error.get_or_insert_with(|| dnsapi_lost(ProviderOperation::Shutdown, detail));
+            }
+        }
+        if first_error.is_none() {
+            self.browses.clear();
+            self.calls.clear();
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+}
+
+impl Drop for DnsApiSession {
+    fn drop(&mut self) {
+        self.state_tx.send_replace(ProviderSessionState::Lost);
+        self.health_cancel.cancel();
+        self.health.abort();
+        for browse in self.browses.begin_shutdown() {
+            let _ = browse.request_stop();
+            browse.reaper.abort();
+        }
+        for call in self.calls.begin_shutdown() {
+            call.abort();
+        }
+    }
+}
+
+#[derive(Default)]
+struct DnsApiCallRegistry {
+    state: Mutex<DnsApiCallRegistryState>,
+}
+
+#[derive(Default)]
+struct DnsApiCallRegistryState {
+    shutting_down: bool,
+    tasks: Vec<Arc<ProviderTask>>,
+}
+
+impl DnsApiCallRegistry {
+    fn start(
+        &self,
+        name: String,
+        service_type: String,
+    ) -> Result<(
+        oneshot::Receiver<Result<ProviderService>>,
+        Arc<ProviderTask>,
+    )> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.shutting_down {
+            return Err(dnsapi_lost(
+                ProviderOperation::Resolve,
+                "session is shutting down",
+            ));
+        }
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let task = Arc::new(ProviderTask::new(tokio::task::spawn_blocking(move || {
+            let _ = reply_tx.send(blocking_resolve(&name, &service_type));
+        })));
+        state.tasks.push(Arc::clone(&task));
+        Ok((reply_rx, task))
+    }
+
+    fn release(&self, completed: &Arc<ProviderTask>) {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .tasks
+            .retain(|task| !Arc::ptr_eq(task, completed));
+    }
+
+    fn begin_shutdown(&self) -> Vec<Arc<ProviderTask>> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.shutting_down = true;
+        state.tasks.clone()
+    }
+
+    fn clear(&self) {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .tasks
+            .clear();
+    }
+}
+
+#[derive(Default)]
+struct DnsApiBrowseRegistry {
+    state: Mutex<DnsApiBrowseRegistryState>,
+}
+
+#[derive(Default)]
+struct DnsApiBrowseRegistryState {
+    shutting_down: bool,
+    owners: Vec<Arc<DnsApiBrowseOwner>>,
+}
+
+impl DnsApiBrowseRegistry {
+    fn track(&self, owner: Arc<DnsApiBrowseOwner>) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.shutting_down {
+            return false;
+        }
+        state.owners.push(owner);
+        true
+    }
+
+    fn begin_shutdown(&self) -> Vec<Arc<DnsApiBrowseOwner>> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.shutting_down = true;
+        state.owners.clone()
+    }
+
+    fn clear(&self) {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .owners
+            .clear();
     }
 }
 
@@ -418,35 +574,84 @@ unsafe fn reclaim_context(raw: *mut std::ffi::c_void) {
     drop(Box::from_raw(raw as *mut BrowseContext));
 }
 
-struct BrowseRuntime {
-    handle: Mutex<MulticastHandle>,
-    cancel: CancellationToken,
-}
-
 /// The opaque query handle may move between Koi's control threads, but only
 /// dnsapi dereferences its internal pointers while the query is running.
 struct MulticastHandle(Box<MDNS_QUERY_HANDLE>);
 unsafe impl Send for MulticastHandle {}
 
-struct BridgeRegistration {
+struct DnsApiBrowseResource {
+    handle: MulticastHandle,
+    context_ptr: Option<ContextPtr>,
+}
+
+struct DnsApiBrowseOwner {
+    resource: Mutex<Option<DnsApiBrowseResource>>,
     cancel: CancellationToken,
-    reaper: tokio::task::JoinHandle<()>,
+    reaper: ProviderTask,
+}
+
+impl DnsApiBrowseOwner {
+    fn request_stop(&self) -> Result<()> {
+        self.cancel.cancel();
+        let mut slot = self
+            .resource
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(resource) = slot.as_mut() else {
+            return Ok(());
+        };
+        let status = unsafe { DnsStopMulticastQuery(&mut *resource.handle.0) };
+        if status != DNS_CALL_SUCCESS {
+            // The callback may still be reachable from dnsapi. Relinquish the
+            // Rust pointer without reclaiming its allocation; that is the
+            // safe quarantine for an unacknowledged native stop.
+            let _ = resource.context_ptr.take();
+            return Err(dnsapi_error(
+                ProviderOperation::Browse,
+                status,
+                "DnsStopMulticastQuery failed",
+            ));
+        }
+        if let Some(context_ptr) = resource.context_ptr.take() {
+            // DnsStopMulticastQuery is the native callback barrier.
+            unsafe { reclaim_context(context_ptr.0) };
+        }
+        slot.take();
+        Ok(())
+    }
+
+    async fn close(&self) -> Result<()> {
+        let release = self.request_stop();
+        let reaped = self.reap(BROWSE_SHUTDOWN_TIMEOUT).await;
+        release?;
+        reaped
+    }
+
+    async fn reap(&self, wait: Duration) -> Result<()> {
+        self.reaper
+            .join(wait)
+            .await
+            .map_err(|detail| dnsapi_lost(ProviderOperation::Browse, detail))
+    }
+}
+
+impl Drop for DnsApiBrowseOwner {
+    fn drop(&mut self) {
+        let _ = self.request_stop();
+        self.reaper.abort();
+    }
 }
 
 async fn open_dnsapi_browse(
     service_type: &str,
     is_meta: bool,
-) -> Result<(ProviderBrowse, BridgeRegistration)> {
+) -> Result<(ProviderBrowse, Arc<DnsApiBrowseOwner>)> {
     let (event_tx, event_rx) = tokio_mpsc::channel(BROWSE_CHANNEL_CAPACITY);
     let (observation_tx, observation_rx) = mpsc::channel::<BrowseObservation>();
 
     let query_name = service_type.trim_end_matches('.').to_string();
     let cancel = CancellationToken::new();
     let mut handle = Box::new(MDNS_QUERY_HANDLE::default());
-    let runtime = Arc::new(BrowseRuntime {
-        handle: Mutex::new(MulticastHandle(Box::default())),
-        cancel: cancel.clone(),
-    });
 
     let context_ptr = unsafe {
         into_raw_context(Box::new(BrowseContext {
@@ -525,17 +730,12 @@ async fn open_dnsapi_browse(
             "DnsStartMulticastQuery rejected the query",
         ));
     }
-    *runtime
-        .handle
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = MulticastHandle(handle);
-
     // Reap observations on a blocking thread: meta observations surface service
     // types, ordinary observations are resolved (the Apple browse+resolve
     // two-step) before surfacing. The cancel token breaks the wait so shutdown
     // cannot hang on a silent channel.
     let reap_cancel = cancel.clone();
-    let reaper = tokio::task::spawn_blocking(move || {
+    let reaper = ProviderTask::new(tokio::task::spawn_blocking(move || {
         loop {
             if reap_cancel.is_cancelled() {
                 break;
@@ -593,16 +793,25 @@ async fn open_dnsapi_browse(
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
+    }));
+
+    let owner = Arc::new(DnsApiBrowseOwner {
+        resource: Mutex::new(Some(DnsApiBrowseResource {
+            handle: MulticastHandle(handle),
+            context_ptr: Some(ContextPtr(context_ptr)),
+        })),
+        cancel,
+        reaper,
     });
 
     let browse = ProviderBrowse::new(
         event_rx,
         Box::new(DnsApiBrowseLease {
-            runtime: Arc::clone(&runtime),
-            context_ptr: Some(ContextPtr(context_ptr)),
+            owner: Arc::clone(&owner),
+            active: true,
         }),
     );
-    Ok((browse, BridgeRegistration { cancel, reaper }))
+    Ok((browse, owner))
 }
 
 fn trim_local(value: &str) -> String {
@@ -636,8 +845,8 @@ struct ContextPtr(*mut std::ffi::c_void);
 unsafe impl Send for ContextPtr {}
 
 struct DnsApiBrowseLease {
-    runtime: Arc<BrowseRuntime>,
-    context_ptr: Option<ContextPtr>,
+    owner: Arc<DnsApiBrowseOwner>,
+    active: bool,
 }
 
 #[async_trait::async_trait]
@@ -647,31 +856,20 @@ impl BrowseLease for DnsApiBrowseLease {
     }
 
     async fn close(&mut self) -> Result<()> {
-        let status = {
-            let mut handle = self
-                .runtime
-                .handle
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            unsafe { DnsStopMulticastQuery(&mut *handle.0) }
-        };
-        self.runtime.cancel.cancel();
-        if status != DNS_CALL_SUCCESS {
-            // Keep the callback context alive when dnsapi could still own the
-            // query. Leaking is safer than racing a late callback.
-            let _ = self.context_ptr.take();
-            return Err(dnsapi_error(
-                ProviderOperation::Browse,
-                status,
-                "DnsStopMulticastQuery failed",
-            ));
-        }
-        if let Some(context_ptr) = self.context_ptr.take() {
-            // DnsStopMulticastQuery synchronously stops the indefinite query;
-            // after it succeeds dnsapi will not invoke this query's callback.
-            unsafe { reclaim_context(context_ptr.0) };
+        if self.active {
+            self.owner.close().await?;
+            self.active = false;
         }
         Ok(())
+    }
+}
+
+impl Drop for DnsApiBrowseLease {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = self.owner.request_stop();
+            self.owner.reaper.abort();
+        }
     }
 }
 
@@ -867,6 +1065,10 @@ fn dnsapi_error(operation: ProviderOperation, status: i32, what: &str) -> MdnsEr
     )
 }
 
+fn dnsapi_lost(operation: ProviderOperation, detail: impl Into<String>) -> MdnsError {
+    provider_error(DESCRIPTOR.name, operation, ProviderFailure::Lost, detail)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -929,6 +1131,15 @@ mod tests {
         );
     }
 
+    #[test]
+    fn shutdown_registry_rejects_a_new_unowned_resolve_worker() {
+        let calls = DnsApiCallRegistry::default();
+        assert!(calls.begin_shutdown().is_empty());
+        assert!(calls
+            .start("late".to_string(), "_late._tcp.local.".to_string())
+            .is_err());
+    }
+
     #[tokio::test]
     #[ignore = "requires the Windows DNS Client facility"]
     async fn real_dnsapi_report_declares_read_routes_only() {
@@ -972,7 +1183,9 @@ mod tests {
         .await
         .expect("network withdrawal timeout");
         browse.close().await.expect("close multicast browse");
-        registration.cancel.cancel();
-        registration.reaper.await.expect("join browse reaper");
+        registration
+            .close()
+            .await
+            .expect("browse owner remains idempotently reaped");
     }
 }

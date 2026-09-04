@@ -94,11 +94,13 @@ Send heartbeats at roughly half the lease interval. If you set `lease_secs: 300`
 ### Check status
 
 ```bash
-curl http://localhost:5641/v1/udp/status
+curl -H "x-koi-token: $TOKEN" http://localhost:5641/v1/udp/status
 ```
 
 ```json
 {
+  "revision": 4,
+  "running": true,
   "bindings": [
     {
       "id": "01958f2a-...",
@@ -135,7 +137,7 @@ All UDP endpoints live under `/v1/udp/`:
 | `DELETE` | `/v1/udp/bind/{id}`      | Remove a binding and close the socket |
 | `GET`    | `/v1/udp/recv/{id}`      | SSE stream of incoming datagrams      |
 | `POST`   | `/v1/udp/send/{id}`      | Send a datagram through a binding     |
-| `GET`    | `/v1/udp/status`         | List all active bindings              |
+| `GET`    | `/v1/udp/status`         | Revisioned runtime state and active bindings |
 | `PUT`    | `/v1/udp/heartbeat/{id}` | Extend a binding's lease              |
 
 ### Bind request body

@@ -50,6 +50,55 @@ async function stubDaemon(handlers) {
 
 const TOKEN = "secret-lab-token";
 
+const CERTMESH_STATUS = {
+  revision: 7,
+  role: "authority",
+  posture: { signed: true, encrypted: false },
+  identity: {
+    condition: "healthy",
+    info: {
+      hostname: "ca-01",
+      ca_fingerprint: "f".repeat(64),
+      renewal: {
+        expires_at: "2026-09-10T00:00:00Z",
+        next_renewal_at: "2026-09-07T00:00:00Z",
+        expires_in_days: 7,
+        renew_overdue: false,
+        expired: false,
+      },
+    },
+  },
+  diagnosis: {
+    posture: { signed: true, encrypted: false },
+    overall: "healthy",
+    checks: [],
+  },
+  authority: {
+    locked: false,
+    ca_fingerprint: "f".repeat(64),
+    auth_method: "totp",
+    enrollment_open: true,
+    requires_approval: false,
+    enrollment_state: "open",
+    member_count: 1,
+    seq: 3,
+    policy: {
+      leaf_lifetime_days: 7,
+      renew_threshold_days: 3,
+      grace_days: 1,
+    },
+    members: [],
+  },
+};
+
+const CERTMESH_BOOTSTRAP = {
+  revision: 7,
+  authority_available: true,
+  ca_fingerprint: "f".repeat(64),
+  enrollment_open: true,
+  requires_approval: false,
+};
+
 test("agent door card matches the repository conformance vector", async (t) => {
   // The same pinned vector koi-serve's Rust test asserts against — one shape,
   // two languages.
@@ -82,7 +131,7 @@ test("agent door card matches the repository conformance vector", async (t) => {
   assert.deepEqual(card, expected);
 });
 
-test("status and posture carry the token header and parse json", async (t) => {
+test("status surfaces use the authoritative shapes and right auth boundary", async (t) => {
   const daemon = await stubDaemon({
     "/v1/status": (res) => {
       res.writeHead(200, { "content-type": "application/json" });
@@ -91,6 +140,14 @@ test("status and posture carry the token header and parse json", async (t) => {
     "/v1/certmesh/posture": (res) => {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ signed: true, encrypted: false, level: "authenticated" }));
+    },
+    "/v1/certmesh/status": (res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(CERTMESH_STATUS));
+    },
+    "/v1/certmesh/bootstrap": (res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(CERTMESH_BOOTSTRAP));
     },
     "*": (res) => res.writeHead(404).end("{}"),
   });
@@ -101,12 +158,25 @@ test("status and posture carry the token header and parse json", async (t) => {
   assert.equal(status.daemon, true);
   const posture = await client.posture();
   assert.equal(posture.level, "authenticated");
+  const certmesh = await client.certmeshStatus();
+  assert.equal(certmesh.role, "authority");
+  assert.equal(certmesh.identity.condition, "healthy");
+  assert.equal(certmesh.authority.member_count, 1);
+  const bootstrap = await client.certmeshBootstrap();
+  assert.equal(bootstrap.authority_available, true);
+  assert.equal("members" in bootstrap, false);
 
-  assert.equal(daemon.seen.length, 2);
-  for (const request of daemon.seen) {
+  assert.equal(daemon.seen.length, 4);
+  for (const request of daemon.seen.slice(0, 3)) {
     assert.equal(request.headers["x-koi-token"], TOKEN, "token on every request");
     assert.equal(request.headers.accept, "application/json");
   }
+  assert.equal(daemon.seen[3].url, "/v1/certmesh/bootstrap");
+  assert.equal(
+    daemon.seen[3].headers["x-koi-token"],
+    undefined,
+    "public remote preflight must not receive the local daemon token",
+  );
 });
 
 test("healthy() is truthful about liveness", async (t) => {

@@ -8,7 +8,7 @@
 //! The split keeps two responsibilities crisp:
 //! - **koi-compose** — construct cores, wire cross-domain bridges, run the orchestrator and
 //!   certmesh role loops, project capability status, and own ordered shutdown.
-//! - **koi-serve** — serve those cores: the HTTP/OpenAPI router, IPC and piped-stdio NDJSON,
+//! - **koi-serve** — serve those cores: the HTTP/OpenAPI router, authenticated local IPC,
 //!   the in-process MCP HTTP transport, the inter-node mTLS + ACME listeners, Prometheus
 //!   service discovery, the dashboard/browser wiring, and the posture-reactive trust plane.
 //!
@@ -19,8 +19,7 @@
 //! - [`http`] — the axum router (domain routes, system endpoints, dashboard, MCP, OpenAPI,
 //!   DAT auth, CORS) + `build_openapi`.
 //! - [`local_ipc`] — authenticated local control + mDNS NDJSON transport.
-//! - [`stdio`] — piped stdin/stdout NDJSON adapter (standalone piped mode).
-//! - [`dispatch`] — shared NDJSON request dispatch for [`local_ipc`] and [`stdio`].
+//! - [`dispatch`] — NDJSON request dispatch for [`local_ipc`].
 //! - [`mcp_http`] — `CoreSource`, the live-cores backing for the in-process MCP transport.
 //! - [`mtls`] — inter-node certmesh mTLS listener.
 //! - [`acme`] — RFC 8555 server-auth TLS listener.
@@ -33,14 +32,16 @@ pub mod acme;
 pub mod dashboard;
 pub mod dispatch;
 pub mod http;
+mod inventory;
 pub mod local_ipc;
 pub mod mcp_http;
 pub mod mtls;
 pub mod network;
 pub mod pond;
+pub mod pond_public_status;
+pub mod pond_ui;
 pub mod prometheus_sd;
 pub mod serve;
-pub mod stdio;
 pub mod trust_plane;
 #[cfg(windows)]
 pub mod windows_firewall;

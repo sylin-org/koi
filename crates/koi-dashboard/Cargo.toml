@@ -24,10 +24,12 @@ koi-mdns.workspace = true
 # so this presentation crate never drags bollard, the OS-keychain stack, or the image
 # codec into a lean consumer; the choice is forwarded from the top (see [features]).
 koi-certmesh = { workspace = true, default-features = false }
+koi-trust.workspace = true
 koi-dns.workspace = true
 koi-health.workspace = true
 koi-proxy.workspace = true
 koi-runtime = { workspace = true, default-features = false }
+koi-udp.workspace = true
 
 axum.workspace = true
 tokio.workspace = true
@@ -35,7 +37,6 @@ tokio-util.workspace = true
 tokio-stream = { workspace = true, features = ["sync"] }
 async-stream.workspace = true
 chrono.workspace = true
-hostname.workspace = true
 uuid.workspace = true
 serde.workspace = true
 serde_json.workspace = true

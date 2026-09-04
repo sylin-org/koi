@@ -479,13 +479,29 @@ body::before {
     if (snap.certmesh) {
       $('certmesh-panel').style.display = '';
       const c = snap.certmesh;
-      $('certmesh-content').innerHTML = '<table style="font-size:0.82rem">'
-        + '<tr><td style="color:var(--text-muted);padding-right:1rem">CA</td><td>' + (c.ca_initialized ? (c.ca_locked ? '🔒 locked' : '🔓 unlocked') : 'not initialized') + '</td></tr>'
-        + (c.auth_method ? '<tr><td style="color:var(--text-muted);padding-right:1rem">Auth</td><td>' + esc(c.auth_method) + '</td></tr>' : '')
-        + '<tr><td style="color:var(--text-muted);padding-right:1rem">Approval</td><td>' + (c.requires_approval ? 'operator required' : 'automatic') + '</td></tr>'
-        + '<tr><td style="color:var(--text-muted);padding-right:1rem">Members</td><td>' + c.member_count + '</td></tr>'
-        + '<tr><td style="color:var(--text-muted);padding-right:1rem">Enrollment</td><td>' + esc(c.enrollment_state) + '</td></tr>'
-        + '</table>';
+      const a = c.authority;
+      const identity = c.identity;
+      const trust = c.posture.encrypted ? 'confidential' : (c.posture.signed ? 'authenticated' : 'open');
+      const identityHealthy = identity.condition === 'healthy';
+      let certmeshHtml = '<table style="font-size:0.82rem">'
+        + '<tr><td style="color:var(--text-muted);padding-right:1rem">Role</td><td>' + esc(c.role) + '</td></tr>'
+        + '<tr><td style="color:var(--text-muted);padding-right:1rem">Trust</td><td>' + esc(trust) + '</td></tr>'
+        + '<tr><td style="color:var(--text-muted);padding-right:1rem">Identity</td><td class="' + (identityHealthy ? 'status-up' : (identity.condition === 'absent' ? 'status-unknown' : 'status-down')) + '">' + esc(identity.condition) + '</td></tr>';
+      if (identity.info) {
+        certmeshHtml += '<tr><td style="color:var(--text-muted);padding-right:1rem">Hostname</td><td>' + esc(identity.info.hostname) + '</td></tr>'
+          + '<tr><td style="color:var(--text-muted);padding-right:1rem">Certificate</td><td>expires ' + esc(identity.info.renewal.expires_at) + '</td></tr>';
+      }
+      if (identity.reason) {
+        certmeshHtml += '<tr><td style="color:var(--text-muted);padding-right:1rem">Attention</td><td class="status-down">' + esc(identity.reason) + '</td></tr>';
+      }
+      if (a) {
+        certmeshHtml += '<tr><td style="color:var(--text-muted);padding-right:1rem">CA</td><td>' + (a.locked ? '🔒 locked' : '🔓 unlocked') + '</td></tr>'
+          + (a.auth_method ? '<tr><td style="color:var(--text-muted);padding-right:1rem">Auth</td><td>' + esc(a.auth_method) + '</td></tr>' : '')
+          + '<tr><td style="color:var(--text-muted);padding-right:1rem">Approval</td><td>' + (a.requires_approval ? 'operator required' : 'automatic') + '</td></tr>'
+          + '<tr><td style="color:var(--text-muted);padding-right:1rem">Members</td><td>' + a.member_count + '</td></tr>'
+          + '<tr><td style="color:var(--text-muted);padding-right:1rem">Enrollment</td><td>' + esc(a.enrollment_state) + '</td></tr>';
+      }
+      $('certmesh-content').innerHTML = certmeshHtml + '</table>';
     } else {
       $('certmesh-panel').style.display = 'none';
     }
@@ -631,6 +647,12 @@ body::before {
     eventSource.addEventListener('mdns.removed', function(e) {
       const d = JSON.parse(e.data);
       addLogEntry('mdns.removed', 'mdns', (d.name || '?') + ' removed');
+    });
+    eventSource.addEventListener('system.resync_required', function() {
+      poll();
+    });
+    eventSource.addEventListener('system.resync', function() {
+      poll();
     });
 
     eventSource.onerror = function() {

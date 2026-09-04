@@ -9,6 +9,8 @@ use super::*;
 use crate::roster::{MemberRole, MemberStatus, RosterMember};
 use chrono::{Duration, Utc};
 
+const TEST_LOCAL_HOSTNAME: &str = "certmesh-test-host";
+
 // ── ADR-020 P1: posture oracle ──────────────────────────────────
 
 // Each posture test gets its OWN isolated data dir. We deliberately do NOT
@@ -23,6 +25,14 @@ fn isolated_posture_paths(tag: &str) -> CertmeshPaths {
     CertmeshPaths::with_data_dir(dir)
 }
 
+#[cfg(unix)]
+fn write_executable_script(path: &std::path::Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+}
+
 fn posture_member_state(hostname: &str) -> crate::member::MemberState {
     crate::member::MemberState {
         hostname: hostname.to_string(),
@@ -33,6 +43,7 @@ fn posture_member_state(hostname: &str) -> crate::member::MemberState {
         sans: vec![hostname.to_string()],
         policy: crate::roster::CertPolicy::default(),
         last_bundle_seq: 0,
+        last_bundle_digest: None,
         revoked_fingerprints: Vec::new(),
         self_revoked: false,
         reload_hook: None,
@@ -54,36 +65,23 @@ fn posture_is_open_without_identity() {
 }
 
 #[test]
-fn posture_is_authenticated_with_member_identity() {
+fn member_with_incoherent_identity_fails_closed() {
     let paths = isolated_posture_paths("auth");
-    let hostname = CertmeshCore::local_hostname().expect("local hostname");
+    let hostname = TEST_LOCAL_HOSTNAME.to_string();
     crate::member::save(&paths.member_state_path(), &posture_member_state(&hostname)).unwrap();
     write_posture_leaf(&paths, &hostname);
     let core = CertmeshCore::uninitialized_with_paths(paths);
-    let p = core.posture();
-    assert!(p.signed);
-    assert!(!p.encrypted);
-    assert_eq!(p.level(), koi_common::posture::PostureLevel::Authenticated);
-}
-
-#[tokio::test]
-async fn capability_status_identifies_an_enrolled_member() {
-    let paths = isolated_posture_paths("member-capability");
-    let hostname = CertmeshCore::local_hostname().expect("local hostname");
-    crate::member::save(&paths.member_state_path(), &posture_member_state(&hostname)).unwrap();
-    write_posture_leaf(&paths, &hostname);
-    let core = CertmeshCore::uninitialized_with_paths(paths);
-
-    let status = core.status().await;
-    assert_eq!(status.summary, "authenticated member");
-    assert!(status.healthy);
-    assert!(!core.is_ca_node());
+    let status = core.status();
+    assert_eq!(status.role, CertmeshRole::Member);
+    assert_eq!(status.identity.condition, IdentityCondition::Invalid);
+    assert_eq!(status.posture, koi_common::posture::Posture::OPEN);
+    assert!(status.diagnosis.is_red());
 }
 
 #[test]
 fn posture_ignores_orphan_leaf_without_anchor() {
     let paths = isolated_posture_paths("orphan");
-    let hostname = CertmeshCore::local_hostname().expect("local hostname");
+    let hostname = TEST_LOCAL_HOSTNAME.to_string();
     // Leaf present (cert+key only) but no CA, no member.json, and no leaf-local
     // ca.pem anchor — an unanchored orphan.
     write_posture_leaf(&paths, &hostname);
@@ -98,12 +96,40 @@ fn posture_authenticated_with_leaf_local_ca_anchor() {
     // renewal over a non-mTLS plane (ADR-022). The leaf-local ca.pem anchors it as
     // a real identity, distinguishing it from the orphan above (which lacks ca.pem).
     let paths = isolated_posture_paths("leaf-ca-anchor");
-    let hostname = CertmeshCore::local_hostname().expect("local hostname");
-    write_posture_leaf(&paths, &hostname);
-    let leaf = paths.certs_dir().join(&hostname);
-    std::fs::write(leaf.join("ca.pem"), b"ca-anchor").unwrap();
-    let core = CertmeshCore::uninitialized_with_paths(paths);
+    let hostname = TEST_LOCAL_HOSTNAME.to_string();
+    let source_paths = isolated_posture_paths("leaf-ca-anchor-source");
+    let ca = ca::create_ca("test-pass", &[11u8; 32], &source_paths)
+        .unwrap()
+        .0;
+    let issued = ca::issue_certificate(
+        &ca,
+        &hostname,
+        std::slice::from_ref(&hostname),
+        ca::DEFAULT_LEAF_LIFETIME_DAYS,
+    )
+    .unwrap();
+    crate::certfiles::write_cert_files_to(&paths.certs_dir().join(&hostname), &issued).unwrap();
+    let core = CertmeshCore::uninitialized_with_paths(paths.clone());
     assert!(core.posture().signed);
+    let healthy = core.status();
+    assert_eq!(healthy.role, CertmeshRole::Member);
+    assert!(healthy.role.requires_authentication());
+    assert_eq!(healthy.identity.condition, IdentityCondition::Healthy);
+    assert!(healthy.authority.is_none());
+
+    // Once a durable member record exists it is authoritative. Corrupting it
+    // must withdraw otherwise-valid TLS material rather than silently falling
+    // back to the anchored-leaf compatibility path.
+    std::fs::create_dir_all(paths.certmesh_dir()).unwrap();
+    std::fs::write(paths.member_state_path(), b"{corrupt-member-record").unwrap();
+    let corrupt = CertmeshCore::load_with_paths(paths, "internal", TEST_LOCAL_HOSTNAME).unwrap();
+    assert_eq!(corrupt.status().role, CertmeshRole::Member);
+    assert_eq!(
+        corrupt.status().identity.condition,
+        IdentityCondition::Invalid
+    );
+    assert!(!corrupt.status().posture.signed);
+    assert!(corrupt.tls_identity().material.is_none());
 }
 
 #[tokio::test]
@@ -123,7 +149,7 @@ async fn local_identity_loads_after_self_enroll() {
     core.self_enroll().await.expect("self-enroll");
 
     let id = core.local_identity().await.expect("identity present");
-    assert_eq!(id.hostname, CertmeshCore::local_hostname().unwrap());
+    assert_eq!(id.hostname, TEST_LOCAL_HOSTNAME);
     assert!(id.cert_pem.contains("BEGIN CERTIFICATE"));
     assert!(id.key_pem.contains("BEGIN"));
     assert_eq!(id.ca_fingerprint.len(), 64); // sha256 hex
@@ -154,7 +180,7 @@ async fn ensure_identity_self_enrolls_ca_node() {
     assert!(!core.posture().signed);
     // ensure_identity self-enrolls the CA node and returns a live identity.
     let id = core.ensure_identity().await.expect("identity after ensure");
-    assert_eq!(id.hostname, CertmeshCore::local_hostname().unwrap());
+    assert_eq!(id.hostname, TEST_LOCAL_HOSTNAME);
     assert!(core.posture().signed);
     // Idempotent: a second call reuses the fresh leaf (no re-issue).
     let id2 = core
@@ -172,28 +198,133 @@ async fn posture_watch_observes_transitions_and_coalesces() {
     let roster = Roster::new(JUST_ME.0, JUST_ME.1, None);
     let core = CertmeshCore::new_with_paths(ca, roster, None, paths);
 
-    let mut rx = core.watch_posture();
-    assert!(!rx.borrow_and_update().signed, "no leaf yet → Open");
+    let mut rx = core.watch_status();
+    let mut roster_rx = core.watch_roster_snapshot();
+    let mut tls_rx = core.watch_tls_identity();
+    let mut anchor_rx = core.watch_ca_anchor();
+    assert!(!rx.borrow_and_update().posture.signed, "no leaf yet → Open");
+    assert!(roster_rx.borrow_and_update().active_members.is_empty());
+    assert!(tls_rx.borrow_and_update().material.is_none());
+    let initial_anchor = anchor_rx
+        .borrow_and_update()
+        .anchor()
+        .expect("authority CA anchor must be observable")
+        .expect("authority CA is the desired trust anchor")
+        .clone();
+    assert!(initial_anchor.certificate_pem.contains("BEGIN CERTIFICATE"));
+    assert!(!format!("{initial_anchor:?}").contains("BEGIN CERTIFICATE"));
 
     // self_enroll writes the leaf and publishes → Open→Authenticated observed.
     core.self_enroll().await.expect("self-enroll");
     assert!(rx.has_changed().unwrap(), "self-enroll must notify");
-    assert!(rx.borrow_and_update().signed);
+    assert!(rx.borrow_and_update().posture.signed);
+    assert!(
+        roster_rx.has_changed().unwrap(),
+        "self-enroll must publish the member"
+    );
+    let first_roster = roster_rx.borrow_and_update().clone();
+    assert_eq!(first_roster.active_members.len(), 1);
+    assert!(tls_rx.has_changed().unwrap(), "TLS material must notify");
+    let tls = tls_rx
+        .borrow_and_update()
+        .material
+        .as_ref()
+        .expect("healthy identity material")
+        .clone();
+    assert_eq!(tls.hostname, TEST_LOCAL_HOSTNAME);
+    assert!(tls.certificate_chain_pem.contains("BEGIN CERTIFICATE"));
+    assert!(tls.private_key_pem.contains("BEGIN"));
+    assert!(!format!("{tls:?}").contains("BEGIN"));
 
-    // A second self_enroll re-issues the leaf but the posture is unchanged →
-    // the watch coalesces (no spurious PostureChanged — silence is correct here,
-    // an upgrade is not).
+    // Same-count member mutations are observable too; consumers must never use
+    // member count as a substitute for the domain revision.
+    let hostname = TEST_LOCAL_HOSTNAME.to_string();
+    core.add_alias_sans(&hostname, &["alias.internal".to_string()])
+        .await
+        .expect("add alias");
+    assert!(
+        roster_rx.has_changed().unwrap(),
+        "member update must notify"
+    );
+    let changed_roster = roster_rx.borrow_and_update().clone();
+    assert_eq!(changed_roster.active_members.len(), 1);
+    assert!(changed_roster.revision > first_roster.revision);
+    assert!(changed_roster.active_members[0]
+        .sans
+        .contains(&"alias.internal".to_string()));
+    assert!(rx.has_changed().unwrap());
+    rx.borrow_and_update();
+    assert!(
+        !tls_rx.has_changed().unwrap(),
+        "roster change is not TLS churn"
+    );
+
+    // A second self_enroll reuses the current leaf and changes no projection.
     core.self_enroll().await.expect("re-enroll");
     assert!(
         !rx.has_changed().unwrap(),
         "an unchanged posture must not notify"
+    );
+    assert!(
+        !tls_rx.has_changed().unwrap(),
+        "an unchanged identity must not notify"
     );
 
     // destroy tears the identity down → Authenticated→Open observed (a degrade
     // is as loud as the upgrade, ADR-020 §13).
     core.destroy().await.expect("destroy");
     assert!(rx.has_changed().unwrap(), "destroy must notify");
-    assert!(!rx.borrow_and_update().signed);
+    assert!(!rx.borrow_and_update().posture.signed);
+    assert!(
+        roster_rx.has_changed().unwrap(),
+        "destroy must clear roster"
+    );
+    assert!(roster_rx.borrow_and_update().active_members.is_empty());
+    assert!(tls_rx.has_changed().unwrap(), "destroy must withdraw TLS");
+    assert!(tls_rx.borrow_and_update().material.is_none());
+    assert!(
+        anchor_rx.has_changed().unwrap(),
+        "destroy must withdraw the desired trust anchor before returning"
+    );
+    assert!(anchor_rx
+        .borrow_and_update()
+        .anchor()
+        .expect("destroyed anchor must be observable")
+        .is_none());
+}
+
+#[test]
+fn ca_anchor_projection_distinguishes_unavailable_from_absent() {
+    let paths = isolated_posture_paths("anchor-observation-state");
+    let ca = ca::create_ca("test-pass", &[6_u8; 32], &paths).unwrap().0;
+    let valid_pem = std::fs::read_to_string(paths.ca_cert_path()).unwrap();
+    let core = CertmeshCore::new_with_paths(ca, Roster::empty(), None, paths.clone());
+    let initial = core.ca_anchor();
+    assert!(matches!(
+        &initial.state,
+        CertmeshCaAnchorState::Available(_)
+    ));
+
+    std::fs::write(paths.ca_cert_path(), b"invalid-anchor").unwrap();
+    core.state.refresh_status_under_transition();
+    let unavailable = core.ca_anchor();
+    assert!(unavailable.revision > initial.revision);
+    assert!(matches!(
+        &unavailable.state,
+        CertmeshCaAnchorState::Unavailable { reason } if reason.contains("invalid PEM")
+    ));
+
+    core.state.refresh_status_under_transition();
+    assert!(Arc::ptr_eq(&unavailable, &core.ca_anchor()));
+
+    std::fs::write(paths.ca_cert_path(), valid_pem).unwrap();
+    core.state.refresh_status_under_transition();
+    let recovered = core.ca_anchor();
+    assert!(recovered.revision > unavailable.revision);
+    assert!(matches!(
+        &recovered.state,
+        CertmeshCaAnchorState::Available(_)
+    ));
 }
 
 #[tokio::test]
@@ -226,6 +357,89 @@ async fn destroy_preserves_slot_ledger_when_owned_label_is_invalid() {
         "destroy must retain the ownership ledger"
     );
     assert!(paths.certmesh_dir().exists());
+}
+
+#[test]
+fn boot_retries_valid_credential_cleanup_and_reports_corrupt_ledgers() {
+    let temp = tempfile::tempdir().unwrap();
+    let clean_paths = CertmeshPaths::with_data_dir(temp.path().join("cleanup-retry"));
+    std::fs::create_dir_all(clean_paths.credential_cleanup_dir()).unwrap();
+    let master_key = koi_crypto::unlock_slots::generate_master_key();
+    let table =
+        koi_crypto::unlock_slots::SlotTable::new_with_passphrase(&master_key, "pass").unwrap();
+    let valid_ledger = clean_paths.credential_cleanup_dir().join("valid.json");
+    let slot_path = clean_paths.data_dir().join("test-slot-table.json");
+    table.save(&slot_path).unwrap();
+    let mut slot_json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&slot_path).unwrap()).unwrap();
+    slot_json["pending_totp_credentials"] = serde_json::json!([{
+        "version": 2,
+        "credential_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "secret": false,
+        "fallback": false
+    }]);
+    let ledger = CredentialCleanupLedger {
+        version: CREDENTIAL_CLEANUP_LEDGER_VERSION,
+        totp_slot_table: Some(serde_json::to_vec_pretty(&slot_json).unwrap()),
+        delete_auto_unlock_vault: false,
+        delete_ca_tpm: false,
+    };
+    std::fs::write(&valid_ledger, serde_json::to_vec_pretty(&ledger).unwrap()).unwrap();
+
+    let clean = CertmeshCore::load_with_paths(clean_paths.clone(), "internal", TEST_LOCAL_HOSTNAME)
+        .unwrap();
+    assert!(!clean_paths.credential_cleanup_pending());
+    assert!(!clean
+        .status()
+        .diagnosis
+        .checks
+        .iter()
+        .any(|check| check.name == "credential_cleanup"));
+
+    let corrupt_paths = CertmeshPaths::with_data_dir(temp.path().join("cleanup-corrupt"));
+    std::fs::create_dir_all(corrupt_paths.credential_cleanup_dir()).unwrap();
+    let corrupt_ledger = corrupt_paths.credential_cleanup_dir().join("corrupt.json");
+    std::fs::write(&corrupt_ledger, b"{truncated").unwrap();
+    let corrupt =
+        CertmeshCore::load_with_paths(corrupt_paths.clone(), "internal", TEST_LOCAL_HOSTNAME)
+            .unwrap();
+    assert!(corrupt_paths.credential_cleanup_pending());
+    let status = corrupt.status();
+    let cleanup = status
+        .diagnosis
+        .checks
+        .iter()
+        .find(|check| check.name == "credential_cleanup")
+        .expect("pending cleanup must be visible");
+    assert_eq!(cleanup.status, koi_common::diagnosis::CheckStatus::Warn);
+    assert!(
+        corrupt_ledger.exists(),
+        "corrupt evidence must be preserved"
+    );
+}
+
+#[tokio::test]
+async fn pending_credential_cleanup_fences_a_replacement_trust_generation() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CertmeshPaths::with_data_dir(temp.path().to_path_buf());
+    std::fs::create_dir_all(paths.credential_cleanup_dir()).unwrap();
+    let ledger = paths.credential_cleanup_dir().join("unreadable.json");
+    std::fs::write(&ledger, b"{truncated").unwrap();
+    let core =
+        CertmeshCore::load_with_paths(paths.clone(), "internal", TEST_LOCAL_HOSTNAME).unwrap();
+
+    let error = core
+        .create(create_request_for_membership_conflict())
+        .await
+        .expect_err("an older generation's cleanup must complete before replacement");
+
+    assert!(matches!(error, CertmeshError::Conflict(_)));
+    assert!(
+        ledger.exists(),
+        "failed cleanup evidence must remain durable"
+    );
+    assert!(!paths.ca_key_path().exists());
+    assert_eq!(core.status().role, CertmeshRole::Open);
 }
 
 #[cfg(feature = "keyring")]
@@ -319,6 +533,26 @@ fn make_locked_core(roster: Roster) -> CertmeshCore {
     CertmeshCore::locked_with_paths(roster, test_paths())
 }
 
+async fn valid_totp_response(core: &CertmeshCore) -> koi_crypto::auth::AuthResponse {
+    let auth = core.state.auth.lock();
+    let Some(koi_crypto::auth::AuthState::Totp(secret)) = auth.as_ref() else {
+        panic!("test authority must have TOTP auth")
+    };
+    koi_crypto::auth::AuthResponse::Totp {
+        code: koi_crypto::totp::current_code(secret).expect("current TOTP code"),
+    }
+}
+
+fn promotion_request(
+    auth: koi_crypto::auth::AuthResponse,
+    ephemeral_public: [u8; 32],
+) -> protocol::PromoteRequest {
+    protocol::PromoteRequest {
+        auth,
+        ephemeral_public: Some(ephemeral_public),
+    }
+}
+
 async fn backup_fixture(tag: &str) -> (CertmeshCore, CertmeshPaths, String) {
     std::env::set_var("KOI_NO_CREDENTIAL_STORE", "1");
     let paths = isolated_posture_paths(tag);
@@ -334,18 +568,71 @@ async fn backup_fixture(tag: &str) -> (CertmeshCore, CertmeshPaths, String) {
     )
     .expect("write auth");
     let roster = make_test_roster_with_member("surviving-member", MemberRole::Member);
-    crate::roster::persist_roster(&roster, &paths.roster_path())
-        .await
-        .expect("persist roster");
+    crate::roster::save_roster(&roster, &paths.roster_path()).expect("persist roster");
     crate::audit::append_entry_to(&paths.audit_log_path(), "fixture_created", &[])
         .expect("write audit");
+    let accounts = crate::acme::account::AccountStore::default();
+    let prepared = accounts
+        .prepare_registration(backup_fixture_account_jwk(), Vec::new())
+        .expect("prepare fixture ACME account");
+    std::fs::create_dir_all(paths.acme_dir()).expect("create ACME fixture directory");
+    std::fs::write(
+        paths.acme_accounts_path(),
+        prepared.bytes.as_ref().expect("new account bytes"),
+    )
+    .expect("persist fixture ACME account");
     let core = CertmeshCore::new_with_paths(
         ca,
         roster,
         Some(koi_crypto::auth::AuthState::Totp(secret)),
         paths.clone(),
     );
+    core.state.acme_accounts.commit_registration(&prepared);
     (core, paths, ca_passphrase)
+}
+
+fn backup_fixture_account_jwk() -> crate::acme::jws::Jwk {
+    crate::acme::jws::Jwk {
+        kty: "EC".into(),
+        crv: "P-256".into(),
+        x: "backup-account-x".into(),
+        y: "backup-account-y".into(),
+    }
+}
+
+#[tokio::test]
+async fn failed_backup_preparation_writes_and_publishes_nothing() {
+    let (core, paths, _ca_passphrase) = backup_fixture("backup-preparation-failure").await;
+    let tracked = [
+        paths.ca_key_path(),
+        paths.slot_table_path(),
+        paths.auth_path(),
+        paths.roster_path(),
+        paths.audit_log_path(),
+    ];
+    let before_files: Vec<_> = tracked
+        .iter()
+        .map(|path| std::fs::read(path).unwrap())
+        .collect();
+    let before_status = core.status();
+    let before_roster = core.roster_snapshot();
+    let before_tls = core.tls_identity();
+    let mut events = core.subscribe();
+
+    core.backup("wrong-ca-passphrase", "backup-passphrase")
+        .await
+        .expect_err("CA preparation must reject the wrong passphrase");
+
+    for (path, before) in tracked.iter().zip(before_files) {
+        assert_eq!(std::fs::read(path).unwrap(), before, "{}", path.display());
+    }
+    assert!(Arc::ptr_eq(&before_status, &core.status()));
+    assert!(Arc::ptr_eq(&before_roster, &core.roster_snapshot()));
+    assert!(Arc::ptr_eq(&before_tls, &core.tls_identity()));
+    assert!(matches!(
+        events.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
 }
 
 #[tokio::test]
@@ -400,9 +687,10 @@ async fn restore_rebinds_activates_and_clears_member_only_state() {
     std::fs::write(target_paths.rate_limiter_path(), b"stale throttle").unwrap();
     std::fs::create_dir_all(target_paths.acme_dir()).unwrap();
     std::fs::write(target_paths.acme_accounts_path(), b"stale accounts").unwrap();
+    CertmeshCore::save_auto_unlock_key_at(&target_paths, "stale-auto-unlock").unwrap();
     let target = CertmeshCore::uninitialized_with_paths(target_paths.clone());
-    let mut posture = target.watch_posture();
-    assert!(!posture.borrow_and_update().signed);
+    let mut status_rx = target.watch_status();
+    assert!(!status_rx.borrow_and_update().posture.signed);
 
     target
         .restore(&bundle, backup_passphrase, "restored-passphrase")
@@ -410,10 +698,10 @@ async fn restore_rebinds_activates_and_clears_member_only_state() {
         .expect("restore succeeds");
 
     assert!(
-        posture.has_changed().unwrap(),
+        status_rx.has_changed().unwrap(),
         "restore must publish posture"
     );
-    assert!(posture.borrow_and_update().signed);
+    assert!(status_rx.borrow_and_update().posture.signed);
     assert_eq!(target.ca_fingerprint().await.unwrap(), source_fingerprint);
     let identity = target
         .local_identity()
@@ -425,15 +713,23 @@ async fn restore_rebinds_activates_and_clears_member_only_state() {
         &identity.ca_cert_pem
     ));
     assert!(target
-        .certmesh_status()
-        .await
+        .status()
+        .authority
+        .as_ref()
+        .unwrap()
         .members
         .iter()
         .any(|member| member.hostname == "surviving-member"));
     assert!(!target_paths.member_state_path().exists());
     assert!(!target_paths.invites_path().exists());
     assert!(!target_paths.rate_limiter_path().exists());
-    assert!(!target_paths.acme_dir().exists());
+    let restored_account_id = crate::acme::jws::jwk_thumbprint(&backup_fixture_account_jwk());
+    assert!(target_paths.acme_accounts_path().exists());
+    assert!(target
+        .state
+        .acme_accounts
+        .get(&restored_account_id)
+        .is_some());
     assert!(ca::load_ca("restored-passphrase", &target_paths).is_ok());
     assert!(ca::load_ca(&ca_passphrase, &target_paths).is_err());
     assert!(machine_binding_ok(&target_paths));
@@ -443,6 +739,12 @@ async fn restore_rebinds_activates_and_clears_member_only_state() {
     let audit = crate::audit::read_log_from(&target_paths.audit_log_path()).unwrap();
     assert!(audit.contains("fixture_created"));
     assert!(audit.contains("backup_restored"));
+    assert!(CertmeshCore::read_auto_unlock_key(&target_paths)
+        .unwrap()
+        .is_none());
+    let restarted =
+        CertmeshCore::load_with_paths(target_paths, "internal", TEST_LOCAL_HOSTNAME).unwrap();
+    assert!(restarted.status().authority.as_ref().unwrap().locked);
 }
 
 #[tokio::test]
@@ -456,7 +758,7 @@ async fn self_enroll_replaces_fresh_leaf_from_a_different_ca() {
     let foreign = ca::create_ca("foreign-pass", &[42u8; 32], &foreign_paths)
         .unwrap()
         .0;
-    let hostname = CertmeshCore::local_hostname().unwrap();
+    let hostname = TEST_LOCAL_HOSTNAME.to_string();
     let sans = vec![hostname.clone(), format!("{hostname}.internal")];
     let stale = ca::issue_certificate(&foreign, &hostname, &sans, 90).unwrap();
     crate::certfiles::write_cert_files_to(&paths.certs_dir().join(&hostname), &stale).unwrap();
@@ -699,9 +1001,19 @@ async fn member_pull_renewal_round_trip() {
     let server = tokio::spawn(mtls::serve(app, listener, config, cancel.clone()));
 
     // Point the armed member state at the ephemeral test port.
-    let mut st = member::load(&member_paths.member_state_path()).expect("renewal armed");
+    let mut st = member::load(&member_paths.member_state_path())
+        .expect("read renewal state")
+        .expect("renewal armed");
     assert_eq!(st.ca_host, "127.0.0.1");
     st.ca_mtls_port = port;
+    #[cfg(unix)]
+    let reload_sentinel = member_paths.data_dir().join("reload-completed");
+    #[cfg(unix)]
+    {
+        let hook = member_paths.data_dir().join("reload-hook.sh");
+        write_executable_script(&hook, &format!("touch '{}'", reload_sentinel.display()));
+        st.reload_hook = Some(hook.display().to_string());
+    }
     member::save(&member_paths.member_state_path(), &st).unwrap();
 
     let cert_dir = member_paths.certs_dir().join("renew-host");
@@ -717,11 +1029,61 @@ async fn member_pull_renewal_round_trip() {
     assert!(matches!(scheduled, RenewOutcome::NotDue { .. }));
 
     // ── Member pulls the operator-requested renewal over mTLS ──
-    let outcome = member_core.renew_self().await.expect("renewal ok");
-    assert!(
-        matches!(outcome, RenewOutcome::Renewed { .. }),
-        "expected Renewed, got {outcome:?}"
-    );
+    #[cfg(unix)]
+    {
+        member_core
+            .state
+            .repository
+            .pause_next_commit_after_durable();
+        let command = {
+            let member_core = member_core.clone();
+            tokio::spawn(async move { member_core.renew_self().await })
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !member_core.state.repository.is_commit_paused() && !command.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("renewal must reach durable commit or settle");
+        if command.is_finished() {
+            let result = command.await;
+            panic!("renewal exited before its durable commit barrier: {result:?}");
+        }
+        assert!(
+            member_paths.reload_intent_path().exists(),
+            "certificate activation must durably record reload intent"
+        );
+        assert!(
+            member_core.status().reload.is_none(),
+            "status cannot lead the durable commit tail"
+        );
+        command.abort();
+        member_core.state.repository.release_commit();
+        let _ = command.await;
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if reload_sentinel.exists()
+                    && !member_paths.reload_intent_path().exists()
+                    && member_core.status().reload.is_none()
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("retained reload worker must execute and settle without a request retry");
+    }
+    #[cfg(not(unix))]
+    {
+        let outcome = member_core.renew_self().await.expect("renewal ok");
+        assert!(
+            matches!(outcome, RenewOutcome::Renewed { .. }),
+            "expected Renewed, got {outcome:?}"
+        );
+    }
 
     let new_key = std::fs::read_to_string(cert_dir.join("key.pem")).unwrap();
     let new_cert = std::fs::read_to_string(cert_dir.join("cert.pem")).unwrap();
@@ -736,7 +1098,7 @@ async fn member_pull_renewal_round_trip() {
     // The CA roster recorded the rotated leaf's fingerprint.
     let new_fp = koi_crypto::pinning::fingerprint_sha256(pem::parse(&new_cert).unwrap().contents());
     {
-        let roster = ca_core.state.roster.lock().await;
+        let roster = ca_core.state.roster.lock();
         let member = roster
             .find_member("renew-host")
             .expect("member in CA roster");
@@ -750,6 +1112,121 @@ async fn member_pull_renewal_round_trip() {
     let _ = server.await;
     let _ = std::fs::remove_dir_all(base.join("ca"));
     let _ = std::fs::remove_dir_all(base.join("member"));
+}
+
+#[cfg(unix)]
+#[test]
+fn startup_reconciles_a_durable_reload_intent_and_publishes_completion() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CertmeshPaths::with_data_dir(temp.path().to_path_buf());
+    std::fs::create_dir_all(paths.certmesh_dir()).unwrap();
+    let release = temp.path().join("release-hook");
+    let sentinel = temp.path().join("reload-completed");
+    let hook = temp.path().join("startup-reload.sh");
+    write_executable_script(
+        &hook,
+        &format!(
+            "while [ ! -f '{}' ]; do /bin/sleep 0.01; done\ntouch '{}'",
+            release.display(),
+            sentinel.display()
+        ),
+    );
+    let intent = lifecycle::ReloadIntent::new(hook.display().to_string(), "new-leaf-fp".into());
+    std::fs::write(
+        paths.reload_intent_path(),
+        lifecycle::render_intent(&intent).unwrap(),
+    )
+    .unwrap();
+
+    let core =
+        CertmeshCore::load_with_paths(paths.clone(), "internal", TEST_LOCAL_HOSTNAME).unwrap();
+    let initial = core.status();
+    assert_eq!(
+        initial
+            .reload
+            .as_ref()
+            .and_then(|reload| reload.certificate_fingerprint.as_deref()),
+        Some("new-leaf-fp")
+    );
+    let mut events = core.subscribe();
+    std::fs::write(&release, b"go").unwrap();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while (!sentinel.exists() || core.status().reload.is_some())
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(sentinel.exists());
+    assert!(!paths.reload_intent_path().exists());
+    assert!(core.status().reload.is_none());
+    assert!(core.status().revision > initial.revision);
+    assert!(matches!(
+        events.try_recv().unwrap(),
+        CertmeshEvent::ReloadHookCompleted { command } if command == hook.display().to_string()
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_startup_reload_remains_durable_and_observable_for_retry() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CertmeshPaths::with_data_dir(temp.path().to_path_buf());
+    std::fs::create_dir_all(paths.certmesh_dir()).unwrap();
+    let release = temp.path().join("release-hook");
+    let hook = temp.path().join("failing-reload.sh");
+    write_executable_script(
+        &hook,
+        &format!(
+            "while [ ! -f '{}' ]; do /bin/sleep 0.01; done\nexit 7",
+            release.display()
+        ),
+    );
+    let intent = lifecycle::ReloadIntent::new(hook.display().to_string(), "new-leaf-fp".into());
+    std::fs::write(
+        paths.reload_intent_path(),
+        lifecycle::render_intent(&intent).unwrap(),
+    )
+    .unwrap();
+
+    let core =
+        CertmeshCore::load_with_paths(paths.clone(), "internal", TEST_LOCAL_HOSTNAME).unwrap();
+    let initial = core.status();
+    assert!(initial.reload.is_some());
+    let mut events = core.subscribe();
+    std::fs::write(&release, b"go").unwrap();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while core
+        .status()
+        .reload
+        .as_ref()
+        .is_none_or(|reload| reload.attempts == 0)
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let status = core.status();
+    let reload = status
+        .reload
+        .as_ref()
+        .expect("failed intent remains pending");
+    assert_eq!(reload.attempts, 1);
+    assert!(reload
+        .last_error
+        .as_deref()
+        .is_some_and(|error| error.contains("exit status")));
+    assert!(paths.reload_intent_path().exists());
+    assert!(status.revision > initial.revision);
+    assert!(status
+        .diagnosis
+        .checks
+        .iter()
+        .any(|check| check.name == "certificate_reload"));
+    assert!(matches!(
+        events.try_recv().unwrap(),
+        CertmeshEvent::ReloadHookFailed { command, .. } if command == hook.display().to_string()
+    ));
 }
 
 /// End-to-end trust-bundle pull (ADR-017 P1/F4): the CA serves a signed bundle
@@ -811,6 +1288,7 @@ async fn trust_bundle_pull_round_trip() {
             sans: vec!["bundle-host".to_string()],
             policy: crate::roster::CertPolicy::default(),
             last_bundle_seq: 0,
+            last_bundle_digest: None,
             revoked_fingerprints: Vec::new(),
             self_revoked: false,
             reload_hook: None,
@@ -827,7 +1305,9 @@ async fn trust_bundle_pull_round_trip() {
         }
         other => panic!("expected Updated, got {other:?}"),
     }
-    let stored = member::load(&member_paths.member_state_path()).unwrap();
+    let stored = member::load(&member_paths.member_state_path())
+        .unwrap()
+        .unwrap();
     assert!(
         stored.last_bundle_seq >= 1,
         "member persisted the bundle seq"
@@ -853,6 +1333,55 @@ async fn trust_bundle_pull_round_trip() {
         }
         other => panic!("expected Updated(self_revoked), got {other:?}"),
     }
+
+    // A freshly timestamped signature of the same semantic generation is an
+    // exact no-op. Injecting a failure into the *next* commit proves this path
+    // does not manufacture a repository write while returning NoChange.
+    let same_generation = ca_core.signed_trust_bundle().await.unwrap();
+    let member_bytes = std::fs::read(member_paths.member_state_path()).unwrap();
+    let status_before = member_core.status();
+    member_core.state.repository.fail_next_commit_after(0);
+    assert!(matches!(
+        member_core
+            .apply_trust_bundle(&same_generation)
+            .await
+            .unwrap(),
+        BundleOutcome::NoChange { .. }
+    ));
+    assert_eq!(
+        std::fs::read(member_paths.member_state_path()).unwrap(),
+        member_bytes
+    );
+    assert!(Arc::ptr_eq(&status_before, &member_core.status()));
+
+    // The CA key can authenticate a document, but it cannot mutate one roster
+    // generation under the same seq. The member's semantic digest rejects that
+    // equivocation without changing persistence or its cheap status face.
+    let mut equivocated_roster = ca_core.state.roster.lock().clone();
+    equivocated_roster.metadata.policy.renew_threshold_days = equivocated_roster
+        .metadata
+        .policy
+        .renew_threshold_days
+        .saturating_add(1);
+    let equivocated = {
+        let ca = ca_core.state.ca.lock();
+        bundle::sign(
+            &equivocated_roster,
+            ca.as_ref().unwrap(),
+            chrono::Utc::now().to_rfc3339(),
+        )
+        .unwrap()
+    };
+    let error = member_core
+        .apply_trust_bundle(&equivocated)
+        .await
+        .expect_err("same-sequence semantic equivocation must be rejected");
+    assert!(error.to_string().contains("different semantic contents"));
+    assert_eq!(
+        std::fs::read(member_paths.member_state_path()).unwrap(),
+        member_bytes
+    );
+    assert!(Arc::ptr_eq(&status_before, &member_core.status()));
 
     server.abort();
     let _ = std::fs::remove_dir_all(base.join("ca"));
@@ -899,8 +1428,10 @@ async fn trust_bundle_applies_cross_member_revocation() {
         .unwrap();
     // The peer's fingerprint as the CA holds it (what the bundle will carry).
     let p_fp = ca_core
-        .certmesh_status()
-        .await
+        .status()
+        .authority
+        .as_ref()
+        .unwrap()
         .members
         .iter()
         .find(|m| m.hostname == "p-host")
@@ -929,6 +1460,7 @@ async fn trust_bundle_applies_cross_member_revocation() {
             sans: vec!["m-host".to_string()],
             policy: crate::roster::CertPolicy::default(),
             last_bundle_seq: 0,
+            last_bundle_digest: None,
             revoked_fingerprints: Vec::new(),
             self_revoked: false,
             reload_hook: None,
@@ -946,14 +1478,16 @@ async fn trust_bundle_applies_cross_member_revocation() {
     }
 
     // The cross-member revoked fingerprint is persisted in member.json...
-    let stored = member::load(&member_paths.member_state_path()).unwrap();
+    let stored = member::load(&member_paths.member_state_path())
+        .unwrap()
+        .unwrap();
     assert!(
         stored.revoked_fingerprints.contains(&p_fp),
         "member persisted the peer's revoked fingerprint"
     );
     // ...and surfaces through revoked_fingerprints() — the exact slice verify()/open()
     // consume — so the member now rejects the peer's envelopes despite keeping no roster.
-    let honored = member_core.revoked_fingerprints().await;
+    let honored = member_core.revoked_fingerprints().await.unwrap();
     assert!(
         honored.contains(&p_fp),
         "verify()/open() now honor the peer's revocation on a pure member"
@@ -1035,7 +1569,7 @@ async fn renewal_migrates_legacy_names_to_the_configured_zone() {
         .await
         .expect("legacy member renews with configured-zone name");
 
-    let roster = core.state.roster.lock().await;
+    let roster = core.state.roster.lock();
     let member = roster.find_member("legacy-host").unwrap();
     assert!(member
         .cert_sans
@@ -1091,7 +1625,7 @@ async fn renew_member_happy_path_issues_and_records() {
     let issued_fp =
         koi_crypto::pinning::fingerprint_sha256(pem::parse(&resp.service_cert).unwrap().contents());
     {
-        let roster = core.state.roster.lock().await;
+        let roster = core.state.roster.lock();
         let m = roster.find_member("good-host").expect("member present");
         assert_eq!(
             m.cert_fingerprint, issued_fp,
@@ -1106,6 +1640,81 @@ async fn renew_member_happy_path_issues_and_records() {
         matches!(ev, CertmeshEvent::CertRenewed { .. }),
         "got {ev:?}"
     );
+}
+
+/// Once renewal has crossed the repository commit point, the retained Certmesh
+/// worker — not the request future — owns the roster, status, and event tail.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelled_renew_member_converges_after_durable_commit_without_retry() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CertmeshPaths::with_data_dir(temp.path().to_path_buf());
+    let ca = ca::create_ca("renew-cancel-pass", &[78_u8; 32], &paths)
+        .unwrap()
+        .0;
+    let roster = make_test_roster_with_member("good-host", MemberRole::Primary);
+    let core = CertmeshCore::new_with_paths(ca, roster, None, paths.clone());
+    let initial_revision = core.status().revision;
+    let mut events = core.subscribe();
+    let (_key, csr) = csr::generate_keypair_and_csr(
+        "good-host",
+        &["good-host".to_string(), "good-host.local".to_string()],
+    )
+    .unwrap();
+    core.state.repository.pause_next_commit_after_durable();
+
+    let command = {
+        let core = core.clone();
+        tokio::spawn(async move { core.renew_member("good-host", &csr).await })
+    };
+    while !core.state.repository.is_commit_paused() {
+        tokio::task::yield_now().await;
+    }
+
+    let durable = roster::load_roster(&paths.roster_path()).unwrap();
+    let durable_member = durable.find_member("good-host").unwrap();
+    assert_ne!(durable_member.cert_fingerprint, "fp-test");
+    command.abort();
+    core.state.repository.release_commit();
+    let _ = command.await;
+
+    let status = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let status = core.status();
+            let renewed = status
+                .authority
+                .as_ref()
+                .and_then(|authority| {
+                    authority
+                        .members
+                        .iter()
+                        .find(|member| member.hostname == "good-host")
+                })
+                .is_some_and(|member| member.cert_fingerprint != "fp-test");
+            if status.revision > initial_revision && renewed {
+                break status;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("renewal tail must publish model/status after caller cancellation");
+    let model_fingerprint = core
+        .state
+        .roster
+        .lock()
+        .find_member("good-host")
+        .unwrap()
+        .cert_fingerprint
+        .clone();
+    assert_eq!(model_fingerprint, durable_member.cert_fingerprint);
+    assert!(status.revision > initial_revision);
+    assert!(matches!(
+        tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())
+            .await
+            .unwrap()
+            .unwrap(),
+        CertmeshEvent::CertRenewed { .. }
+    ));
 }
 
 /// A locked (or absent) CA cannot sign renewals.
@@ -1213,7 +1822,9 @@ async fn install_member_cert_rejects_pin_mismatch() {
         "no cert must be written on pin mismatch"
     );
     assert!(
-        member::load(&member_paths.member_state_path()).is_none(),
+        member::load(&member_paths.member_state_path())
+            .unwrap()
+            .is_none(),
         "renewal must not be armed on pin mismatch"
     );
 
@@ -1236,18 +1847,18 @@ async fn install_member_cert_rejects_pin_mismatch() {
         !std::path::Path::new(&dir).join("key.pending.pem").exists(),
         "successful install consumes the pending key"
     );
-    let armed = member::load(&member_paths.member_state_path()).expect("correct pin arms renewal");
+    let armed = member::load(&member_paths.member_state_path())
+        .expect("read renewal state")
+        .expect("correct pin arms renewal");
     assert_eq!(armed.ca_mtls_port, 16542);
 
     let _ = std::fs::remove_dir_all(base.join("ca"));
     let _ = std::fs::remove_dir_all(base.join("member"));
 }
 
-/// Preparing a replacement CSR is side-effect free with respect to the active
-/// identity. A CA refusal happens between `prepare_member_csr` and
-/// `install_member_cert`, so abandoning that CSR must leave both active files
-/// byte-for-byte unchanged. A mismatched signed response is likewise rejected
-/// before promotion.
+/// Joining is not an identity-replacement path. Once a durable member identity
+/// exists, both CSR preparation and certificate installation fail closed until
+/// an explicit destroy/leave, preserving all active artifacts byte-for-byte.
 #[tokio::test]
 async fn refused_rejoin_cannot_replace_active_member_identity() {
     let base =
@@ -1298,20 +1909,19 @@ async fn refused_rejoin_cannot_replace_active_member_identity() {
     let active_key = std::fs::read(cert_dir.join("key.pem")).unwrap();
     let active_cert = std::fs::read(cert_dir.join("cert.pem")).unwrap();
 
-    // This is exactly the local portion completed before a remote CA can refuse
-    // a rejoin: only a new pending key is created.
-    member_core
+    let prepare_error = member_core
         .prepare_member_csr("custody-host", &sans)
         .await
-        .unwrap();
+        .unwrap_err();
+    assert!(matches!(prepare_error, CertmeshError::Conflict(_)));
     assert_eq!(std::fs::read(cert_dir.join("key.pem")).unwrap(), active_key);
     assert_eq!(
         std::fs::read(cert_dir.join("cert.pem")).unwrap(),
         active_cert
     );
 
-    // Even if a caller attempts to install the old leaf with the new pending
-    // key, correspondence validation refuses it without touching the identity.
+    // Even a caller holding otherwise valid signed material cannot replace the
+    // identity through the join command.
     let error = member_core
         .install_member_cert(
             "custody-host",
@@ -1325,7 +1935,7 @@ async fn refused_rejoin_cannot_replace_active_member_identity() {
         )
         .await
         .unwrap_err();
-    assert!(matches!(error, CertmeshError::InvalidPayload(_)));
+    assert!(matches!(error, CertmeshError::Conflict(_)));
     assert_eq!(std::fs::read(cert_dir.join("key.pem")).unwrap(), active_key);
     assert_eq!(
         std::fs::read(cert_dir.join("cert.pem")).unwrap(),
@@ -1395,7 +2005,9 @@ async fn pull_trust_bundle_self_heals_ca_anchor() {
     let server = tokio::spawn(async move { axum::serve(listener, app).await });
 
     // Point the armed member's HTTP port at the ephemeral test server.
-    let mut st = member::load(&member_paths.member_state_path()).unwrap();
+    let mut st = member::load(&member_paths.member_state_path())
+        .unwrap()
+        .unwrap();
     st.ca_http_port = port;
     member::save(&member_paths.member_state_path(), &st).unwrap();
 
@@ -1479,7 +2091,7 @@ async fn health_check_updates_last_seen() {
     core.health_check(&request).await.unwrap();
 
     // Verify last_seen was updated via the roster state
-    let roster = core.state.roster.lock().await;
+    let roster = core.state.roster.lock();
     assert!(roster.members[0].last_seen.is_some());
 }
 
@@ -1490,7 +2102,13 @@ async fn promote_returns_error_when_ca_locked() {
     let roster = make_test_roster_with_member("node-01", MemberRole::Primary);
     let core = make_locked_core(roster);
     let dummy_pk = [0u8; 32];
-    let result = core.promote(&dummy_pk).await;
+    let request = promotion_request(
+        koi_crypto::auth::AuthResponse::Totp {
+            code: "000000".into(),
+        },
+        dummy_pk,
+    );
+    let result = core.promote("node-01", &request).await;
     assert!(matches!(result, Err(CertmeshError::CaLocked)));
 }
 
@@ -1503,7 +2121,8 @@ async fn promote_returns_encrypted_material() {
     let client_kp = koi_crypto::key_agreement::EphemeralKeyPair::generate();
     let client_pub = client_kp.public_key_bytes();
 
-    let response = core.promote(&client_pub).await.unwrap();
+    let request = promotion_request(valid_totp_response(&core).await, client_pub);
+    let response = core.promote("node-01", &request).await.unwrap();
     assert!(!response.encrypted_ca_key.ciphertext.is_empty());
     assert!(!response.auth_data.is_null());
     assert!(!response.roster_json.is_empty());
@@ -1520,24 +2139,207 @@ async fn promote_response_can_be_accepted_with_dh() {
     let client_kp = koi_crypto::key_agreement::EphemeralKeyPair::generate();
     let client_pub = client_kp.public_key_bytes();
 
-    let response = core.promote(&client_pub).await.unwrap();
+    let request = promotion_request(valid_totp_response(&core).await, client_pub);
+    let response = core.promote("node-01", &request).await.unwrap();
     assert!(response.ephemeral_public.is_some());
 
     // Accept the promotion on the standby side using DH
-    let (ca_key, accepted_auth, accepted_roster) =
+    let (ca_key, accepted_auth, accepted_roster, _accepted_accounts) =
         failover::accept_promotion(&response, client_kp).unwrap();
     assert!(!ca_key.public_key_pem().unwrap().is_empty());
     assert_eq!(accepted_auth.method_name(), "totp");
     assert_eq!(accepted_roster.members.len(), 1);
 }
 
-// ── local_hostname ───────────────────────────────────────────────
+#[tokio::test]
+async fn accepted_promotion_is_atomic_and_cancellation_cannot_split_its_committed_tail() {
+    let source_temp = tempfile::tempdir().unwrap();
+    let target_temp = tempfile::tempdir().unwrap();
+    let source_paths = CertmeshPaths::with_data_dir(source_temp.path().join("source"));
+    let target_paths = CertmeshPaths::with_data_dir(target_temp.path().join("target"));
+    let (source_ca, _) = ca::create_ca("source-pass", &[73u8; 32], &source_paths).unwrap();
+    let hostname = TEST_LOCAL_HOSTNAME.to_string();
+    let target_sans = vec![hostname.clone()];
+    let target_identity = ca::issue_certificate(&source_ca, &hostname, &target_sans, 30).unwrap();
+    crate::certfiles::write_cert_files_to(
+        &target_paths.certs_dir().join(&hostname),
+        &target_identity,
+    )
+    .unwrap();
+    crate::member::save(
+        &target_paths.member_state_path(),
+        &crate::member::MemberState {
+            hostname: hostname.clone(),
+            ca_host: "source".into(),
+            ca_mtls_port: crate::member::DEFAULT_CA_MTLS_PORT,
+            ca_http_port: crate::member::DEFAULT_CA_HTTP_PORT,
+            ca_fingerprint: ca::ca_fingerprint(&source_ca),
+            sans: target_sans,
+            policy: crate::roster::CertPolicy::default(),
+            last_bundle_seq: 0,
+            last_bundle_digest: None,
+            revoked_fingerprints: Vec::new(),
+            self_revoked: false,
+            reload_hook: None,
+        },
+    )
+    .unwrap();
+    let source_roster = make_test_roster_with_member(&hostname, MemberRole::Primary);
+    let source_secret = koi_crypto::totp::generate_secret();
+    let source_code_secret =
+        koi_crypto::totp::TotpSecret::from_bytes(source_secret.as_bytes().to_vec());
+    let source = CertmeshCore::new_with_paths(
+        source_ca,
+        source_roster,
+        Some(koi_crypto::auth::AuthState::Totp(source_secret)),
+        source_paths,
+    );
+    let promotion_account_jwk = crate::acme::jws::Jwk {
+        kty: "EC".into(),
+        crv: "P-256".into(),
+        x: "promotion-account-x".into(),
+        y: "promotion-account-y".into(),
+    };
+    let promotion_account_id = crate::acme::jws::jwk_thumbprint(&promotion_account_jwk);
+    let prepared_account = source
+        .state
+        .acme_accounts
+        .prepare_registration(promotion_account_jwk, Vec::new())
+        .unwrap();
+    source
+        .state
+        .acme_accounts
+        .commit_registration(&prepared_account);
+    let target =
+        CertmeshCore::load_with_paths(target_paths.clone(), "internal", TEST_LOCAL_HOSTNAME)
+            .unwrap();
+    assert_eq!(target.status().role, CertmeshRole::Member);
+    assert_eq!(
+        target.status().identity.condition,
+        IdentityCondition::Healthy
+    );
+    let mut events = target.subscribe();
+    let before = target.status();
+    let before_tls = target.tls_identity();
+
+    let session = target.begin_promotion_acceptance().await.unwrap();
+    let client_public: [u8; 32] = koi_common::encoding::hex_decode(&session.ephemeral_public)
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let prepare = promotion_request(
+        koi_crypto::auth::AuthResponse::Totp {
+            code: koi_crypto::totp::current_code(&source_code_secret).unwrap(),
+        },
+        client_public,
+    );
+    let promotion = source.promote(&hostname, &prepare).await.unwrap();
+    target.state.repository.fail_next_commit_after(2);
+    let error = target
+        .accept_promotion(protocol::AcceptPromotionRequest {
+            session_id: session.session_id,
+            promotion,
+            passphrase: "target-pass".into(),
+        })
+        .await
+        .expect_err("injected artifact failure must reject promotion");
+    assert!(matches!(
+        error,
+        CertmeshError::Io(_) | CertmeshError::Internal(_)
+    ));
+    assert!(Arc::ptr_eq(&before, &target.status()));
+    assert!(Arc::ptr_eq(&before_tls, &target.tls_identity()));
+    assert!(!target_paths.ca_key_path().exists());
+    assert!(target
+        .state
+        .acme_accounts
+        .get(&promotion_account_id)
+        .is_none());
+    assert!(matches!(
+        events.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+
+    let session = target.begin_promotion_acceptance().await.unwrap();
+    let client_public: [u8; 32] = koi_common::encoding::hex_decode(&session.ephemeral_public)
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let prepare = promotion_request(
+        koi_crypto::auth::AuthResponse::Totp {
+            code: koi_crypto::totp::current_code(&source_code_secret).unwrap(),
+        },
+        client_public,
+    );
+    let promotion = source.promote(&hostname, &prepare).await.unwrap();
+    target.state.repository.pause_next_commit_after_durable();
+    let command = {
+        let target = target.clone();
+        tokio::spawn(async move {
+            target
+                .accept_promotion(protocol::AcceptPromotionRequest {
+                    session_id: session.session_id,
+                    promotion,
+                    passphrase: "target-pass".into(),
+                })
+                .await
+        })
+    };
+    while !target.state.repository.is_commit_paused() {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        target_paths.ca_key_path().exists(),
+        "the cancellation point must be after durable promotion"
+    );
+    command.abort();
+    target.state.repository.release_commit();
+    let _ = command.await;
+
+    let promoted_status = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let status = target.status();
+            if status.role == CertmeshRole::Authority {
+                break status;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("retained promotion must converge status without a retry");
+    let event = tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())
+        .await
+        .expect("promotion event timeout")
+        .expect("promotion event");
+    assert!(matches!(
+        event,
+        CertmeshEvent::PromotedToAuthority {
+            hostname: ref promoted,
+        } if promoted == &hostname
+    ));
+    // An event observer can immediately read the committed projection and files.
+    assert_eq!(promoted_status.role, CertmeshRole::Authority);
+    assert!(target.tls_identity().material.is_some());
+    assert!(Arc::ptr_eq(&before_tls, &target.tls_identity()));
+    assert!(target_paths.ca_key_path().exists());
+    assert!(target_paths.roster_path().exists());
+    assert!(target_paths.acme_accounts_path().exists());
+    assert!(target
+        .state
+        .acme_accounts
+        .get(&promotion_account_id)
+        .is_some());
+}
+
+// ── injected local hostname ──────────────────────────────────────
 
 #[test]
-fn local_hostname_returns_some() {
-    let hostname = CertmeshCore::local_hostname();
-    assert!(hostname.is_some());
-    assert!(!hostname.unwrap().is_empty());
+fn unit_fixture_core_has_an_explicit_local_hostname() {
+    let core = CertmeshCore::uninitialized_with_paths(isolated_posture_paths("fixture-host"));
+    assert_eq!(
+        core.configured_local_hostname().as_deref(),
+        Some(TEST_LOCAL_HOSTNAME)
+    );
 }
 
 // ── validate_hostname (F15, RFC 1123) ────────────────────────────
@@ -1624,7 +2426,7 @@ fn rate_limiter_lockout_survives_reload() {
     let _ = std::fs::remove_dir_all(paths.data_dir());
 
     // No persisted file yet → fresh limiter, not locked.
-    let mut rl = load_rate_limiter(&paths);
+    let mut rl = load_rate_limiter(&paths).unwrap();
     assert!(!rl.is_locked());
 
     // Drive it into lockout, then persist.
@@ -1632,10 +2434,18 @@ fn rate_limiter_lockout_survives_reload() {
         let _ = rl.check_and_record(false);
     }
     assert!(rl.is_locked(), "limiter must lock after MAX_FAILURES");
-    persist_rate_limiter(&paths, &rl).unwrap();
+    let mut transaction = crate::repository::ArtifactTransaction::new();
+    transaction.write(
+        paths.rate_limiter_path(),
+        serde_json::to_vec(&rl).unwrap(),
+        true,
+    );
+    crate::repository::CertmeshRepository::new(paths.data_dir().to_path_buf())
+        .commit_durable(transaction)
+        .unwrap();
 
     // A fresh load (simulating a daemon restart) must still be locked (F7).
-    let reloaded = load_rate_limiter(&paths);
+    let reloaded = load_rate_limiter(&paths).unwrap();
     assert!(
         reloaded.is_locked(),
         "persisted lockout must survive a restart"
@@ -1648,26 +2458,49 @@ fn rate_limiter_lockout_survives_reload() {
 
 #[test]
 fn build_status_locked_ca() {
+    let paths = isolated_posture_paths("status-locked");
+    ca::create_ca("test-pass", &[51u8; 32], &paths).unwrap();
     let roster = make_test_roster_with_member("node-01", MemberRole::Primary);
-    let status = build_status(&test_paths(), &None, &roster, None);
-    assert!(status.ca_locked);
-    assert_eq!(status.member_count, 1);
-    assert_eq!(status.members.len(), 1);
-    assert_eq!(status.members[0].hostname, "node-01");
-    assert_eq!(status.members[0].role, "primary");
+    let status = status::build(
+        &paths,
+        Some(TEST_LOCAL_HOSTNAME),
+        false,
+        None,
+        &roster,
+        None,
+        0,
+    );
+    let authority = status.authority.unwrap();
+    assert!(authority.locked);
+    assert_eq!(authority.member_count, 1);
+    assert_eq!(authority.members.len(), 1);
+    assert_eq!(authority.members[0].hostname, "node-01");
+    assert_eq!(authority.members[0].role, "primary");
 }
 
 #[test]
 fn build_status_unlocked_ca() {
-    let ca = make_test_ca();
+    let paths = isolated_posture_paths("status-unlocked");
+    let ca = ca::create_ca("test-pass", &[52u8; 32], &paths).unwrap().0;
     let roster = Roster::new(JUST_ME.0, JUST_ME.1, None);
-    let status = build_status(&test_paths(), &Some(ca), &roster, None);
-    assert!(!status.ca_locked);
-    assert_eq!(status.member_count, 0);
+    let status = status::build(
+        &paths,
+        Some(TEST_LOCAL_HOSTNAME),
+        true,
+        Some(ca::ca_fingerprint(&ca)),
+        &roster,
+        None,
+        0,
+    );
+    let authority = status.authority.unwrap();
+    assert!(!authority.locked);
+    assert_eq!(authority.member_count, 0);
 }
 
 #[test]
 fn build_status_member_roles_lowercase() {
+    let paths = isolated_posture_paths("status-member-roles");
+    ca::create_ca("test-pass", &[53u8; 32], &paths).unwrap();
     let mut roster = Roster::new(JUST_ME.0, JUST_ME.1, None);
     roster.members.push(RosterMember {
         hostname: "standby-01".to_string(),
@@ -1684,9 +2517,18 @@ fn build_status_member_roles_lowercase() {
         pinned_ca_fingerprint: None,
         proxy_entries: Vec::new(),
     });
-    let status = build_status(&test_paths(), &None, &roster, None);
-    assert_eq!(status.members[0].role, "standby");
-    assert_eq!(status.members[0].status, "active");
+    let status = status::build(
+        &paths,
+        Some(TEST_LOCAL_HOSTNAME),
+        false,
+        None,
+        &roster,
+        None,
+        0,
+    );
+    let member = &status.authority.unwrap().members[0];
+    assert_eq!(member.role, "standby");
+    assert_eq!(member.status, "active");
 }
 
 // ── Enrollment toggle facade tests ──────────────────────────────
@@ -1698,15 +2540,17 @@ async fn open_enrollment_changes_state() {
     let core = make_unlocked_core(ca, roster);
 
     // Initially closed (My Organization)
-    let status = core.certmesh_status().await;
-    assert_eq!(status.enrollment_state, roster::EnrollmentState::Closed);
-    assert!(!status.enrollment_open);
+    let status = core.status();
+    let authority = status.authority.as_ref().unwrap();
+    assert_eq!(authority.enrollment_state, roster::EnrollmentState::Closed);
+    assert!(!authority.enrollment_open);
 
     // Open
     core.open_enrollment().await.unwrap();
-    let status = core.certmesh_status().await;
-    assert_eq!(status.enrollment_state, roster::EnrollmentState::Open);
-    assert!(status.enrollment_open);
+    let status = core.status();
+    let authority = status.authority.as_ref().unwrap();
+    assert_eq!(authority.enrollment_state, roster::EnrollmentState::Open);
+    assert!(authority.enrollment_open);
 }
 
 #[tokio::test]
@@ -1716,14 +2560,158 @@ async fn close_enrollment_changes_state() {
     let core = make_unlocked_core(ca, roster);
 
     // Initially open for Just Me
-    let status = core.certmesh_status().await;
-    assert_eq!(status.enrollment_state, roster::EnrollmentState::Open);
+    let status = core.status();
+    assert_eq!(
+        status.authority.as_ref().unwrap().enrollment_state,
+        roster::EnrollmentState::Open
+    );
 
     // Close
     core.close_enrollment().await.unwrap();
-    let status = core.certmesh_status().await;
-    assert_eq!(status.enrollment_state, roster::EnrollmentState::Closed);
-    assert!(!status.enrollment_open);
+    let status = core.status();
+    let authority = status.authority.as_ref().unwrap();
+    assert_eq!(authority.enrollment_state, roster::EnrollmentState::Closed);
+    assert!(!authority.enrollment_open);
+}
+
+#[tokio::test]
+async fn failed_roster_persist_rolls_back_memory_and_does_not_publish_status() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CertmeshPaths::with_data_dir(temp.path().to_path_buf());
+    let ca = ca::create_ca("test-pass", &[58_u8; 32], &paths).unwrap().0;
+    let core = CertmeshCore::new_with_paths(ca, Roster::new(false, false, None), None, paths);
+    let before = core.status();
+    core.state.repository.fail_next_commit_after(0);
+
+    core.open_enrollment()
+        .await
+        .expect_err("the injected roster commit must fail");
+
+    assert!(!core.state.roster.lock().metadata.enrollment_open);
+    assert!(Arc::ptr_eq(&before, &core.status()));
+}
+
+#[tokio::test]
+async fn uncertain_roster_commit_accepts_visible_model_without_success_event_and_recovers() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CertmeshPaths::with_data_dir(temp.path().to_path_buf());
+    let ca = ca::create_ca("test-pass", &[60_u8; 32], &paths).unwrap().0;
+    let roster = make_test_roster_with_member("node-02", MemberRole::Member);
+    let core = CertmeshCore::new_with_paths(ca, roster, None, paths.clone());
+    let before = core.status();
+    let mut events = core.subscribe();
+    core.state
+        .repository
+        .make_next_marker_durability_uncertain();
+
+    let error = core
+        .revoke_member("node-02", Some("operator".into()), None)
+        .await
+        .expect_err("uncertain durability must not acknowledge revocation success");
+    assert!(matches!(error, CertmeshError::DurabilityUncertain(_)));
+
+    assert!(roster::load_roster(&paths.roster_path())
+        .unwrap()
+        .is_revoked("node-02"));
+    assert!(core.state.roster.lock().is_revoked("node-02"));
+    let unsettled = core.status();
+    assert!(unsettled.revision > before.revision);
+    assert!(unsettled.diagnosis.is_red());
+    assert!(unsettled
+        .diagnosis
+        .checks
+        .iter()
+        .any(|check| check.name == "repository_durability"));
+    let member = unsettled
+        .authority
+        .as_ref()
+        .unwrap()
+        .members
+        .iter()
+        .find(|member| member.hostname == "node-02")
+        .unwrap();
+    assert_eq!(member.status, "revoked");
+    assert!(matches!(
+        events.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+
+    drop(events);
+    drop(core);
+    let recovered =
+        CertmeshCore::load_with_paths(paths.clone(), "mesh.internal", TEST_LOCAL_HOSTNAME)
+            .expect("restart recovery accepts the visible committed generation");
+    assert!(recovered.state.roster.lock().is_revoked("node-02"));
+    assert!(!recovered
+        .status()
+        .diagnosis
+        .checks
+        .iter()
+        .any(|check| check.name == "repository_durability"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancellation_after_durable_commit_still_publishes_model_status_and_event() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CertmeshPaths::with_data_dir(temp.path().to_path_buf());
+    let ca = ca::create_ca("test-pass", &[59_u8; 32], &paths).unwrap().0;
+    let roster = make_test_roster_with_member("node-02", MemberRole::Member);
+    let core = CertmeshCore::new_with_paths(ca, roster, None, paths.clone());
+    let initial_revision = core.status().revision;
+    let mut events = core.subscribe();
+    core.state.repository.pause_next_commit_after_durable();
+
+    let command = {
+        let core = core.clone();
+        tokio::spawn(async move {
+            core.revoke_member("node-02", Some("operator".into()), None)
+                .await
+        })
+    };
+
+    while !core.state.repository.is_commit_paused() {
+        tokio::task::yield_now().await;
+    }
+
+    // The repository has crossed its durable commit point, while its caller is
+    // deliberately still inside the synchronous aggregate invariant.
+    let durable = roster::load_roster(&paths.roster_path()).unwrap();
+    assert!(durable.is_revoked("node-02"));
+    command.abort();
+    core.state.repository.release_commit();
+    let _ = command.await;
+
+    // The caller no longer owns completion after admission. Wait on the cheap
+    // authoritative face, not on a retry or the cancelled request future.
+    let status = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let status = core.status();
+            if status.revision > initial_revision {
+                break status;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the retained command must converge status without a retry");
+    assert!(status.revision > initial_revision);
+    let member = status
+        .authority
+        .as_ref()
+        .unwrap()
+        .members
+        .iter()
+        .find(|member| member.hostname == "node-02")
+        .unwrap();
+    assert_eq!(member.status, "revoked");
+    assert!(core.state.roster.lock().is_revoked("node-02"));
+    assert!(matches!(
+        tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())
+            .await
+            .unwrap()
+            .unwrap(),
+        CertmeshEvent::MemberRevoked { hostname } if hostname == "node-02"
+    ));
 }
 
 #[tokio::test]
@@ -1735,28 +2723,217 @@ async fn rotate_auth_fails_when_ca_locked() {
 }
 
 #[tokio::test]
+async fn rotate_auth_commits_the_prepared_credential_to_disk_and_memory() {
+    let paths = isolated_posture_paths("rotate-auth-happy-path");
+    let passphrase = "rotate-auth-passphrase";
+    let ca = ca::create_ca(passphrase, &[61u8; 32], &paths)
+        .expect("fixture CA")
+        .0;
+    let old_secret = koi_crypto::totp::generate_secret();
+    let old_bytes = old_secret.as_bytes().to_vec();
+    let core = CertmeshCore::new_with_paths(
+        ca,
+        Roster::new(JUST_ME.0, JUST_ME.1, None),
+        Some(koi_crypto::auth::AuthState::Totp(old_secret)),
+        paths.clone(),
+    );
+
+    let setup = core
+        .rotate_auth(passphrase, None)
+        .await
+        .expect("rotate auth");
+    assert!(matches!(setup, koi_crypto::auth::AuthSetup::Totp { .. }));
+
+    let in_memory = core.state.auth.lock();
+    let Some(koi_crypto::auth::AuthState::Totp(in_memory_secret)) = in_memory.as_ref() else {
+        panic!("rotated TOTP credential must be armed")
+    };
+    assert_ne!(in_memory_secret.as_bytes(), old_bytes);
+
+    let stored: koi_crypto::auth::StoredAuth = serde_json::from_slice(
+        &std::fs::read(paths.auth_path()).expect("read committed auth credential"),
+    )
+    .expect("parse committed auth credential");
+    let koi_crypto::auth::AuthState::Totp(durable_secret) = stored
+        .unlock(passphrase)
+        .expect("unlock committed credential");
+    assert_eq!(durable_secret.as_bytes(), in_memory_secret.as_bytes());
+}
+
+#[tokio::test]
 async fn build_status_reports_posture_booleans() {
-    let ca = make_test_ca();
+    let paths = isolated_posture_paths("status-posture-flags");
+    let ca = ca::create_ca("test-pass", &[54u8; 32], &paths).unwrap().0;
     let roster = Roster::new(MY_ORG.0, MY_ORG.1, Some("Admin".into()));
-    let status = build_status(&test_paths(), &Some(ca), &roster, None);
-    assert!(!status.enrollment_open);
-    assert!(status.requires_approval);
-    assert_eq!(status.enrollment_state, roster::EnrollmentState::Closed);
+    let status = status::build(
+        &paths,
+        Some(TEST_LOCAL_HOSTNAME),
+        true,
+        Some(ca::ca_fingerprint(&ca)),
+        &roster,
+        None,
+        0,
+    );
+    let authority = status.authority.unwrap();
+    assert!(!authority.enrollment_open);
+    assert!(authority.requires_approval);
+    assert_eq!(authority.enrollment_state, roster::EnrollmentState::Closed);
 }
 
 // ── CertmeshCore::uninitialized_with_paths(test_paths()) state ─────────────────────────
 
 #[tokio::test]
 async fn uninitialized_core_status_shows_empty_roster() {
-    let core = CertmeshCore::uninitialized_with_paths(test_paths());
-    let status = core.certmesh_status().await;
-    // ca_initialized reflects filesystem state, not in-memory state.
-    // ca_locked is false because we have no CA at all (not locked, just absent).
-    assert_eq!(status.member_count, 0);
-    assert!(status.members.is_empty());
-    // The in-memory CA is None, so ca_locked should be true
-    // (None means "no key loaded" which is the locked state).
-    assert!(status.ca_locked);
+    let core = CertmeshCore::uninitialized_with_paths(isolated_posture_paths("empty-status"));
+    let status = core.status();
+    assert_eq!(status.role, CertmeshRole::Open);
+    assert!(status.authority.is_none());
+    assert_eq!(status.identity.condition, IdentityCondition::Absent);
+}
+
+#[tokio::test]
+async fn corrupt_member_marker_remains_fail_closed() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CertmeshPaths::with_data_dir(temp.path().join("corrupt-member"));
+    std::fs::create_dir_all(paths.certmesh_dir()).unwrap();
+    std::fs::write(paths.member_state_path(), b"{not-json").unwrap();
+
+    let core = CertmeshCore::load_with_paths(paths, "internal", TEST_LOCAL_HOSTNAME).unwrap();
+    let status = core.status();
+    assert_eq!(status.role, CertmeshRole::Member);
+    assert!(status.role.requires_authentication());
+    assert_eq!(status.identity.condition, IdentityCondition::Invalid);
+    assert!(status.diagnosis.is_red());
+}
+
+#[tokio::test]
+async fn corrupt_member_state_is_never_reported_as_a_not_applicable_member_command() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CertmeshPaths::with_data_dir(temp.path().join("corrupt-member-commands"));
+    std::fs::create_dir_all(paths.certmesh_dir()).unwrap();
+    std::fs::write(paths.member_state_path(), b"{not-json").unwrap();
+    let core = CertmeshCore::load_with_paths(paths, "internal", TEST_LOCAL_HOSTNAME).unwrap();
+
+    for error in [
+        core.renew_self().await.unwrap_err(),
+        core.pull_trust_bundle().await.unwrap_err(),
+    ] {
+        assert!(
+            matches!(error, CertmeshError::Internal(ref message) if message.contains("persisted member state")),
+            "unexpected command result: {error}"
+        );
+    }
+
+    let signed = bundle::SignedBundle {
+        bundle: bundle::TrustBundle {
+            seq: 0,
+            issued_at: chrono::Utc::now().to_rfc3339(),
+            ca_fingerprint: String::new(),
+            ca_cert_pem: String::new(),
+            policy: roster::CertPolicy::default(),
+            members: Vec::new(),
+            revoked: Vec::new(),
+        },
+        signature: String::new(),
+    };
+    let error = core.apply_trust_bundle(&signed).await.unwrap_err();
+    assert!(
+        matches!(error, CertmeshError::Internal(ref message) if message.contains("persisted member state")),
+        "unexpected apply result: {error}"
+    );
+}
+
+#[tokio::test]
+async fn corrupt_invite_store_is_not_manufactured_into_invalid_credentials() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CertmeshPaths::with_data_dir(temp.path().join("corrupt-invites"));
+    let ca = ca::create_ca("invite-corruption-pass", &[88_u8; 32], &paths)
+        .unwrap()
+        .0;
+    let core =
+        CertmeshCore::new_with_paths(ca, Roster::new(true, false, None), None, paths.clone());
+    std::fs::write(paths.invites_path(), b"{not-json").unwrap();
+    let (_key, csr) = csr::generate_keypair_and_csr("candidate", &["candidate".into()]).unwrap();
+
+    let error = core
+        .enroll(&protocol::JoinRequest {
+            hostname: "candidate".into(),
+            auth: None,
+            invite_token: Some("not-a-real-token".into()),
+            csr: Some(csr),
+            sans: vec!["candidate".into()],
+            role: None,
+        })
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, CertmeshError::Io(ref source) if source.kind() == std::io::ErrorKind::InvalidData),
+        "durable invite damage must surface distinctly, got {error}"
+    );
+    assert!(core.state.roster.lock().members.is_empty());
+    assert_eq!(std::fs::read(paths.invites_path()).unwrap(), b"{not-json");
+}
+
+#[test]
+fn persisted_acme_account_corruption_fails_aggregate_bootstrap() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CertmeshPaths::with_data_dir(temp.path().join("corrupt-acme-accounts"));
+    std::fs::create_dir_all(paths.acme_dir()).unwrap();
+    std::fs::write(paths.acme_accounts_path(), b"{not-json").unwrap();
+
+    // Explicit-material constructors describe a new aggregate and therefore do
+    // not inspect unrelated old account persistence at all.
+    let fresh = CertmeshCore::uninitialized_with_paths(paths.clone());
+    assert_eq!(fresh.status().role, CertmeshRole::Open);
+    drop(fresh);
+
+    let error = match CertmeshCore::load_with_paths(paths, "internal", TEST_LOCAL_HOSTNAME) {
+        Ok(_) => panic!("damaged durable ACME state must fail startup"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(error, CertmeshError::Internal(ref message) if message.contains("persisted ACME account registry")),
+        "unexpected startup error: {error}"
+    );
+}
+
+#[test]
+fn persisted_rate_limiter_corruption_fails_aggregate_bootstrap() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CertmeshPaths::with_data_dir(temp.path().join("corrupt-rate-limiter"));
+    std::fs::create_dir_all(paths.ca_dir()).unwrap();
+    std::fs::write(paths.rate_limiter_path(), b"{not-json").unwrap();
+
+    let error = match CertmeshCore::load_with_paths(paths, "internal", TEST_LOCAL_HOSTNAME) {
+        Ok(_) => panic!("damaged durable rate-limiter state must fail startup"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(error, CertmeshError::Internal(ref message) if message.contains("persisted enrollment rate limiter")),
+        "unexpected startup error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn corrupt_member_cannot_materialize_an_authority_roster() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CertmeshPaths::with_data_dir(temp.path().join("corrupt-member-roster-write"));
+    std::fs::create_dir_all(paths.certmesh_dir()).unwrap();
+    let marker = b"{not-json";
+    std::fs::write(paths.member_state_path(), marker).unwrap();
+    let core =
+        CertmeshCore::load_with_paths(paths.clone(), "internal", TEST_LOCAL_HOSTNAME).unwrap();
+
+    let error = core
+        .open_enrollment()
+        .await
+        .expect_err("a member cannot mutate authority-owned roster state");
+
+    assert!(matches!(error, CertmeshError::Conflict(_)));
+    assert_eq!(std::fs::read(paths.member_state_path()).unwrap(), marker);
+    assert!(!paths.roster_path().exists());
+    assert_eq!(core.status().role, CertmeshRole::Member);
 }
 
 #[tokio::test]
@@ -1780,7 +2957,13 @@ async fn uninitialized_core_enroll_returns_error() {
 async fn uninitialized_core_promote_returns_error() {
     let core = CertmeshCore::uninitialized_with_paths(test_paths());
     let dummy_pk = [0u8; 32];
-    let result = core.promote(&dummy_pk).await;
+    let request = promotion_request(
+        koi_crypto::auth::AuthResponse::Totp {
+            code: "000000".into(),
+        },
+        dummy_pk,
+    );
+    let result = core.promote("node-01", &request).await;
     assert!(result.is_err());
 }
 
@@ -1816,7 +2999,7 @@ async fn node_role_returns_none_for_empty_roster() {
 #[tokio::test]
 async fn node_role_returns_role_for_matching_hostname() {
     let ca = make_test_ca();
-    let hostname = CertmeshCore::local_hostname().unwrap();
+    let hostname = TEST_LOCAL_HOSTNAME.to_string();
     let roster = make_test_roster_with_member(&hostname, MemberRole::Primary);
     let core = make_unlocked_core(ca, roster);
     let role = core.node_role().await;
@@ -1837,7 +3020,7 @@ async fn pinned_ca_fingerprint_returns_none_for_empty_roster() {
 #[tokio::test]
 async fn pinned_ca_fingerprint_returns_value_for_matching_member() {
     let ca = make_test_ca();
-    let hostname = CertmeshCore::local_hostname().unwrap();
+    let hostname = TEST_LOCAL_HOSTNAME.to_string();
     let mut roster = make_test_roster_with_member(&hostname, MemberRole::Primary);
     roster.members[0].pinned_ca_fingerprint = Some("test-pinned-fp".to_string());
     let core = make_unlocked_core(ca, roster);
@@ -1847,72 +3030,7 @@ async fn pinned_ca_fingerprint_returns_value_for_matching_member() {
 
 // ── Capability::status() ───────────────────────────────────────────
 
-#[tokio::test]
-async fn capability_status_uninitialised() {
-    let core = CertmeshCore::uninitialized_with_paths(test_paths());
-    let status = core.status().await;
-    assert_eq!(status.name, "certmesh");
-    // When no CA files exist on disk this is a healthy "ready" state.
-    // On a dev machine with existing CA files it appears as "CA locked"
-    // because the filesystem check sees them but the core has no loaded CA.
-    if test_paths().is_ca_initialized() {
-        assert!(!status.healthy);
-        assert!(
-            status.summary.contains("locked"),
-            "unexpected summary: {}",
-            status.summary
-        );
-    } else {
-        assert!(status.healthy);
-        assert!(
-            status.summary.contains("ready"),
-            "unexpected summary: {}",
-            status.summary
-        );
-    }
-}
-
-#[tokio::test]
-async fn capability_status_locked() {
-    // Deterministic + isolated: a CA on disk (so `is_ca_initialized()` is true)
-    // plus a core holding no in-memory key IS the "CA locked" state. Using an
-    // isolated dir (rather than the shared `test_paths()`) makes the assertion
-    // independent of whatever a sibling test left in the shared data dir — the
-    // previous form only reported "locked" if some other test had created a CA
-    // there first, so test-scheduling order could flip it to a healthy "ready".
-    let paths = isolated_posture_paths("cap-status-locked");
-    ca::create_ca("test-pass", &[42u8; 32], &paths).expect("create CA on disk");
-    let roster = make_test_roster_with_member("node-01", MemberRole::Primary);
-    let core = CertmeshCore::locked_with_paths(roster, paths);
-    let status = core.status().await;
-    assert_eq!(status.name, "certmesh");
-    assert!(
-        !status.healthy,
-        "a CA on disk with no loaded key must be unhealthy (locked)"
-    );
-    assert!(
-        status.summary.contains("locked"),
-        "summary: {}",
-        status.summary
-    );
-}
-
-#[tokio::test]
-async fn capability_status_unlocked() {
-    let ca = make_test_ca();
-    let roster = make_test_roster_with_member("node-01", MemberRole::Primary);
-    let core = make_unlocked_core(ca, roster);
-    let status = core.status().await;
-    assert_eq!(status.name, "certmesh");
-    assert!(status.healthy);
-    assert!(
-        status.summary.contains("1 member"),
-        "summary: {}",
-        status.summary
-    );
-}
-
-// ── certmesh_status facade ─────────────────────────────────────────
+// ── synchronous status facade ──────────────────────────────────────
 
 #[tokio::test]
 async fn certmesh_status_reports_posture() {
@@ -1921,10 +3039,125 @@ async fn certmesh_status_reports_posture() {
     let totp = koi_crypto::totp::generate_secret();
     let auth = koi_crypto::auth::AuthState::Totp(totp);
     let core = CertmeshCore::new_with_paths(ca, roster, Some(auth), test_paths());
-    let status = core.certmesh_status().await;
+    let status = core.status();
     // My Organization posture: closed enrollment, approval required.
-    assert!(!status.enrollment_open);
-    assert!(status.requires_approval);
+    let authority = status.authority.as_ref().unwrap();
+    assert!(!authority.enrollment_open);
+    assert!(authority.requires_approval);
+}
+
+#[tokio::test]
+async fn primary_status_revision_advances_only_for_semantic_change() {
+    let paths = isolated_posture_paths("status-semantic-revision");
+    let ca = ca::create_ca("test-pass", &[81_u8; 32], &paths).unwrap().0;
+    let core = CertmeshCore::new_with_paths(ca, Roster::new(false, false, None), None, paths);
+    let initial = core.status();
+
+    let unchanged = core.state.refresh_status().await;
+    assert!(Arc::ptr_eq(&initial, &unchanged));
+    assert_eq!(unchanged.revision, initial.revision);
+
+    core.open_enrollment().await.unwrap();
+    let changed = core.status();
+    assert_eq!(changed.revision, initial.revision + 1);
+    assert!(!Arc::ptr_eq(&initial, &changed));
+
+    let unchanged_again = core.state.refresh_status().await;
+    assert!(Arc::ptr_eq(&changed, &unchanged_again));
+    assert_eq!(unchanged_again.revision, changed.revision);
+}
+
+#[test]
+fn status_wire_round_trips_tolerates_additions_and_bootstrap_has_exact_keys() {
+    let paths = isolated_posture_paths("status-wire");
+    let ca = ca::create_ca("test-pass", &[82_u8; 32], &paths).unwrap().0;
+    let core = CertmeshCore::new_with_paths(ca, Roster::new(false, true, None), None, paths);
+    let status = core.status();
+
+    let status_value = serde_json::to_value(status.as_ref()).unwrap();
+    let round_trip: CertmeshStatus = serde_json::from_value(status_value.clone()).unwrap();
+    assert_eq!(round_trip, *status);
+    let mut additive_status = status_value;
+    additive_status["future_status_field"] = serde_json::json!({"ignored": true});
+    let additive_round_trip: CertmeshStatus = serde_json::from_value(additive_status).unwrap();
+    assert_eq!(additive_round_trip, *status);
+
+    let bootstrap = status.bootstrap();
+    let bootstrap_value = serde_json::to_value(&bootstrap).unwrap();
+    let keys = bootstrap_value
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        keys,
+        [
+            "authority_available",
+            "ca_fingerprint",
+            "enrollment_open",
+            "requires_approval",
+            "revision",
+        ]
+        .into_iter()
+        .collect()
+    );
+    let round_trip: CertmeshBootstrapStatus =
+        serde_json::from_value(bootstrap_value.clone()).unwrap();
+    assert_eq!(round_trip, bootstrap);
+    let mut additive_bootstrap = bootstrap_value;
+    additive_bootstrap["future_bootstrap_field"] = serde_json::json!("ignored");
+    let additive_round_trip: CertmeshBootstrapStatus =
+        serde_json::from_value(additive_bootstrap).unwrap();
+    assert_eq!(additive_round_trip, bootstrap);
+}
+
+#[test]
+fn expired_member_identity_is_authoritative_and_fails_closed() {
+    let source_paths = isolated_posture_paths("expired-source");
+    let ca = ca::create_ca("test-pass", &[83_u8; 32], &source_paths)
+        .unwrap()
+        .0;
+    let paths = isolated_posture_paths("expired-member");
+    let hostname = TEST_LOCAL_HOSTNAME.to_string();
+    let issued = ca::issue_expired_certificate(&ca, &hostname, std::slice::from_ref(&hostname))
+        .expect("issue already-expired member identity");
+    crate::certfiles::write_cert_files_to(&paths.certs_dir().join(&hostname), &issued).unwrap();
+    let mut member = posture_member_state(&hostname);
+    member.ca_fingerprint = ca::ca_fingerprint(&ca);
+    crate::member::save(&paths.member_state_path(), &member).unwrap();
+
+    let core = CertmeshCore::uninitialized_with_paths(paths);
+    let status = core.status();
+    assert_eq!(status.role, CertmeshRole::Member);
+    assert!(status.role.requires_authentication());
+    assert_eq!(status.identity.condition, IdentityCondition::Expired);
+    assert!(!status.posture.signed);
+    assert!(status.authority.is_none());
+    assert!(core.tls_identity().material.is_none());
+}
+
+#[tokio::test]
+async fn self_revocation_is_authoritative_before_the_event_is_observed() {
+    let paths = isolated_posture_paths("self-revoked-status");
+    let ca = ca::create_ca("test-pass", &[84_u8; 32], &paths).unwrap().0;
+    let core = CertmeshCore::new_with_paths(ca, Roster::new(true, false, None), None, paths);
+    core.self_enroll().await.unwrap();
+    let hostname = TEST_LOCAL_HOSTNAME.to_string();
+    let mut events = core.subscribe();
+
+    core.revoke_member(&hostname, Some("operator".into()), None)
+        .await
+        .unwrap();
+    let status = core.status();
+    assert_eq!(status.identity.condition, IdentityCondition::Revoked);
+    assert!(!status.posture.signed);
+    assert!(status.role.requires_authentication());
+    assert!(core.tls_identity().material.is_none());
+    assert!(matches!(
+        events.recv().await.unwrap(),
+        CertmeshEvent::MemberRevoked { hostname: event_hostname } if event_hostname == hostname
+    ));
 }
 
 // ── set_reload_hook facade ─────────────────────────────────────────
@@ -1951,7 +3184,7 @@ async fn set_reload_hook_sets_hook_for_known_member() {
     let roster = make_test_roster_with_member("node-01", MemberRole::Primary);
     let core = make_unlocked_core(ca, roster);
     core.set_reload_hook("node-01", ABS_HOOK).await.unwrap();
-    let roster = core.state.roster.lock().await;
+    let roster = core.state.roster.lock();
     assert_eq!(roster.members[0].reload_hook.as_deref(), Some(ABS_HOOK));
 }
 
@@ -1972,7 +3205,7 @@ async fn set_reload_hook_rejects_relative_path() {
         "relative-path hook must be rejected by the core method"
     );
     // And the member's hook must remain unset (validation runs before mutation).
-    let roster = core.state.roster.lock().await;
+    let roster = core.state.roster.lock();
     assert!(roster.members[0].reload_hook.is_none());
 }
 
@@ -2042,14 +3275,526 @@ async fn create_initializes_ca_and_self_enrolls_primary() {
 
     // CA is now initialized on disk and unlocked in memory.
     assert!(paths.is_ca_initialized());
-    let status = core.certmesh_status().await;
-    assert!(status.ca_initialized);
-    assert!(!status.ca_locked, "CA should be unlocked after create");
+    let status = core.status();
+    assert_eq!(status.role, CertmeshRole::Authority);
+    let authority = status.authority.as_ref().unwrap();
+    assert!(!authority.locked, "CA should be unlocked after create");
 
     // The CA node self-enrolled as the primary member.
-    assert_eq!(status.member_count, 1, "CA node should self-enroll");
-    assert_eq!(status.members.len(), 1);
-    assert_eq!(status.members[0].role, "primary");
+    assert_eq!(authority.member_count, 1, "CA node should self-enroll");
+    assert_eq!(authority.members.len(), 1);
+    assert_eq!(authority.members[0].role, "primary");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn cancelled_create_preparation_keeps_current_thread_responsive_and_has_no_effect() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CertmeshPaths::with_data_dir(temp.path().join("cancelled-create-preparation"));
+    let core = CertmeshCore::uninitialized_with_paths(paths.clone());
+    let before = core.status();
+    let mut events = core.subscribe();
+    core.state.blocking.pause_next_work();
+    let command = tokio::spawn({
+        let core = core.clone();
+        async move {
+            core.create(protocol::CreateCaRequest {
+                passphrase: "preparation-passphrase".into(),
+                entropy_hex: koi_common::encoding::hex_encode(&[70u8; 32]),
+                operator: None,
+                enrollment_open: true,
+                requires_approval: false,
+                auto_unlock: false,
+                totp_secret_hex: None,
+            })
+            .await
+        }
+    });
+    while !core.state.blocking.is_work_paused() {
+        tokio::task::yield_now().await;
+    }
+    tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        tokio::time::sleep(std::time::Duration::from_millis(5)),
+    )
+    .await
+    .expect("CA preparation must not block a current-thread runtime");
+    command.abort();
+    let _ = command.await;
+    core.state.blocking.release_work();
+
+    assert!(!paths.is_ca_initialized());
+    assert!(Arc::ptr_eq(&before, &core.status()));
+    assert!(matches!(
+        events.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+
+    // Aggregate release deterministically drains and joins every accepted
+    // preparation. Keep that potentially expensive join off this single-thread
+    // executor; returning proves the abandoned KDF did not detach.
+    tokio::task::spawn_blocking(move || drop(core))
+        .await
+        .expect("Certmesh worker owner must drain and join on release");
+    assert!(!paths.is_ca_initialized());
+}
+
+#[tokio::test]
+async fn requested_auto_unlock_is_required_and_survives_restart() {
+    std::env::set_var("KOI_NO_CREDENTIAL_STORE", "1");
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CertmeshPaths::with_data_dir(temp.path().join("create-auto-unlock"));
+    let core = CertmeshCore::uninitialized_with_paths(paths.clone());
+    core.create(protocol::CreateCaRequest {
+        passphrase: "auto-unlock-passphrase".into(),
+        entropy_hex: koi_common::encoding::hex_encode(&[71u8; 32]),
+        operator: Some("ops".into()),
+        enrollment_open: true,
+        requires_approval: false,
+        auto_unlock: true,
+        totp_secret_hex: None,
+    })
+    .await
+    .expect("auto-unlock creation must not report success without its credential");
+
+    assert!(ca::load_slot_table(&paths.slot_table_path())
+        .unwrap()
+        .unwrap()
+        .has_auto_unlock());
+    assert_eq!(
+        CertmeshCore::read_auto_unlock_key(&paths)
+            .unwrap()
+            .as_deref()
+            .map(String::as_str),
+        Some("auto-unlock-passphrase")
+    );
+    drop(core);
+    let restarted = CertmeshCore::load_with_paths(paths, "internal", TEST_LOCAL_HOSTNAME).unwrap();
+    assert!(!restarted.status().authority.as_ref().unwrap().locked);
+}
+
+#[tokio::test]
+async fn requested_auto_unlock_rejects_an_empty_passphrase_without_effects() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CertmeshPaths::with_data_dir(temp.path().join("empty-auto-unlock-passphrase"));
+    let core = CertmeshCore::uninitialized_with_paths(paths.clone());
+    let before = core.status();
+    let mut events = core.subscribe();
+
+    let error = core
+        .create(protocol::CreateCaRequest {
+            passphrase: String::new(),
+            entropy_hex: koi_common::encoding::hex_encode(&[85_u8; 32]),
+            operator: Some("ops".into()),
+            enrollment_open: true,
+            requires_approval: false,
+            auto_unlock: true,
+            totp_secret_hex: None,
+        })
+        .await
+        .expect_err("auto-unlock cannot succeed without a credential");
+
+    assert!(matches!(error, CertmeshError::InvalidPayload(_)));
+    assert!(!paths.is_ca_initialized());
+    assert!(Arc::ptr_eq(&before, &core.status()));
+    assert!(matches!(
+        events.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+}
+
+#[tokio::test]
+async fn requested_auto_unlock_vault_failure_commits_and_publishes_nothing() {
+    std::env::set_var("KOI_NO_CREDENTIAL_STORE", "1");
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CertmeshPaths::with_data_dir(temp.path().join("create-vault-failure"));
+    std::fs::create_dir_all(paths.data_dir()).unwrap();
+    std::fs::write(paths.data_dir().join("vault"), b"not-a-directory").unwrap();
+    let core = CertmeshCore::uninitialized_with_paths(paths.clone());
+    let before = core.status();
+    let mut events = core.subscribe();
+    let error = core
+        .create(protocol::CreateCaRequest {
+            passphrase: "auto-unlock-passphrase".into(),
+            entropy_hex: koi_common::encoding::hex_encode(&[72u8; 32]),
+            operator: Some("ops".into()),
+            enrollment_open: true,
+            requires_approval: false,
+            auto_unlock: true,
+            totp_secret_hex: None,
+        })
+        .await
+        .expect_err("required vault persistence must fail the command");
+
+    assert!(matches!(error, CertmeshError::Internal(_)));
+    assert!(!paths.is_ca_initialized());
+    assert!(Arc::ptr_eq(&before, &core.status()));
+    assert!(matches!(
+        events.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelled_create_finishes_auto_unlock_model_status_event_and_restart() {
+    std::env::set_var("KOI_NO_CREDENTIAL_STORE", "1");
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CertmeshPaths::with_data_dir(temp.path().join("cancelled-create"));
+    let core = CertmeshCore::uninitialized_with_paths(paths.clone());
+    let mut events = core.subscribe();
+    core.state.repository.pause_next_commit_after_durable();
+    let command = tokio::spawn({
+        let core = core.clone();
+        async move {
+            core.create(protocol::CreateCaRequest {
+                passphrase: "cancelled-create-passphrase".into(),
+                entropy_hex: koi_common::encoding::hex_encode(&[73u8; 32]),
+                operator: Some("ops".into()),
+                enrollment_open: true,
+                requires_approval: false,
+                auto_unlock: true,
+                totp_secret_hex: None,
+            })
+            .await
+        }
+    });
+    while !core.state.repository.is_commit_paused() {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        paths.is_ca_initialized(),
+        "repository crossed its commit point"
+    );
+    command.abort();
+    let _ = command.await;
+    core.state.repository.release_commit();
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while core.status().role != CertmeshRole::Authority {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("retained create must publish its completed generation");
+    assert!(matches!(
+        events.recv().await.unwrap(),
+        CertmeshEvent::MemberJoined { .. }
+    ));
+    assert!(ca::load_slot_table(&paths.slot_table_path())
+        .unwrap()
+        .unwrap()
+        .has_auto_unlock());
+    assert_eq!(
+        CertmeshCore::read_auto_unlock_key(&paths)
+            .unwrap()
+            .as_deref()
+            .map(String::as_str),
+        Some("cancelled-create-passphrase")
+    );
+    let restarted = CertmeshCore::load_with_paths(paths, "internal", TEST_LOCAL_HOSTNAME).unwrap();
+    assert!(!restarted.status().authority.as_ref().unwrap().locked);
+}
+
+#[test]
+fn boot_never_uses_and_safely_retires_an_unmarked_vault_credential() {
+    std::env::set_var("KOI_NO_CREDENTIAL_STORE", "1");
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CertmeshPaths::with_data_dir(temp.path().join("stale-auto-unlock"));
+    let _ = ca::create_ca("stale-passphrase", &[74u8; 32], &paths).unwrap();
+    crate::roster::save_roster(
+        &Roster::new(JUST_ME.0, JUST_ME.1, None),
+        &paths.roster_path(),
+    )
+    .unwrap();
+    CertmeshCore::save_auto_unlock_key_at(&paths, "stale-passphrase").unwrap();
+    assert!(!ca::load_slot_table(&paths.slot_table_path())
+        .unwrap()
+        .unwrap()
+        .has_auto_unlock());
+
+    let booted =
+        CertmeshCore::load_with_paths(paths.clone(), "internal", TEST_LOCAL_HOSTNAME).unwrap();
+    assert!(booted.status().authority.as_ref().unwrap().locked);
+    assert!(CertmeshCore::read_auto_unlock_key(&paths)
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn failed_create_restores_every_artifact_and_publishes_nothing() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CertmeshPaths::with_data_dir(temp.path().join("failed-create"));
+    let core = CertmeshCore::uninitialized_with_paths(paths.clone());
+    let before = core.status();
+    let before_tls = core.tls_identity();
+    let mut events = core.subscribe();
+    core.state.repository.fail_next_commit_after(4);
+
+    let error = core
+        .create(protocol::CreateCaRequest {
+            passphrase: "test-pass-strong".to_string(),
+            entropy_hex: koi_common::encoding::hex_encode(&[17u8; 32]),
+            operator: Some("ops".to_string()),
+            enrollment_open: true,
+            requires_approval: false,
+            auto_unlock: false,
+            totp_secret_hex: None,
+        })
+        .await
+        .expect_err("injected aggregate failure must abort create");
+    assert!(matches!(
+        error,
+        CertmeshError::Io(_) | CertmeshError::Internal(_)
+    ));
+    assert!(Arc::ptr_eq(&before, &core.status()));
+    assert!(Arc::ptr_eq(&before_tls, &core.tls_identity()));
+    assert!(!paths.ca_key_path().exists());
+    assert!(!paths.ca_cert_path().exists());
+    assert!(!paths.roster_path().exists());
+    assert!(!paths.certs_dir().exists());
+    assert!(matches!(
+        events.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+}
+
+#[tokio::test]
+async fn failed_destroy_restores_every_artifact_and_publishes_nothing() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CertmeshPaths::with_data_dir(temp.path().join("failed-destroy"));
+    std::fs::create_dir_all(paths.certmesh_dir()).unwrap();
+    std::fs::create_dir_all(paths.certs_dir().join("member")).unwrap();
+    std::fs::create_dir_all(paths.log_dir()).unwrap();
+    let member = b"{corrupt-member-marker";
+    let cert = b"existing-certificate";
+    let audit = b"existing-audit\n";
+    std::fs::write(paths.member_state_path(), member).unwrap();
+    std::fs::write(paths.certs_dir().join("member/cert.pem"), cert).unwrap();
+    std::fs::write(paths.audit_log_path(), audit).unwrap();
+    let master_key = koi_crypto::unlock_slots::generate_master_key();
+    let slot_table =
+        koi_crypto::unlock_slots::SlotTable::new_with_passphrase(&master_key, "pass").unwrap();
+    slot_table.save(&paths.slot_table_path()).unwrap();
+    let mut slot_json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(paths.slot_table_path()).unwrap()).unwrap();
+    slot_json["pending_totp_credentials"] = serde_json::json!([{
+        "version": 2,
+        "credential_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "secret": true,
+        "fallback": false
+    }]);
+    std::fs::write(
+        paths.slot_table_path(),
+        serde_json::to_vec_pretty(&slot_json).unwrap(),
+    )
+    .unwrap();
+    let slots = std::fs::read(paths.slot_table_path()).unwrap();
+
+    let core =
+        CertmeshCore::load_with_paths(paths.clone(), "internal", TEST_LOCAL_HOSTNAME).unwrap();
+    let before = core.status();
+    let before_roster = core.roster_snapshot();
+    let before_tls = core.tls_identity();
+    let mut events = core.subscribe();
+    core.state.repository.fail_next_commit_after(1);
+
+    let error = core
+        .destroy()
+        .await
+        .expect_err("injected aggregate failure must abort destroy");
+    assert!(matches!(
+        error,
+        CertmeshError::Io(_) | CertmeshError::Internal(_)
+    ));
+    assert_eq!(std::fs::read(paths.member_state_path()).unwrap(), member);
+    assert_eq!(
+        std::fs::read(paths.certs_dir().join("member/cert.pem")).unwrap(),
+        cert
+    );
+    assert_eq!(std::fs::read(paths.audit_log_path()).unwrap(), audit);
+    assert_eq!(std::fs::read(paths.slot_table_path()).unwrap(), slots);
+    assert!(
+        !paths.credential_cleanup_pending(),
+        "rollback must remove the not-yet-actionable cleanup ledger"
+    );
+    assert!(Arc::ptr_eq(&before, &core.status()));
+    assert!(Arc::ptr_eq(&before_roster, &core.roster_snapshot()));
+    assert!(Arc::ptr_eq(&before_tls, &core.tls_identity()));
+    assert!(matches!(
+        events.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelled_destroy_finishes_disk_model_status_and_event_without_retry() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CertmeshPaths::with_data_dir(temp.path().join("cancelled-destroy"));
+    let ca = ca::create_ca("destroy-passphrase", &[77u8; 32], &paths)
+        .unwrap()
+        .0;
+    let roster = Roster::new(JUST_ME.0, JUST_ME.1, None);
+    crate::roster::save_roster(&roster, &paths.roster_path()).unwrap();
+    let core = CertmeshCore::new_with_paths(ca, roster, None, paths.clone());
+    let mut events = core.subscribe();
+    core.state.repository.pause_next_commit_after_durable();
+    let command = tokio::spawn({
+        let core = core.clone();
+        async move { core.destroy().await }
+    });
+    while !core.state.repository.is_commit_paused() {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        !paths.is_ca_initialized(),
+        "durable delete is already visible"
+    );
+    command.abort();
+    let _ = command.await;
+    core.state.repository.release_commit();
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while core.status().role != CertmeshRole::Open {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("retained destroy must publish the empty generation");
+    assert!(core.state.ca.lock().is_none());
+    assert!(core.roster_snapshot().active_members.is_empty());
+    assert!(core.tls_identity().material.is_none());
+    assert!(matches!(
+        events.recv().await.unwrap(),
+        CertmeshEvent::Destroyed
+    ));
+    let restarted = CertmeshCore::load_with_paths(paths, "internal", TEST_LOCAL_HOSTNAME).unwrap();
+    assert_eq!(restarted.status().role, CertmeshRole::Open);
+}
+
+fn create_request_for_membership_conflict() -> protocol::CreateCaRequest {
+    protocol::CreateCaRequest {
+        passphrase: "replacement-pass".to_string(),
+        entropy_hex: koi_common::encoding::hex_encode(&[29u8; 32]),
+        operator: None,
+        enrollment_open: true,
+        requires_approval: false,
+        auto_unlock: false,
+        totp_secret_hex: None,
+    }
+}
+
+#[tokio::test]
+async fn create_refuses_a_joined_member_and_preserves_its_identity() {
+    let temp = tempfile::tempdir().unwrap();
+    let source_paths = CertmeshPaths::with_data_dir(temp.path().join("source-ca"));
+    let member_paths = CertmeshPaths::with_data_dir(temp.path().join("member"));
+    let (source_ca, _) = ca::create_ca("source-pass", &[31u8; 32], &source_paths).unwrap();
+    let hostname = TEST_LOCAL_HOSTNAME.to_string();
+    let sans = vec![hostname.clone()];
+    let issued = ca::issue_certificate(&source_ca, &hostname, &sans, 30).unwrap();
+    crate::certfiles::write_cert_files_to(&member_paths.certs_dir().join(&hostname), &issued)
+        .unwrap();
+    let member_state = crate::member::MemberState {
+        hostname,
+        ca_host: "source-ca".into(),
+        ca_mtls_port: crate::member::DEFAULT_CA_MTLS_PORT,
+        ca_http_port: crate::member::DEFAULT_CA_HTTP_PORT,
+        ca_fingerprint: ca::ca_fingerprint(&source_ca),
+        sans,
+        policy: crate::roster::CertPolicy::default(),
+        last_bundle_seq: 0,
+        last_bundle_digest: None,
+        revoked_fingerprints: Vec::new(),
+        self_revoked: false,
+        reload_hook: None,
+    };
+    crate::member::save(&member_paths.member_state_path(), &member_state).unwrap();
+    let marker_before = std::fs::read(member_paths.member_state_path()).unwrap();
+    let cert_before = std::fs::read(
+        member_paths
+            .certs_dir()
+            .join(&member_state.hostname)
+            .join("cert.pem"),
+    )
+    .unwrap();
+    let core = CertmeshCore::load_with_paths(member_paths.clone(), "internal", TEST_LOCAL_HOSTNAME)
+        .unwrap();
+    assert_eq!(core.status().role, CertmeshRole::Member);
+    assert_eq!(core.status().identity.condition, IdentityCondition::Healthy);
+
+    let error = core
+        .create(create_request_for_membership_conflict())
+        .await
+        .expect_err("joined members cannot silently replace their mesh");
+    assert!(matches!(error, CertmeshError::Conflict(_)));
+    assert_eq!(
+        std::fs::read(member_paths.member_state_path()).unwrap(),
+        marker_before
+    );
+    assert_eq!(
+        std::fs::read(
+            member_paths
+                .certs_dir()
+                .join(&member_state.hostname)
+                .join("cert.pem")
+        )
+        .unwrap(),
+        cert_before
+    );
+    assert!(!member_paths.ca_key_path().exists());
+}
+
+#[tokio::test]
+async fn create_refuses_a_corrupt_member_marker_and_preserves_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CertmeshPaths::with_data_dir(temp.path().join("corrupt-member"));
+    std::fs::create_dir_all(paths.certmesh_dir()).unwrap();
+    let marker = b"{not-valid-member-json";
+    std::fs::write(paths.member_state_path(), marker).unwrap();
+    let core =
+        CertmeshCore::load_with_paths(paths.clone(), "internal", TEST_LOCAL_HOSTNAME).unwrap();
+    assert_eq!(core.status().role, CertmeshRole::Member);
+
+    let error = core
+        .create(create_request_for_membership_conflict())
+        .await
+        .expect_err("corrupt durable membership must fail closed");
+    assert!(matches!(error, CertmeshError::Conflict(_)));
+    assert_eq!(std::fs::read(paths.member_state_path()).unwrap(), marker);
+    assert!(!paths.ca_key_path().exists());
+}
+
+#[tokio::test]
+async fn join_commands_refuse_a_corrupt_member_marker() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CertmeshPaths::with_data_dir(temp.path().join("corrupt-rejoin"));
+    std::fs::create_dir_all(paths.certmesh_dir()).unwrap();
+    let marker = b"{not-valid-member-json";
+    std::fs::write(paths.member_state_path(), marker).unwrap();
+    let core =
+        CertmeshCore::load_with_paths(paths.clone(), "internal", TEST_LOCAL_HOSTNAME).unwrap();
+
+    let prepare = core
+        .prepare_member_csr("candidate", &["candidate".to_string()])
+        .await
+        .expect_err("corrupt durable membership must block a new join");
+    assert!(matches!(prepare, CertmeshError::Conflict(_)));
+    assert!(!paths.certs_dir().join("candidate/key.pending.pem").exists());
+
+    let install = core
+        .install_member_cert(
+            "candidate",
+            "invalid-cert",
+            "invalid-ca",
+            None,
+            None,
+            None,
+            &[],
+            None,
+        )
+        .await
+        .expect_err("corrupt durable membership must block identity replacement");
+    assert!(matches!(install, CertmeshError::Conflict(_)));
+    assert_eq!(std::fs::read(paths.member_state_path()).unwrap(), marker);
 }
 
 /// create() rejects a second initialization with a Conflict (→ 409).
@@ -2105,4 +3850,23 @@ async fn create_with_bad_entropy_returns_invalid_payload() {
         "expected InvalidPayload, got {err:?}"
     );
     assert_eq!(koi_common::error::ErrorCode::from(&err).http_status(), 400);
+}
+
+#[test]
+fn load_with_paths_keeps_durable_authority_fail_closed_when_roster_is_corrupt() {
+    let paths = isolated_posture_paths("load-corrupt-roster");
+    std::fs::create_dir_all(paths.ca_dir()).unwrap();
+    std::fs::write(paths.ca_key_path(), b"durable-authority-marker").unwrap();
+    std::fs::create_dir_all(paths.certmesh_dir()).unwrap();
+    std::fs::write(paths.roster_path(), b"not-json").unwrap();
+
+    let core =
+        CertmeshCore::load_with_paths(paths.clone(), "mesh.internal", TEST_LOCAL_HOSTNAME).unwrap();
+    let status = core.status();
+    assert_eq!(status.role, crate::CertmeshRole::Authority);
+    assert!(status.role.requires_authentication());
+    assert!(status.authority.as_ref().unwrap().locked);
+    assert_eq!(core.dns_zone(), "mesh.internal");
+
+    let _ = std::fs::remove_dir_all(paths.data_dir());
 }

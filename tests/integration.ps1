@@ -966,25 +966,18 @@ if (-not $Service) {
         Fail 'koi mdns announce prints confirmation' $_.Exception.Message
     }
 
-    # 1.6 - Piped JSON mode (browse streams forever in piped mode, so allow timeout)
+    # 1.6 - Redirected stdin must not arm a second implicit control plane.
     try {
-        $r = Invoke-Koi -KoiArgs '--standalone' -Stdin '{"browse":"_http._tcp"}' -TimeoutSec 5 -AllowFailure
-        # Process was killed after timeout - that's expected for piped browse.
-        # Validate that any output produced is valid JSON.
-        $lines = @($r.Stdout -split "`n" | Where-Object { $_.Trim() -ne '' })
-        $valid = $true
-        foreach ($line in $lines) {
-            try { $null = $line | ConvertFrom-Json } catch { $valid = $false; break }
-        }
-        if ($valid) {
-            Pass 'piped JSON mode accepted'
+        $r = Invoke-Koi -Stdin '{"browse":"_http._tcp"}' -TimeoutSec 5
+        if ($r.Stdout -notmatch '"found"' -and $r.Stdout -notmatch '"registered"') {
+            Pass 'redirected stdin does not arm an implicit control plane'
         }
         else {
-            Fail 'piped JSON mode accepted' 'Invalid JSON in output'
+            Fail 'redirected stdin does not arm an implicit control plane' 'Unexpected mDNS protocol response'
         }
     }
     catch {
-        Fail 'piped JSON mode accepted' $_.Exception.Message
+        Fail 'redirected stdin does not arm an implicit control plane' $_.Exception.Message
     }
 
     # 1.7 - Version command (human)

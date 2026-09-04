@@ -73,11 +73,14 @@ pub trait KoiSource: Send + Sync + 'static {
 
     async fn heartbeat(&self, id: String) -> Result<(), SourceError>;
 
-    async fn unified_status(&self) -> Result<Value, SourceError>;
-
     async fn health_status(&self) -> Result<Value, SourceError>;
 
     async fn dns_list(&self) -> Result<Value, SourceError>;
+
+    /// Consolidated inventory captured from one authoritative product revision.
+    /// Every backing must supply an atomic source; there is deliberately no
+    /// default that can join independently timed domain reads.
+    async fn inventory_snapshot(&self, include: Option<Vec<String>>) -> Result<Value, SourceError>;
 
     async fn dns_lookup(&self, name: String, record_type: RecordType)
         -> Result<Value, SourceError>;
@@ -161,12 +164,6 @@ impl KoiSource for ClientSource {
             .map_err(SourceError::from)
     }
 
-    async fn unified_status(&self) -> Result<Value, SourceError> {
-        call(&self.client, |c| c.unified_status())
-            .await
-            .map_err(SourceError::from)
-    }
-
     async fn health_status(&self) -> Result<Value, SourceError> {
         call(&self.client, |c| c.health_status())
             .await
@@ -179,14 +176,36 @@ impl KoiSource for ClientSource {
             .map_err(SourceError::from)
     }
 
+    async fn inventory_snapshot(&self, include: Option<Vec<String>>) -> Result<Value, SourceError> {
+        let mut inventory = call(&self.client, |client| client.inventory_snapshot())
+            .await
+            .map_err(SourceError::from)?;
+        let object = inventory
+            .as_object_mut()
+            .ok_or_else(|| SourceError("aggregate inventory response is not an object".into()))?;
+        for source in ["status", "health", "dns"] {
+            if !tools::inventory_includes(include.as_deref(), source) {
+                // Filtering an already-captured document preserves the daemon's
+                // one-revision guarantee and can never trigger a fallback read.
+                object.insert(source.to_string(), Value::Null);
+            }
+        }
+        Ok(inventory)
+    }
+
     async fn dns_lookup(
         &self,
         name: String,
         record_type: RecordType,
     ) -> Result<Value, SourceError> {
-        call(&self.client, move |c| c.dns_lookup(&name, record_type))
+        let result = call(&self.client, move |c| c.dns_lookup(&name, record_type))
             .await
-            .map_err(SourceError::from)
+            .map_err(SourceError::from)?;
+        match result {
+            Some(result) => serde_json::to_value(result)
+                .map_err(|error| SourceError(format!("DNS lookup serialization failed: {error}"))),
+            None => Err(SourceError("record_not_found".into())),
+        }
     }
 
     async fn dns_add(

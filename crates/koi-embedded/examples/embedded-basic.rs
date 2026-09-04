@@ -8,7 +8,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
     let handle = koi.start().await?;
 
-    let mut events = handle.events();
+    let mut events = handle.events()?;
     tokio::spawn(async move {
         while let Some(Ok(event)) = events.next().await {
             println!("event: {event:?}");

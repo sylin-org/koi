@@ -1,24 +1,17 @@
-﻿use std::io::Write;
+use std::io::Write;
+use std::path::Path;
 
 use chrono::Utc;
 
-use koi_common::paths;
-
 use crate::service::ServiceStatus;
 
-const HEALTH_LOG_FILENAME: &str = "health.log";
-
-fn health_log_path() -> std::path::PathBuf {
-    paths::koi_log_dir().join(HEALTH_LOG_FILENAME)
-}
-
-pub fn append_transition(
+pub(crate) fn append_transition(
+    path: &Path,
     name: &str,
     old_state: ServiceStatus,
     new_state: ServiceStatus,
     reason: &str,
 ) -> Result<(), std::io::Error> {
-    let path = health_log_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -26,7 +19,7 @@ pub fn append_transition(
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&path)?;
+        .open(path)?;
 
     let line = format!(
         "{} | {} | {:?} -> {:?} | {}\n",
@@ -40,10 +33,50 @@ pub fn append_transition(
     Ok(())
 }
 
-pub fn read_log() -> Result<String, std::io::Error> {
-    let path = health_log_path();
-    if !path.exists() {
-        return Ok(String::new());
+pub(crate) async fn read_log(path: &Path) -> Result<String, std::io::Error> {
+    match tokio::fs::read_to_string(path).await {
+        Ok(entries) => Ok(entries),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(error) => Err(error),
     }
-    std::fs::read_to_string(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn transition_log_uses_only_the_injected_path() {
+        let root = koi_common::test::ensure_data_dir("koi-health-log-tests")
+            .join(format!("injected-{}", koi_common::id::generate_short_id()));
+        let selected = root.join("selected/health.log");
+        let sibling = root.join("other/health.log");
+
+        append_transition(
+            &selected,
+            "api",
+            ServiceStatus::Unknown,
+            ServiceStatus::Up,
+            "reachable",
+        )
+        .expect("append transition");
+
+        assert!(read_log(&selected).await.unwrap().contains("api"));
+        assert_eq!(read_log(&sibling).await.unwrap(), "");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn transition_log_wire_value_requires_string_entries_and_round_trips() {
+        let expected = crate::HealthTransitionLog {
+            entries: "2026-09-04T00:00:00Z | api | Up -> Down | refused\n".to_string(),
+        };
+        let encoded = serde_json::to_string(&expected).expect("serialize transition log");
+        let decoded: crate::HealthTransitionLog =
+            serde_json::from_str(&encoded).expect("deserialize transition log");
+
+        assert_eq!(decoded, expected);
+        assert!(serde_json::from_str::<crate::HealthTransitionLog>("{}").is_err());
+        assert!(serde_json::from_str::<crate::HealthTransitionLog>(r#"{"entries":[]}"#).is_err());
+    }
 }

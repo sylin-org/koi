@@ -5,13 +5,29 @@
 //! imports, sibling modules, and crate-private state/helpers as in the original.
 use super::*;
 
+/// Side-effect-free result of the expensive CA creation phase. A cancelled
+/// requester may abandon this value safely: no aggregate state has been
+/// admitted, persisted, projected, or announced yet.
+struct PreparedCaCreation {
+    ca: ca::PreparedCa,
+    totp_secret: koi_crypto::totp::TotpSecret,
+    auth_json: Vec<u8>,
+    totp_uri: String,
+    ca_fingerprint: String,
+    roster: roster::Roster,
+    local_hostname: String,
+    issued: ca::IssuedCert,
+    machine_fingerprint: Option<String>,
+}
+
 impl CertmeshCore {
     /// Initialize a new CA and self-enroll this node as the primary member.
     ///
     /// Full CA-initialization orchestration: decode entropy, create the CA,
     /// generate the TOTP auth credential, create and persist the roster,
-    /// self-enroll the CA node, install the CA cert in the OS trust store
-    /// (best-effort), configure auto-unlock, and update in-memory state.
+    /// self-enroll the CA node, configure auto-unlock, and publish the aggregate.
+    /// OS anchor installation belongs to the separate Trust domain, which
+    /// consumes Certmesh's CA-anchor projection after this command succeeds.
     ///
     /// This is the single source of truth for CA creation; the HTTP
     /// `create_handler` is a thin delegate over this method.
@@ -21,7 +37,8 @@ impl CertmeshCore {
     ) -> Result<protocol::CreateCaResponse, CertmeshError> {
         let state = &self.state;
 
-        // Decode hex entropy (must be exactly 32 bytes)
+        // Decode and validate everything that does not inspect aggregate state
+        // before entering the serialized transition.
         let entropy = match decode_hex(&req.entropy_hex) {
             Some(bytes) if bytes.len() == 32 => bytes,
             Some(bytes) => {
@@ -37,27 +54,6 @@ impl CertmeshCore {
             }
         };
 
-        // Reject if CA already initialized
-        if state.paths.is_ca_initialized() {
-            return Err(CertmeshError::Conflict(
-                "CA is already initialized".to_string(),
-            ));
-        }
-
-        // Create CA (blocking I/O: key gen, file writes, slot table save)
-        let passphrase_clone = req.passphrase.clone();
-        let paths_clone = state.paths.clone();
-        let (ca_state, _master_key) = tokio::task::spawn_blocking(move || {
-            ca::create_ca(&passphrase_clone, &entropy, &paths_clone)
-        })
-        .await
-        .map_err(|e| CertmeshError::Internal(format!("CA creation task: {e}")))
-        .and_then(|r| r)?;
-        let ca_fingerprint = ca::ca_fingerprint(&ca_state);
-
-        // Generate auth credential (default=TOTP).
-        // If the client provided a ceremony-verified secret, use it;
-        // otherwise generate a fresh one.
         let totp_secret = if let Some(ref hex) = req.totp_secret_hex {
             match koi_common::encoding::hex_decode(hex) {
                 Ok(bytes) => koi_crypto::totp::TotpSecret::from_bytes(bytes),
@@ -70,186 +66,285 @@ impl CertmeshCore {
         } else {
             koi_crypto::totp::generate_secret()
         };
-        let stored = koi_crypto::auth::store_totp(&totp_secret, &req.passphrase)
-            .map_err(|e| CertmeshError::Internal(format!("auth store: {e}")))?;
-        let auth_json = serde_json::to_string_pretty(&stored)
-            .map_err(|e| CertmeshError::Internal(format!("auth serialize: {e}")))?;
-        {
-            let auth_path = state.paths.auth_path();
-            let auth_json_clone = auth_json.clone();
-            tokio::task::spawn_blocking(move || std::fs::write(&auth_path, &auth_json_clone))
-                .await
-                .map_err(|e| std::io::Error::other(format!("file I/O: {e}")))
-                .and_then(|r| r)
-                .map_err(CertmeshError::Io)?;
+
+        if req.auto_unlock && req.passphrase.is_empty() {
+            return Err(CertmeshError::InvalidPayload(
+                "auto-unlock requires a non-empty CA passphrase".into(),
+            ));
         }
 
-        let totp_uri = koi_crypto::totp::build_totp_uri(&totp_secret, "Koi Certmesh", "enrollment");
+        // Avoid paying the KDF/signing cost for an obviously closed aggregate.
+        // This is only an optimistic read; the authoritative check is repeated
+        // under the transition after preparation.
+        if self.status().role != CertmeshRole::Open {
+            return Err(CertmeshError::Conflict(
+                "node already belongs to a certificate mesh".to_string(),
+            ));
+        }
 
-        // Create roster from the two posture booleans (the named preset, if any,
-        // was already resolved to these by the ceremony/CLI).
-        let mut new_roster = roster::Roster::new(
-            req.enrollment_open,
-            req.requires_approval,
-            req.operator.clone(),
-        );
-        let roster_path = state.paths.roster_path();
-        roster::persist_roster(&new_roster, &roster_path).await?;
+        // CA generation, both KDFs, leaf issuance, and serialization are pure
+        // preparation. Keep them off the async executor and outside the
+        // accepted-mutation gate. If this future is cancelled, Certmesh's owned
+        // worker may finish and discard the value; no domain effect can leak.
+        let passphrase = req.passphrase.clone();
+        let auto_unlock = req.auto_unlock;
+        let enrollment_open = req.enrollment_open;
+        let requires_approval = req.requires_approval;
+        let operator = req.operator.clone();
+        let issuance_names = state.issuance_names.clone();
+        let paths = state.paths.clone();
+        let local_hostname = self.require_local_hostname("creating the Certmesh authority")?;
+        let prepared = state
+            .blocking
+            .run(move || {
+                let mut ca = ca::prepare_ca(&passphrase, &entropy)?;
+                if auto_unlock {
+                    ca.slot_table.add_auto_unlock();
+                }
+                let ca_fingerprint = ca::ca_fingerprint(&ca.state);
 
-        // Self-enroll the CA node as the first (primary) member.
-        // This issues a certificate for the local hostname so applications
-        // on this machine can use TLS immediately.
-        let local_hostname = hostname::get()
-            .map(|h| h.to_string_lossy().to_string())
-            .unwrap_or_else(|_| "localhost".to_string());
-        let sans = vec![
-            local_hostname.clone(),
-            "localhost".to_string(),
-            "127.0.0.1".to_string(),
-            "::1".to_string(),
-        ];
-        match ca::issue_certificate(
-            &ca_state,
-            &local_hostname,
-            &sans,
-            new_roster.metadata.policy.leaf_lifetime_days,
-        ) {
-            Ok(issued) => {
-                let cert_dir_base = state.paths.certs_dir().join(&local_hostname);
-                let cert_dir_base_clone = cert_dir_base.clone();
-                let issued_for_write = issued.clone();
-                let cert_dir = match tokio::task::spawn_blocking(move || {
-                    certfiles::write_cert_files_to(&cert_dir_base_clone, &issued_for_write)
-                })
-                .await
-                {
-                    Ok(Ok(dir)) => dir,
-                    Ok(Err(e)) => {
-                        tracing::warn!(error = %e, "Could not write CA node cert files");
-                        cert_dir_base
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "Cert file write task panicked");
-                        cert_dir_base
-                    }
-                };
-                let ca_fp = ca::ca_fingerprint(&ca_state);
-                let member = roster::RosterMember {
+                let stored = koi_crypto::auth::store_totp(&totp_secret, &passphrase)
+                    .map_err(|error| CertmeshError::Internal(format!("auth store: {error}")))?;
+                let auth_json = serde_json::to_vec_pretty(&stored)
+                    .map_err(|error| CertmeshError::Internal(format!("auth serialize: {error}")))?;
+                let totp_uri =
+                    koi_crypto::totp::build_totp_uri(&totp_secret, "Koi Certmesh", "enrollment");
+
+                let mut roster =
+                    roster::Roster::new(enrollment_open, requires_approval, operator.clone());
+                validate_hostname(&local_hostname)?;
+                let sans = issuance_names.self_sans(&local_hostname, &[])?;
+                let issued = ca::issue_certificate(
+                    &ca.state,
+                    &local_hostname,
+                    &sans,
+                    roster.metadata.policy.leaf_lifetime_days,
+                )?;
+                let cert_dir = paths.certs_dir().join(&local_hostname);
+                roster.members.push(roster::RosterMember {
                     hostname: local_hostname.clone(),
                     role: roster::MemberRole::Primary,
                     enrolled_at: chrono::Utc::now(),
-                    enrolled_by: req.operator.clone(),
-                    cert_fingerprint: issued.fingerprint,
+                    enrolled_by: operator,
+                    cert_fingerprint: issued.fingerprint.clone(),
                     cert_expires: issued.expires,
                     cert_sans: sans,
                     cert_path: cert_dir.display().to_string(),
                     status: roster::MemberStatus::Active,
                     reload_hook: None,
                     last_seen: Some(chrono::Utc::now()),
-                    pinned_ca_fingerprint: Some(ca_fp),
+                    pinned_ca_fingerprint: Some(ca_fingerprint.clone()),
                     proxy_entries: Vec::new(),
-                };
-                new_roster.members.push(member);
-                // Persist updated roster with the self-enrolled member
-                if let Err(e) = roster::persist_roster(&new_roster, &roster_path).await {
-                    tracing::warn!(error = %e, "Could not save roster after self-enrollment");
+                });
+                roster.metadata.seq = 1;
+
+                Ok::<_, CertmeshError>(PreparedCaCreation {
+                    ca,
+                    totp_secret,
+                    auth_json,
+                    totp_uri,
+                    ca_fingerprint,
+                    roster,
+                    local_hostname,
+                    issued,
+                    machine_fingerprint: koi_crypto::vault::machine_fingerprint(),
+                })
+            })
+            .await??;
+
+        // Reserve the complete accepted mutation before taking the aggregate
+        // gate. The worker owns platform intent, persistence, model, projections,
+        // and event publication as one cancellation-safe command.
+        let permit = state.blocking.reserve().await?;
+        let transition = Arc::clone(&state.transition).lock_owned().await;
+        let domain = Arc::clone(&state.domain);
+        state
+            .blocking
+            .run_with_permit(permit, move || {
+                let _transition = transition;
+                domain.require_cleanup_complete_under_transition()?;
+                if domain.status.current().role != CertmeshRole::Open {
+                    return Err(CertmeshError::Conflict(
+                        "node already belongs to a certificate mesh".to_string(),
+                    ));
                 }
-                let _ = audit::append_entry_to(
-                    &state.paths.audit_log_path(),
-                    "member_joined",
-                    &[
-                        ("hostname", local_hostname.as_str()),
-                        ("role", "primary"),
-                        ("approved_by", "self-enroll"),
-                    ],
+
+                let local_hostname = prepared.local_hostname.clone();
+                let ca_fingerprint = prepared.ca_fingerprint.clone();
+                let issued_fingerprint = prepared.issued.fingerprint.clone();
+                let cert_dir = domain.paths.certs_dir().join(&local_hostname);
+                let sealed_ciphertext = prepared.ca.encrypted_key.ciphertext.clone();
+                let mut transaction = repository::ArtifactTransaction::new();
+                transaction.write(
+                    domain.paths.ca_key_path(),
+                    serde_json::to_vec_pretty(&prepared.ca.encrypted_key).map_err(|error| {
+                        CertmeshError::Internal(format!("serialize CA key: {error}"))
+                    })?,
+                    true,
                 );
-                tracing::info!(hostname = %local_hostname, "CA node self-enrolled as primary");
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "Could not self-enroll CA node - roster will be empty");
-            }
-        }
-
-        // Install CA cert in OS trust store (best-effort)
-        if let Err(e) = os_truststore::Cert::from_pem(&ca_state.cert_pem)
-            .and_then(|cert| os_truststore::install(&cert).map(drop))
-        {
-            tracing::warn!(error = %e, "Could not install CA cert in trust store");
-        }
-
-        // Configure auto-unlock from the create-time decision (single source of
-        // truth: CertmeshCore::configure_auto_unlock). When `auto_unlock` is true,
-        // the passphrase is saved to the koi-crypto vault so the daemon boots
-        // unlocked; the slot table is marked. This is what keeps the boot-unlocked
-        // path (koi-compose init_certmesh_core) working.
-        if let Err(e) = self.configure_auto_unlock(req.auto_unlock, &req.passphrase) {
-            tracing::warn!(error = %e, "Could not configure auto-unlock");
-        }
-
-        // Record this machine's fingerprint (ADR-017 F11) so a later boot can
-        // detect a VM clone / disk restore onto different hardware and refuse to
-        // auto-unlock. Best-effort: if the machine-id is unreadable, the CA is
-        // simply not machine-checked.
-        match koi_crypto::vault::machine_fingerprint() {
-            Some(fp) => {
-                let path = state.paths.machine_bind_path();
-                let r = tokio::task::spawn_blocking(move || write_machine_binding(&path, &fp))
-                    .await
-                    .map_err(|e| std::io::Error::other(format!("machine-bind task: {e}")))
-                    .and_then(|r| r);
-                if let Err(e) = r {
-                    tracing::warn!(error = %e, "Could not record machine binding");
+                transaction.write(
+                    domain.paths.slot_table_path(),
+                    serde_json::to_vec_pretty(&prepared.ca.slot_table).map_err(|error| {
+                        CertmeshError::Internal(format!("serialize unlock slots: {error}"))
+                    })?,
+                    true,
+                );
+                transaction.write(
+                    domain.paths.ca_cert_path(),
+                    prepared.ca.state.cert_pem.as_bytes().to_vec(),
+                    false,
+                );
+                transaction.write(domain.paths.auth_path(), prepared.auth_json, true);
+                transaction.write(
+                    domain.paths.roster_path(),
+                    serde_json::to_vec_pretty(&prepared.roster).map_err(|error| {
+                        CertmeshError::Internal(format!("serialize roster: {error}"))
+                    })?,
+                    true,
+                );
+                transaction.write(
+                    cert_dir.join("cert.pem"),
+                    prepared.issued.cert_pem.as_bytes().to_vec(),
+                    false,
+                );
+                transaction.write(
+                    cert_dir.join("key.pem"),
+                    prepared.issued.key_pem.as_bytes().to_vec(),
+                    true,
+                );
+                transaction.write(
+                    cert_dir.join("ca.pem"),
+                    prepared.issued.ca_pem.as_bytes().to_vec(),
+                    false,
+                );
+                transaction.write(
+                    cert_dir.join("fullchain.pem"),
+                    prepared.issued.fullchain_pem.as_bytes().to_vec(),
+                    false,
+                );
+                transaction.remove(domain.paths.member_state_path());
+                transaction.remove(domain.paths.invites_path());
+                transaction.remove(domain.paths.rate_limiter_path());
+                transaction.remove(domain.paths.auto_unlock_key_path());
+                transaction.remove_tree(&domain.paths.acme_dir())?;
+                if let Some(fingerprint) = prepared.machine_fingerprint {
+                    transaction.write(
+                        domain.paths.machine_bind_path(),
+                        fingerprint.into_bytes(),
+                        true,
+                    );
+                } else {
+                    transaction.remove(domain.paths.machine_bind_path());
                 }
-            }
-            None => tracing::debug!(
-                "machine-id unavailable; machine binding not recorded (auto-unlock unchecked)"
-            ),
-        }
+                transaction.append(
+                    domain.paths.audit_log_path(),
+                    audit::render_entry(
+                        "member_joined",
+                        &[
+                            ("hostname", local_hostname.as_str()),
+                            ("role", "primary"),
+                            ("approved_by", "self-enroll"),
+                        ],
+                    ),
+                    true,
+                )?;
+                transaction.append(
+                    domain.paths.audit_log_path(),
+                    audit::render_entry(
+                        "ca_initialized",
+                        &[
+                            (
+                                "enrollment_open",
+                                if req.enrollment_open { "open" } else { "closed" },
+                            ),
+                            (
+                                "requires_approval",
+                                if req.requires_approval { "yes" } else { "no" },
+                            ),
+                            ("operator", req.operator.as_deref().unwrap_or("none")),
+                        ],
+                    ),
+                    true,
+                )?;
 
-        // Update in-memory state
-        *state.ca.lock().await = Some(ca_state);
-        *state.auth.lock().await = Some(koi_crypto::auth::AuthState::Totp(totp_secret));
-        *state.roster.lock().await = new_roster;
+                // Auto-unlock is requested product state, not an optimization.
+                // Store the credential first; the durable slot marker activates
+                // it. A failed aggregate commit restores the prior inert value.
+                let previous_auto_unlock = if req.auto_unlock {
+                    let previous = CertmeshCore::read_auto_unlock_key(&domain.paths)?;
+                    CertmeshCore::save_auto_unlock_key_at(&domain.paths, &req.passphrase)?;
+                    Some(previous)
+                } else {
+                    None
+                };
+                let outcome = match domain.commit_artifacts_under_transition(transaction) {
+                    Ok(outcome) => outcome,
+                    Err(error) => {
+                        if let Some(previous) = previous_auto_unlock {
+                            if let Err(rollback_error) =
+                                CertmeshCore::restore_auto_unlock_key_at(&domain.paths, previous)
+                            {
+                                tracing::error!(%rollback_error, "Could not roll back inactive auto-unlock credential");
+                            }
+                        }
+                        return Err(error);
+                    }
+                };
 
-        let _ = audit::append_entry_to(
-            &state.paths.audit_log_path(),
-            "ca_initialized",
-            &[
-                (
-                    "enrollment_open",
-                    if req.enrollment_open {
-                        "open"
-                    } else {
-                        "closed"
+                *domain.ca.lock() = Some(prepared.ca.state);
+                *domain.auth.lock() = Some(koi_crypto::auth::AuthState::Totp(prepared.totp_secret));
+                *domain.roster.lock() = prepared.roster;
+                *domain.rate_limiter.lock() = RateLimiter::new();
+                domain.acme_accounts.clear();
+                domain.finish_commit_under_transition(outcome)?;
+
+                if let Err(error) = remove_empty_tree(&domain.paths.acme_dir()) {
+                    tracing::debug!(%error, "Could not remove empty ACME state directory");
+                }
+                let _ = domain.event_tx.send(CertmeshEvent::MemberJoined {
+                    hostname: local_hostname,
+                    fingerprint: issued_fingerprint,
+                });
+
+                // TPM sealing is explicitly a best-effort hardening layer; the
+                // encrypted CA and authoritative status do not depend on it.
+                if koi_crypto::tpm::is_available() {
+                    if let Err(error) = koi_crypto::tpm::seal_key_material(
+                        "koi-certmesh-ca",
+                        &sealed_ciphertext,
+                    ) {
+                        tracing::warn!(%error, "Could not seal Certmesh key material to this platform");
+                    }
+                }
+                tracing::info!(
+                    enrollment_open = req.enrollment_open,
+                    requires_approval = req.requires_approval,
+                    auto_unlock = req.auto_unlock,
+                    "CA initialized via service"
+                );
+                Ok(protocol::CreateCaResponse {
+                    auth_setup: koi_crypto::auth::AuthSetup::Totp {
+                        totp_uri: prepared.totp_uri,
                     },
-                ),
-                (
-                    "requires_approval",
-                    if req.requires_approval { "yes" } else { "no" },
-                ),
-                ("operator", req.operator.as_deref().unwrap_or("none")),
-            ],
-        );
-
-        tracing::info!(
-            enrollment_open = req.enrollment_open,
-            requires_approval = req.requires_approval,
-            auto_unlock = req.auto_unlock,
-            "CA initialized via service"
-        );
-
-        // The CA node self-enrolled a leaf above → Open→Authenticated.
-        state.republish_posture();
-
-        Ok(protocol::CreateCaResponse {
-            auth_setup: koi_crypto::auth::AuthSetup::Totp { totp_uri },
-            ca_fingerprint,
-        })
+                    ca_fingerprint,
+                })
+            })
+            .await?
     }
 
     /// Read the audit log entries.
-    pub fn read_audit_log(&self) -> Result<String, CertmeshError> {
-        audit::read_log_from(&self.state.paths.audit_log_path()).map_err(CertmeshError::Io)
+    pub async fn read_audit_log(&self) -> Result<String, CertmeshError> {
+        let transition = Arc::clone(&self.state.transition).lock_owned().await;
+        let path = self.state.paths.audit_log_path();
+        let (_transition, result) = self
+            .state
+            .blocking
+            .run(move || {
+                let result = audit::read_log_from(&path).map_err(CertmeshError::Io);
+                (transition, result)
+            })
+            .await?;
+        result
     }
 
     /// Destroy all certmesh state - CA key, certs, roster, and audit log.
@@ -258,8 +353,19 @@ impl CertmeshCore {
     /// uninitialized. This is irreversible. Used for testing cleanup and
     /// full mesh teardown.
     pub async fn destroy(&self) -> Result<(), CertmeshError> {
-        self.state.destroy().await?;
-        let _ = self.state.event_tx.send(CertmeshEvent::Destroyed);
-        Ok(())
+        let permit = self.state.blocking.reserve().await?;
+        let transition = Arc::clone(&self.state.transition).lock_owned().await;
+        let domain = Arc::clone(&self.state.domain);
+        self.state
+            .blocking
+            .run_with_permit(permit, move || {
+                let _transition = transition;
+                domain.destroy_under_transition()?;
+                // `destroy_under_transition` has already published primary and
+                // specialized status. The semantic event is the final face.
+                let _ = domain.event_tx.send(CertmeshEvent::Destroyed);
+                Ok(())
+            })
+            .await?
     }
 }

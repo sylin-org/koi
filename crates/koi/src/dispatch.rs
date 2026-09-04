@@ -1,15 +1,13 @@
 //! CLI command dispatch — the async entry point. Routes each subcommand to its handler in
 //! `commands::*`, then falls through to `daemon::daemon_mode`. Moved from main.rs (P07 step 6b).
 
-use std::sync::Arc;
-
 use crate::cli::{
     CertmeshSubcommand, Cli, Command, Config, DnsSubcommand, DnsTxtSubcommand, HealthSubcommand,
     McpSubcommand, MdnsSubcommand, PondSubcommand, ProxySubcommand, TrustSubcommand, UdpSubcommand,
 };
 use crate::commands::status::try_daemon_status;
 use crate::daemon::daemon_mode;
-use crate::infra::{is_piped_stdin, print_top_level_help};
+use crate::infra::print_top_level_help;
 use crate::{commands, format, help};
 
 // ── Async entry point ────────────────────────────────────────────────
@@ -22,7 +20,7 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
             Command::Config { .. } => {
                 anyhow::bail!("config subcommand is handled in main")
             }
-            Command::Status => commands::status::status(&cli, &config),
+            Command::Status => commands::status::status(&cli),
             Command::Pond(pond_cmd) => match &pond_cmd.command {
                 PondSubcommand::Status => commands::pond::status(&cli),
                 PondSubcommand::Start => commands::pond::start(&cli),
@@ -46,7 +44,7 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                         }
                     },
                     Some(MdnsSubcommand::Discover { service_type }) => {
-                        let mode = commands::detect_mode(&cli);
+                        let mode = commands::detect_mode(&cli)?;
                         commands::mdns::discover(
                             service_type.as_deref(),
                             cli.json,
@@ -63,7 +61,7 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                         ip,
                         txt,
                     }) => {
-                        let mode = commands::detect_mode(&cli);
+                        let mode = commands::detect_mode(&cli)?;
                         commands::mdns::announce(
                             name,
                             service_type,
@@ -77,15 +75,15 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                         .await
                     }
                     Some(MdnsSubcommand::Unregister { id }) => {
-                        let mode = commands::detect_mode(&cli);
+                        let mode = commands::detect_mode(&cli)?;
                         commands::mdns::unregister(id, cli.json, mode).await
                     }
                     Some(MdnsSubcommand::Resolve { instance }) => {
-                        let mode = commands::detect_mode(&cli);
+                        let mode = commands::detect_mode(&cli)?;
                         commands::mdns::resolve(instance, cli.json, mode).await
                     }
                     Some(MdnsSubcommand::Subscribe { service_type }) => {
-                        let mode = commands::detect_mode(&cli);
+                        let mode = commands::detect_mode(&cli)?;
                         commands::mdns::subscribe(service_type, cli.json, cli.timeout, mode).await
                     }
                 }
@@ -116,6 +114,7 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                         cli.json,
                         ep,
                         tok,
+                        &config.data_dir,
                     ),
                     Some(CertmeshSubcommand::Status) => {
                         commands::certmesh::status(cli.json, ep, tok)
@@ -176,7 +175,7 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     }
                     Some(CertmeshSubcommand::Acme(acme_cmd)) => match &acme_cmd.command {
                         None | Some(crate::cli::AcmeSubcommand::Enable) => {
-                            commands::certmesh::acme_enable(cli.json, ep, tok)
+                            commands::certmesh::acme_enable(cli.json, ep, tok, &config.data_dir)
                         }
                         Some(crate::cli::AcmeSubcommand::Status) => {
                             commands::certmesh::acme_status(cli.json, ep, tok)
@@ -186,7 +185,7 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
             }
             Command::Dns(dns_cmd) => {
                 config.require_capability("dns")?;
-                let mode = commands::detect_mode(&cli);
+                let mode = commands::detect_mode(&cli)?;
                 match &dns_cmd.command {
                     None => {
                         help::print_category_catalog(help::KoiCategory::Dns, None)?;
@@ -201,10 +200,10 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                         commands::dns::lookup(name, record_type, mode, cli.json, &config).await
                     }
                     Some(DnsSubcommand::Add { name, ip, ttl }) => {
-                        commands::dns::add(name, ip, *ttl, mode, cli.json, &config.dns_zone)
+                        commands::dns::add(name, ip, *ttl, mode, cli.json, &config).await
                     }
                     Some(DnsSubcommand::Remove { name }) => {
-                        commands::dns::remove(name, mode, cli.json, &config.dns_zone)
+                        commands::dns::remove(name, mode, cli.json, &config).await
                     }
                     Some(DnsSubcommand::Txt(txt)) => match &txt.command {
                         DnsTxtSubcommand::Set { name, value } => {
@@ -219,7 +218,7 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
             }
             Command::Health(health_cmd) => {
                 config.require_capability("health")?;
-                let mode = commands::detect_mode(&cli);
+                let mode = commands::detect_mode(&cli)?;
                 match &health_cmd.command {
                     None => {
                         help::print_category_catalog(help::KoiCategory::Health, None)?;
@@ -253,12 +252,14 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     Some(HealthSubcommand::Remove { name }) => {
                         commands::health::remove(name, mode, cli.json, &config).await
                     }
-                    Some(HealthSubcommand::Log) => commands::health::log(),
+                    Some(HealthSubcommand::Log) => {
+                        commands::health::log(&config, mode, cli.json).await
+                    }
                 }
             }
             Command::Proxy(proxy_cmd) => {
                 config.require_capability("proxy")?;
-                let mode = commands::detect_mode(&cli);
+                let mode = commands::detect_mode(&cli)?;
                 match &proxy_cmd.command {
                     None => {
                         help::print_category_catalog(help::KoiCategory::Proxy, None)?;
@@ -277,19 +278,24 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                             *backend_remote,
                             mode,
                             cli.json,
+                            &config,
                         )
                         .await
                     }
                     Some(ProxySubcommand::Remove { name }) => {
-                        commands::proxy::remove(name, mode, cli.json).await
+                        commands::proxy::remove(name, mode, cli.json, &config).await
                     }
-                    Some(ProxySubcommand::Status) => commands::proxy::status(mode, cli.json).await,
-                    Some(ProxySubcommand::List) => commands::proxy::list(mode, cli.json).await,
+                    Some(ProxySubcommand::Status) => {
+                        commands::proxy::status(mode, cli.json, &config).await
+                    }
+                    Some(ProxySubcommand::List) => {
+                        commands::proxy::list(mode, cli.json, &config).await
+                    }
                 }
             }
             Command::Udp(udp_cmd) => {
                 config.require_capability("udp")?;
-                let mode = commands::detect_mode(&cli);
+                let mode = commands::detect_mode(&cli)?;
                 match &udp_cmd.command {
                     None => {
                         help::print_category_catalog(help::KoiCategory::Udp, None)?;
@@ -317,28 +323,36 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                 }
             }
             Command::Trust(trust_cmd) => {
-                // Trust operations are local (OS cert store) — no daemon capability.
                 match &trust_cmd.command {
                     None => {
                         help::print_category_catalog(help::KoiCategory::TrustStore, None)?;
                         Ok(())
                     }
-                    Some(TrustSubcommand::Install { pem_path }) => {
-                        commands::trust::install(pem_path, cli.json)
-                    }
-                    Some(TrustSubcommand::List) => commands::trust::list(cli.json),
-                    Some(TrustSubcommand::Remove { name }) => {
-                        commands::trust::remove(name, cli.json)
-                    }
-                    Some(TrustSubcommand::Export { ca }) => commands::trust::export(*ca, cli.json),
-                    Some(TrustSubcommand::Diagnose { fix }) => {
-                        commands::trust::diagnose(
-                            *fix,
-                            cli.json,
-                            &config.dns_zone,
-                            &config.data_dir,
-                        )
-                        .await
+                    Some(command) => {
+                        // Trust's durable state and the native platform store have
+                        // exactly one owner. A live/explicit daemon is authoritative;
+                        // direct access is possible only through explicit standalone.
+                        let mode = commands::detect_mode(&cli)?;
+                        match command {
+                            TrustSubcommand::Install { pem_path } => {
+                                commands::trust::install(pem_path, cli.json, &config.data_dir, mode)
+                                    .await
+                            }
+                            TrustSubcommand::List => {
+                                commands::trust::list(cli.json, &config.data_dir, mode).await
+                            }
+                            TrustSubcommand::Remove { name } => {
+                                commands::trust::remove(name, cli.json, &config.data_dir, mode)
+                                    .await
+                            }
+                            TrustSubcommand::Export { ca } => {
+                                commands::trust::export(*ca, cli.json, &config.data_dir, mode).await
+                            }
+                            TrustSubcommand::Diagnose { fix } => {
+                                commands::trust::diagnose(*fix, cli.json, &config.data_dir, mode)
+                                    .await
+                            }
+                        }
                     }
                 }
             }
@@ -366,32 +380,15 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
         return daemon_mode(config).await;
     }
 
-    // Piped CLI mode still works without a subcommand
-    if is_piped_stdin() {
-        if config.no_mdns {
-            anyhow::bail!(
-                "Piped mode requires the mDNS capability. \
-                 Remove --no-mdns or unset KOI_NO_MDNS to enable it."
-            );
-        }
-        let core = Arc::new(
-            koi_compose::mdns::build_core(tokio_util::sync::CancellationToken::new()).await?,
-        );
-        koi_serve::stdio::start(core.clone()).await?;
-        let _ = core.shutdown().await;
-        return Ok(());
-    }
-
     // Show daemon status if a healthy daemon is reachable; otherwise, on the
     // first-run path (no daemon, interactive), point the user at the three
     // getting-started steps before the full catalog.
-    if let Some(status_json) = try_daemon_status(&cli) {
+    if let Some(status_json) = try_daemon_status(&cli)? {
+        let human = format::unified_status(&status_json)?;
         if cli.json {
-            if let Ok(body) = serde_json::to_string_pretty(&status_json) {
-                println!("{body}");
-            }
+            println!("{}", serde_json::to_string_pretty(&status_json)?);
         } else {
-            print!("{}", format::unified_status(&status_json));
+            print!("{human}");
         }
     } else if !cli.json {
         println!("{}", format::first_run_hint());

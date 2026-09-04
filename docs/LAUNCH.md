@@ -1,8 +1,9 @@
 # Launch Plan (internal — publication requires operator authority)
 
-Status: draft for the rc.2 soak week. Nothing here posts externally by itself;
-the operator executes every public action. This document sequences assets and
-channels so the launch is prepared *before* stable 1.0 and executed in one week.
+Status: **paused** while the `1.0.0-dev.0` observable-domain-boundary rebuild and its
+replacement validation complete. The former rc.2 soak/freeze is not an active launch gate.
+Nothing here posts externally by itself; the operator executes every public action. This
+document retains the launch sequence for a future explicitly accepted candidate.
 
 ---
 

@@ -23,6 +23,8 @@ const AUDIT_FILENAME: &str = "certmesh-audit.log";
 const AUTO_UNLOCK_KEY_FILENAME: &str = "auto-unlock-key";
 const ACME_SUBDIR: &str = "acme";
 const ACME_ACCOUNTS_FILENAME: &str = "accounts.json";
+const CREDENTIAL_CLEANUP_DIR: &str = ".koi-certmesh-credential-cleanup";
+const RELOAD_INTENT_FILENAME: &str = "pending-certificate-reload.json";
 
 /// Resolved filesystem paths for all certmesh operations.
 ///
@@ -84,6 +86,12 @@ impl CertmeshPaths {
         self.certmesh_dir().join(MEMBER_STATE_FILENAME)
     }
 
+    /// Durable at-least-once reload-hook intent coupled to certificate
+    /// activation. Its absence means no local service reload is pending.
+    pub(crate) fn reload_intent_path(&self) -> PathBuf {
+        self.certmesh_dir().join(RELOAD_INTENT_FILENAME)
+    }
+
     /// Enrollment invite store (`data_dir/certmesh/invites.json`).
     ///
     /// Holds salted hashes of outstanding per-host invite tokens (ADR-015 F2);
@@ -133,6 +141,20 @@ impl CertmeshPaths {
     /// Auto-unlock key file.
     pub fn auto_unlock_key_path(&self) -> PathBuf {
         self.certmesh_dir().join(AUTO_UNLOCK_KEY_FILENAME)
+    }
+
+    /// Durable outbox for platform credentials that remain to be retired after
+    /// their owning Certmesh aggregate has been removed.
+    pub(crate) fn credential_cleanup_dir(&self) -> PathBuf {
+        self.data_dir.join(CREDENTIAL_CLEANUP_DIR)
+    }
+
+    /// Whether teardown left platform-credential work for an idempotent retry.
+    pub(crate) fn credential_cleanup_pending(&self) -> bool {
+        match std::fs::read_dir(self.credential_cleanup_dir()) {
+            Ok(mut entries) => entries.next().is_some(),
+            Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+        }
     }
 
     /// ACME state directory (`data_dir/certmesh/acme/`).

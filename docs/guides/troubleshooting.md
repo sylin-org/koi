@@ -14,8 +14,10 @@ When in doubt, start by asking the daemon what it thinks is going on:
 koi status
 ```
 
-That single command shows every capability's state (running / disabled / inactive) and
-the bind address. If `koi status` itself can't reach a daemon, jump straight to
+That single command shows every capability's daemon-owned state (running / disabled /
+inactive) and the bind address. If it cannot reach a daemon, the same ten rows say
+`not observed`; they are not reconstructed from files or launch configuration. In that
+case, jump straight to
 [The CLI says "No daemon endpoint found"](#the-cli-says-no-daemon-endpoint-found).
 
 ---

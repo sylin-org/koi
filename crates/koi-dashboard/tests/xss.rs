@@ -12,9 +12,10 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use tower::ServiceExt; // for `oneshot`
 
-use koi_dashboard::browse_source::{
-    BrowseError, BrowseHandle, BrowseSource, BrowserEvent, ResolvedService,
-};
+use koi_common::integration::MdnsDiscoverySnapshot;
+use koi_common::status::StatusFeed;
+use koi_common::types::ServiceRecord;
+use koi_dashboard::browse_source::{BrowseError, BrowseHandle, BrowseSource, BrowserEvent};
 use koi_dashboard::browser::{self, BrowserCache, BrowserState};
 use koi_dashboard::meta_browse::LazyMetaBrowse;
 
@@ -62,6 +63,7 @@ fn asset_has_an_http_scheme_allowlist_for_launch_links() {
 /// in anger; the worker that `touch()` spawns just parks).
 struct StubSource {
     tx: tokio::sync::broadcast::Sender<BrowserEvent>,
+    snapshots: StatusFeed<MdnsDiscoverySnapshot>,
 }
 
 impl BrowseSource for StubSource {
@@ -78,15 +80,23 @@ impl BrowseSource for StubSource {
     fn subscribe(&self) -> tokio::sync::broadcast::Receiver<BrowserEvent> {
         self.tx.subscribe()
     }
+
+    fn snapshot(&self) -> Arc<MdnsDiscoverySnapshot> {
+        self.snapshots.current()
+    }
+
+    fn watch_snapshot(&self) -> tokio::sync::watch::Receiver<Arc<MdnsDiscoverySnapshot>> {
+        self.snapshots.subscribe()
+    }
 }
 
-fn resolved(name: &str, txt: HashMap<String, String>) -> ResolvedService {
-    ResolvedService {
+fn resolved(name: &str, txt: HashMap<String, String>) -> ServiceRecord {
+    ServiceRecord {
         name: name.to_string(),
         service_type: "_http._tcp".to_string(),
-        host: "evil.local".to_string(),
-        ip: "10.0.0.66".to_string(),
-        port: 8080,
+        host: Some("evil.local".to_string()),
+        ip: Some("10.0.0.66".to_string()),
+        port: Some(8080),
         txt,
     }
 }
@@ -94,7 +104,6 @@ fn resolved(name: &str, txt: HashMap<String, String>) -> ResolvedService {
 #[tokio::test]
 async fn snapshot_serves_hostile_names_as_inert_json() {
     let (tx, _) = tokio::sync::broadcast::channel(16);
-    let source: Arc<dyn BrowseSource> = Arc::new(StubSource { tx });
     let cache = BrowserCache::new();
 
     // Seed the cache with LAN-attacker-controlled hostile data.
@@ -103,23 +112,20 @@ async fn snapshot_serves_hostile_names_as_inert_json() {
     let mut js_txt = HashMap::new();
     js_txt.insert("url".to_string(), "javascript:alert(1)".to_string());
 
-    cache
-        .ingest(&BrowserEvent::Resolved(resolved(img, HashMap::new())))
-        .await;
-    cache
-        .ingest(&BrowserEvent::Resolved(resolved(handler, js_txt)))
-        .await;
-
-    let meta = LazyMetaBrowse::new(
-        source.clone(),
-        cache.clone(),
-        tokio_util::sync::CancellationToken::new(),
-    );
-    let state = BrowserState {
-        source,
-        cache,
-        meta,
+    let discovery = MdnsDiscoverySnapshot {
+        revision: 1,
+        service_types: vec!["_http._tcp.local.".to_string()],
+        records: vec![resolved(img, HashMap::new()), resolved(handler, js_txt)],
     };
+    cache.reconcile(&discovery).await;
+    let source: Arc<dyn BrowseSource> = Arc::new(StubSource {
+        tx,
+        snapshots: StatusFeed::new(discovery),
+    });
+
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let meta = LazyMetaBrowse::new(source.clone(), cache.clone(), cancel.clone());
+    let state = BrowserState::new(source, cache, meta, cancel);
 
     let app = browser::routes(state);
     let resp = app

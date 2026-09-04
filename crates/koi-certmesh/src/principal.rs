@@ -46,7 +46,6 @@ impl PrincipalReject {
     }
 
     /// The ADR-026 §6 audit event name.
-    #[cfg(test)]
     fn audit_event(&self) -> &'static str {
         match self {
             PrincipalReject::Unknown(_) => "mtls_unknown_cn",
@@ -92,31 +91,33 @@ impl CertmeshCore {
     /// happens at route mounting, not per-principal.
     pub async fn authorize_principal(&self, cn: &str) -> Result<(), PrincipalReject> {
         let state = &self.state;
-        let roster = state.roster.lock().await;
-
-        let Some(member) = roster.members.iter().find(|m| m.hostname == cn) else {
-            let _ = crate::audit::append_entry_to(
-                &state.paths.audit_log_path(),
-                "mtls_unknown_cn",
-                &[("hostname", cn), ("op", "management")],
-            );
-            return Err(PrincipalReject::Unknown(cn.to_string()));
+        let _transition = state.transition.lock().await;
+        let rejection = {
+            let roster = state.roster.lock();
+            match roster.members.iter().find(|m| m.hostname == cn) {
+                None => Some(PrincipalReject::Unknown(cn.to_string())),
+                Some(member)
+                    if member.status == crate::roster::MemberStatus::Revoked
+                        || roster.is_revoked(cn) =>
+                {
+                    Some(PrincipalReject::Revoked(cn.to_string()))
+                }
+                Some(member) if member.cert_expires <= Utc::now() => {
+                    Some(PrincipalReject::Expired(cn.to_string()))
+                }
+                Some(_) => None,
+            }
         };
-        if member.status == crate::roster::MemberStatus::Revoked || roster.is_revoked(cn) {
-            let _ = crate::audit::append_entry_to(
-                &state.paths.audit_log_path(),
-                "mtls_revoked_rejected",
+        if let Some(rejection) = rejection {
+            if let Err(error) = state.commit_audit_under_transition(
+                rejection.audit_event(),
                 &[("hostname", cn), ("op", "management")],
-            );
-            return Err(PrincipalReject::Revoked(cn.to_string()));
-        }
-        if member.cert_expires <= Utc::now() {
-            let _ = crate::audit::append_entry_to(
-                &state.paths.audit_log_path(),
-                "mtls_expired_cn",
-                &[("hostname", cn), ("op", "management")],
-            );
-            return Err(PrincipalReject::Expired(cn.to_string()));
+            ) {
+                // Authorization remains fail-closed even if observability is
+                // degraded; never turn an audit I/O fault into access.
+                tracing::error!(%error, "Could not persist principal rejection audit");
+            }
+            return Err(rejection);
         }
         Ok(())
     }

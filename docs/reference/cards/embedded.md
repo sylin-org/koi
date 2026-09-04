@@ -4,12 +4,12 @@ domain: embedded
 title: "Embed Koi in a Rust app — capability card"
 audience: [operators, developers, ai-agents]
 status: current
-last_updated: 2026-06-22
-koi_version: v1.0.0-rc.2
+last_updated: 2026-09-04
+koi_version: v1.0.0-dev.0
 validation:
-  date_last_tested: 2026-06-22
+  date_last_tested: 2026-09-04
   status: verified
-  scope: "integration (koi-embedded whole_story.rs two-daemon join/renew/revoke over real HTTP+mTLS; http_ephemeral.rs http_port(0)→bound_http_port + announce_http-without-token fails closed) + unit (testkit open/secured posture gate; handle::tests participate_open_node_serves_plaintext, seal_open_round_trip)"
+  scope: "integration (koi-embedded whole_story.rs two-daemon join/renew/revoke over real HTTP+mTLS; http_ephemeral.rs http_port(0)→bound_http_port + announce_http-without-token fails closed) + unit (testkit open/secured posture gate; adaptive serve occupied/ephemeral/cancel/rollback + live posture transition; seal/open round trip)"
 ---
 
 # Embed Koi in a Rust app — capability card
@@ -41,7 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let posture = handle.certmesh()?.posture().await?;
 
     // One broadcast stream of everything that happens:
-    let mut events = handle.subscribe(); // broadcast::Receiver<KoiEvent>
+    let mut events = handle.subscribe()?; // broadcast::Receiver<KoiEvent>
     // ... while let Ok(ev) = events.recv().await { ... }
 
     handle.shutdown().await?; // ordered cancel → drain → join → withdraw-announce
@@ -58,14 +58,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `.announce_http(true).http_token("…")` | Expose the adapter on `0.0.0.0` for LAN peers. **Token required** (see escape hatch). |
 | `handle.mdns()/dns()/health()/certmesh()/proxy()/udp()/runtime()` | Typed handle; `Err(DisabledCapability)` if the capability was not selected. |
 | `handle.vault()` | Open the encrypted KV vault (needs `.data_dir(..)`). |
-| `handle.subscribe()` / `handle.events()` | Broadcast `KoiEvent` receiver / `BroadcastStream` (incl. `PostureChanged`). |
-| `handle.participate(router, addr, "_svc._tcp", cancel).await` | One-call trusted service: identity + posture-stamped announce + same-port dial (ADR-020 §13). |
-| `handle.serve(router, addr, cancel)` | Serve a router with the same-port posture dial (`serve_adaptive`) — plain↔mTLS, live-flipping, no dropped conns. |
+| `handle.subscribe()` / `handle.events()` | `Result` containing a broadcast `KoiEvent` receiver / `BroadcastStream` (incl. coalescing `CertmeshStatusChanged`). Remote mode returns `RemoteUnsupported` because no daemon-wide event transport exists. |
+| `handle.participate(router, addr, "_svc._tcp", cancel).await` | One-call trusted service: best-effort identity, real listener bind, acknowledged posture-stamped publication on the actual port, then one owned generation. Returns the bound address. |
+| `handle.serve(router, addr, cancel).await` | Readiness-fenced same-port dial without discovery. Returns the real address (including an OS-selected port); bind failure is the call's error. |
 
 ## The escape hatch
 
-`build()` and `start()` **fail closed, never silently**. `announce_http(true)` without `http_token(..)` returns `KoiError::InsecureConfig` at `start()` — *before any socket binds* — rather than serving unauthenticated mutations to the whole LAN; loopback-only (the default) needs no token. Each typed handle returns `KoiError::DisabledCapability("…")` for a capability you didn't select (and `RemoteUnsupported`/`DisabledCapability("… (remote mode)")` for embedded-only calls under `ServiceMode::ClientOnly`/`Auto`). For tests, **`koi_embedded::testkit`** spins a real node in a known posture with **no Docker**: `testkit::open()` (no identity) and `testkit::secured()` (a CA is created → real leaf), each with an auto-wiped data dir — the "same code, both postures" acceptance gate (ADR-020 §2).
+`build()` and `start()` **fail closed, never silently**. `announce_http(true)` without `http_token(..)` returns `KoiError::InsecureConfig` at `start()` — *before any socket binds* — rather than serving unauthenticated mutations to the whole LAN; loopback-only (the default) needs no token. Each typed handle returns `KoiError::DisabledCapability("…")` for a capability you didn't select and `KoiError::RemoteUnsupported` for an embedded-only operation under `ServiceMode::ClientOnly`/`Auto`. Remote operations backed by daemon endpoints return their typed transport/API/decode error; they never substitute `None`, an empty collection, `false`, a default status, or a no-op success. For tests, **`koi_embedded::testkit`** spins a real node in a known posture with **no Docker**: `testkit::open()` (no identity) and `testkit::secured()` (a CA is created → real leaf), each with an auto-wiped data dir — the "same code, both postures" acceptance gate (ADR-020 §2).
 
 ## The proof it works
 
-Integration: `crates/koi-embedded/tests/whole_story.rs` stands up **two embedded daemons** (CA + member) and drives create → invite → join over real HTTP → key-rotating mTLS renewal → revoke → 403 boundary — proving the Builder→start→typed-handle path on real sockets. `crates/koi-embedded/tests/http_ephemeral.rs` guards `http_port(0)`→`bound_http_port()` (distinct ports, no guard) and that `announce_http` without a token **fails closed** at `start()`. Unit: `testkit::tests::open_node_is_open_and_secured_node_is_authenticated`; `handle::tests::{participate_open_node_serves_plaintext, seal_open_round_trip_on_open_node}`. All run under a plain `cargo test --locked` (pure Rust, no child processes) on the ubuntu/windows/macos CI matrix.
+Integration: `crates/koi-embedded/tests/whole_story.rs` stands up **two embedded daemons** (CA + member) and drives create → invite → join over real HTTP → key-rotating mTLS renewal → revoke → 403 boundary — proving the Builder→start→typed-handle path on real sockets. `crates/koi-embedded/tests/http_ephemeral.rs` guards `http_port(0)`→`bound_http_port()` (distinct ports, no guard) and that `announce_http` without a token **fails closed** at `start()`. Unit tests additionally exercise a real occupied TCP port, port-0 listener plus exact advertised port, caller cancellation, initial-publication rollback, and posture-adaptive traffic. All run under a plain `cargo test --locked` (pure Rust, no child processes) on the ubuntu/windows/macos CI matrix.

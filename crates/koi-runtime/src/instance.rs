@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 /// A runtime-managed instance (container, VM, or service unit).
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Instance {
     /// Unique identifier from the runtime (container ID, pod UID, unit name).
     pub id: String,
@@ -38,7 +38,6 @@ impl Instance {
     ///
     /// `discovered_at` records when Koi observed the instance, so relisting an
     /// unchanged runtime object must not turn that timestamp into an update.
-    #[cfg(feature = "docker")]
     pub(crate) fn has_same_operational_facts(&self, other: &Self) -> bool {
         self.id == other.id
             && self.name == other.name

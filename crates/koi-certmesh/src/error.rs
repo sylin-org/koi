@@ -46,6 +46,9 @@ pub enum CertmeshError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
+    #[error("Certmesh commit is visible, but durability could not be confirmed: {0}")]
+    DurabilityUncertain(String),
+
     #[error("{0}")]
     Internal(String),
 
@@ -105,7 +108,7 @@ impl From<&CertmeshError> for ErrorCode {
             CertmeshError::Revoked(_) => ErrorCode::Revoked,
             CertmeshError::Crypto(_) | CertmeshError::Certificate(_) => ErrorCode::Internal,
             CertmeshError::NoSlotFound(_) => ErrorCode::InvalidPayload,
-            CertmeshError::Io(_) => ErrorCode::IoError,
+            CertmeshError::Io(_) | CertmeshError::DurabilityUncertain(_) => ErrorCode::IoError,
             CertmeshError::Internal(_) => ErrorCode::Internal,
             CertmeshError::BackupInvalid(_) => ErrorCode::InvalidPayload,
             CertmeshError::PromotionFailed(_) => ErrorCode::PromotionFailed,
@@ -186,6 +189,11 @@ mod tests {
             ),
             (
                 CertmeshError::Io(std::io::Error::other("test")),
+                ErrorCode::IoError,
+                500,
+            ),
+            (
+                CertmeshError::DurabilityUncertain("directory sync failed".into()),
                 ErrorCode::IoError,
                 500,
             ),

@@ -451,7 +451,7 @@ These tests verify that capabilities compose correctly. Run after all relevant p
 
 | ID     | Test                                              | Expected                                         | Auto?  |
 | ------ | ------------------------------------------------- | ------------------------------------------------ | ------ |
-| INT-30 | Add proxy for HTTP service                        | Proxy uses certmesh cert files automatically     | ✓      |
+| INT-30 | Add proxy for HTTP service                        | Proxy consumes the composed Certmesh identity automatically | ✓      |
 | INT-31 | Certmesh renews cert                              | Proxy hot-reloads new cert, TLS still valid      | ✓      |
 | INT-32 | Revoke machine, proxy still serves (until expiry) | Proxy cert is technically valid until expiration | Manual |
 

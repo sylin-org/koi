@@ -16,7 +16,7 @@ validation:
 
 > One-screen map of Koi's TLS-terminating passthrough. Full setup + reload-hook flow: [proxy.md](../../guides/proxy.md) · endpoints + request shapes: [http-api.md](../http-api.md) · the cert it serves: [certmesh-invite.md](certmesh-invite.md).
 
-**What it does** — You have a service on `127.0.0.1:3000` and want it reachable over TLS with a cert the LAN already trusts. The proxy binds a TLS listener, **terminates** the handshake with a certmesh-issued member cert, and pipes the decrypted bytes straight to the backend over plain TCP with `copy_bidirectional`. Because forwarding is byte-level — there is **no HTTP layer in the path** — WebSockets, gRPC, and HTTP/2 pass through by construction. The cert is resolved in priority order: an **explicit per-entry** cert (`certs/<name>/`) → the **local certmesh member** cert (`certs/<hostname>/`) → a **generated self-signed** fallback (zero-config). When the cert file changes on disk it is served on the **next handshake with no restart** (a `notify` watcher swaps the `rustls` resolver). Status reflects the listener's **real liveness** (bind/accept outcome), never a hardcoded `running: true`.
+**What it does** — You have a service on `127.0.0.1:3000` and want it reachable over TLS with a cert the LAN already trusts. The proxy binds a TLS listener, **terminates** the handshake with a certmesh-issued member cert, and pipes the decrypted bytes straight to the backend over plain TCP with `copy_bidirectional`. Because forwarding is byte-level — there is **no HTTP layer in the path** — WebSockets, gRPC, and HTTP/2 pass through by construction. The cert is resolved in priority order: an **explicit Proxy-owned per-entry override** (`proxy-certs/<name>/`) → the **local Certmesh identity supplied through a typed live port** → a **generated self-signed** fallback (zero-config). Proxy watches its override directory and subscribes to Certmesh's latest value; either change is served on the **next handshake with no restart**. Status reflects the listener's **real liveness and certificate revision**, never a hardcoded `running: true`.
 
 ## The one canonical pattern
 
@@ -31,23 +31,23 @@ koi proxy status            # web  443  127.0.0.1:3000  cert: certmesh  state: r
 koi proxy add api --listen 8443 --backend 10.0.0.5:9000 --backend-remote
 ```
 
-The cert served is whatever certmesh deposited at `certs/<hostname>/{fullchain.pem,key.pem}` — so `https://web.internal` is browser-trusted on any host that trusts the certmesh root ([certmesh-invite.md](certmesh-invite.md)). Drop a renewed cert in place and the next TLS handshake picks it up.
+The cert served is Certmesh's current healthy local identity — so a matching hostname is browser-trusted on any host that trusts the Certmesh root ([certmesh-invite.md](certmesh-invite.md)). Rotation crosses the in-process domain port and the next TLS handshake picks it up.
 
 ## Commands & flags you'll use
 
 | Command / flag | What it does |
 |---|---|
-| `koi proxy add <name> --listen <port> --backend <host:port>` | Add/update a listener. `<name>` also selects the per-entry cert dir (`certs/<name>/`). |
+| `koi proxy add <name> --listen <port> --backend <host:port>` | Add/update a listener. `<name>` also selects the optional override dir (`proxy-certs/<name>/`). |
 | `--backend <host:port \| url>` | Backend TCP endpoint. A URL's `host:port` is used (path ignored — it's a byte proxy). |
 | `--backend-remote` | Allow a **non-loopback** backend. Required for anything but `127.0.0.0/8` / `localhost`; logs an unencrypted-hop warning. |
-| `koi proxy status` | Per-listener real state (`starting`/`running`/`error`/`stopped`), `cert_source`, and bind-error detail. |
+| `koi proxy status` | Per-listener real state (`starting`/`running`/`error`/`stopped`), `cert_source`, certificate revision, and bind-error detail. |
 | `koi proxy list` / `koi proxy remove <name>` | List configured entries / remove one (the listener is torn down on reload). |
 
 HTTP equivalents (loopback, mutations need `x-koi-token`): `GET /v1/proxy/status`, `GET /v1/proxy/list`, `POST /v1/proxy/add`, `DELETE /v1/proxy/remove/{name}`.
 
 ## The escape hatch / limits
 
-The listener binds **all interfaces** (`0.0.0.0`) on `--listen`, so the LAN reaches it directly — front-door exposure is intentional. The proxy→backend hop is **plaintext**: keep the backend on loopback, or accept the unencrypted hop with `--backend-remote`; a non-loopback backend without the flag is **rejected** at add time. No cert on disk for the name → the listener still comes up on a **generated self-signed** cert (`cert_source: self-signed`), so a missing certmesh cert degrades, it doesn't crash. A bind conflict (port in use) surfaces as `state: error` with detail, not a silent failure.
+The listener binds **all interfaces** (`0.0.0.0`) on `--listen`, so the LAN reaches it directly — front-door exposure is intentional. The proxy→backend hop is **plaintext**: keep the backend on loopback, or accept the unencrypted hop with `--backend-remote`; a non-loopback backend without the flag is **rejected** at add time. No usable override or Certmesh identity → the listener still comes up on a **generated self-signed** cert (`cert_source: self-signed`), so unavailable trust material degrades, it doesn't crash. A bind conflict (port in use) surfaces as `state: error` with detail, not a silent failure.
 
 ## The proof it works
 

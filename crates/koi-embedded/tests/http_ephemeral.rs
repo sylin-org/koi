@@ -109,6 +109,49 @@ async fn announce_http_without_token_fails_closed() {
 }
 
 #[tokio::test]
+async fn occupied_announced_http_port_fails_before_a_handle_or_self_announcement_exists() {
+    // Hold the exact all-interface socket that announce_http asks Koi to bind.
+    // start() must return the bind error itself; because self-announcement is
+    // sequenced only after that bind succeeds, there is neither a default
+    // address-bearing handle nor an unreachable LAN advertisement.
+    let occupied = tokio::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, 0))
+        .await
+        .expect("reserve announced HTTP port");
+    let port = occupied.local_addr().expect("reserved address").port();
+    let dir = temp_data_dir("occupied-announced-port");
+
+    let result = Builder::new()
+        .data_dir(&dir)
+        .service_mode(ServiceMode::EmbeddedOnly)
+        .mdns(true)
+        .dns_enabled(false)
+        .health(false)
+        .certmesh(false)
+        .proxy(false)
+        .http(true)
+        .http_port(port)
+        .announce_http(true)
+        .http_token("occupied-port-test-token")
+        .build()
+        .expect("build")
+        .start()
+        .await;
+
+    match result {
+        Err(koi_embedded::KoiError::Io(error)) => {
+            assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
+        }
+        Err(other) => panic!("expected AddressInUse, got {other:?}"),
+        Ok(handle) => {
+            let addr = handle.http_addr();
+            let _ = handle.shutdown().await;
+            panic!("occupied bind unexpectedly yielded handle/address {addr:?}");
+        }
+    }
+    drop(occupied);
+}
+
+#[tokio::test]
 async fn http_disabled_reports_no_bound_port() {
     let dir = temp_data_dir("disabled");
     let koi = Builder::new()

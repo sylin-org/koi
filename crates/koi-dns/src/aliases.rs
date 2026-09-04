@@ -7,12 +7,14 @@ use crate::safety::is_private_ip;
 use crate::zone::DnsZone;
 
 /// Alias records and feedback hints derived from mDNS service records.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AliasResult {
     pub aliases: HashMap<String, Vec<IpAddr>>,
     pub feedback: Vec<AliasFeedback>,
 }
 
 /// Alias feedback to notify certmesh about.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AliasFeedback {
     pub hostname: String,
     pub alias: String,

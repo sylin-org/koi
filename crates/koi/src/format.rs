@@ -10,7 +10,8 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use koi_common::types::ServiceRecord;
+use koi_common::integration::MdnsDiscoverySnapshot;
+use koi_common::types::{EventKind, ServiceRecord};
 use koi_mdns::protocol::AdminRegistration;
 
 // ── Admin display constants ─────────────────────────────────────────
@@ -88,40 +89,114 @@ pub fn subscribe_event(kind: &str, record: &ServiceRecord) -> String {
 
 // ── Client-mode browse/subscribe formatting ─────────────────────────
 
+fn reject_stream_error(json: &serde_json::Value) -> anyhow::Result<()> {
+    let Some(error) = json.get("error") else {
+        return Ok(());
+    };
+    let code = error
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("invalid mDNS stream error: `error` is not a string"))?;
+    let message = json
+        .get("message")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("invalid mDNS stream error: missing string `message`"))?;
+    anyhow::bail!("{code}: {message}")
+}
+
 /// Format a browse event from a daemon SSE stream (JSON → human).
-/// Returns `Some(line)` if there's something to print, `None` otherwise.
-pub fn browse_event_json(json: &serde_json::Value, is_meta: bool) -> Option<String> {
+pub fn browse_event_json(json: &serde_json::Value, is_meta: bool) -> anyhow::Result<String> {
+    reject_stream_error(json)?;
     if let Some(found) = json.get("found") {
-        if let Ok(record) = serde_json::from_value::<ServiceRecord>(found.clone()) {
-            if is_meta {
-                return Some(format!("{}\n", record.name));
-            } else {
-                return Some(service_line(&record));
-            }
+        let record: ServiceRecord = serde_json::from_value(found.clone())?;
+        if is_meta {
+            return Ok(format!("{}\n", record.name));
+        } else {
+            return Ok(service_line(&record));
         }
-    } else if json.get("event").and_then(|e| e.as_str()) == Some("removed") {
-        if let Some(name) = json
+    } else if let Some(event) = json.get("event") {
+        let event: EventKind = serde_json::from_value(event.clone())?;
+        if event != EventKind::Removed {
+            anyhow::bail!("invalid mDNS browse frame: unexpected `{event:?}` event");
+        }
+        let service = json
             .get("service")
-            .and_then(|s| s.get("name"))
-            .and_then(|n| n.as_str())
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("invalid mDNS browse frame: missing `service`"))?;
+        let record: ServiceRecord = serde_json::from_value(service)?;
+        return Ok(format!("[removed]\t{}\n", record.name));
+    }
+    anyhow::bail!("invalid mDNS browse frame: expected `found`, `event`, `snapshot`, or `error`")
+}
+
+/// Format one item from the browse stream, including the authoritative
+/// replacement snapshot sent when the bounded event stream reports lag.
+pub fn browse_stream_item_json(
+    json: &serde_json::Value,
+    is_meta: bool,
+    canonical_type: &str,
+) -> anyhow::Result<String> {
+    let Some(value) = json.get("snapshot") else {
+        return browse_event_json(json, is_meta);
+    };
+    let snapshot: MdnsDiscoverySnapshot = serde_json::from_value(value.clone())?;
+    let mut output = String::from("[resync]\tcurrent discovery snapshot\n");
+    if is_meta {
+        for service_type in snapshot.service_types {
+            let _ = writeln!(output, "{service_type}");
+        }
+    } else {
+        for record in snapshot
+            .records
+            .iter()
+            .filter(|record| record.service_type == canonical_type)
         {
-            return Some(format!("[removed]\t{name}\n"));
+            output.push_str(&service_line(record));
         }
     }
-    None
+    Ok(output)
 }
 
 /// Format a subscribe event from a daemon SSE stream (JSON → human).
-/// Returns `Some(line)` if there's something to print, `None` otherwise.
-pub fn subscribe_event_json(json: &serde_json::Value) -> Option<String> {
-    if let Some(event_kind) = json.get("event").and_then(|e| e.as_str()) {
-        if let Some(service) = json.get("service") {
-            if let Ok(record) = serde_json::from_value::<ServiceRecord>(service.clone()) {
-                return Some(subscribe_event(event_kind, &record));
-            }
-        }
+pub fn subscribe_event_json(json: &serde_json::Value) -> anyhow::Result<String> {
+    reject_stream_error(json)?;
+    let event = json
+        .get("event")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("invalid mDNS event frame: missing `event`"))?;
+    let event: EventKind = serde_json::from_value(event)?;
+    let service = json
+        .get("service")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("invalid mDNS event frame: missing `service`"))?;
+    let record: ServiceRecord = serde_json::from_value(service)?;
+    let label = match event {
+        EventKind::Found => "found",
+        EventKind::Resolved => "resolved",
+        EventKind::Removed => "removed",
+    };
+    Ok(subscribe_event(label, &record))
+}
+
+/// Format one item from the lifecycle stream, including lag recovery. Snapshot
+/// records are labelled `resync` so the replacement boundary is visible to a
+/// human reading the otherwise event-oriented output.
+pub fn subscribe_stream_item_json(
+    json: &serde_json::Value,
+    canonical_type: &str,
+) -> anyhow::Result<String> {
+    let Some(value) = json.get("snapshot") else {
+        return subscribe_event_json(json);
+    };
+    let snapshot: MdnsDiscoverySnapshot = serde_json::from_value(value.clone())?;
+    let mut output = String::from("[resync]\tcurrent discovery snapshot\n");
+    for record in snapshot
+        .records
+        .iter()
+        .filter(|record| record.service_type == canonical_type)
+    {
+        output.push_str(&subscribe_event("resync", record));
     }
-    None
+    Ok(output)
 }
 
 // ── Admin formatting ────────────────────────────────────────────────
@@ -183,51 +258,57 @@ pub fn registration_detail(reg: &AdminRegistration) -> String {
 
 // ── Unified status formatting ───────────────────────────────────────
 
-/// Format the daemon's unified status response (JSON → human).
-pub fn unified_status(json: &serde_json::Value) -> String {
-    let version = json
-        .get("version")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-    let platform = json
-        .get("platform")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-    let uptime = json.get("uptime_secs").and_then(|v| v.as_u64());
+#[derive(serde::Deserialize)]
+struct UnifiedStatusView {
+    version: String,
+    platform: String,
+    uptime_secs: u64,
+    daemon: bool,
+    http_bind: String,
+    #[serde(default)]
+    mdns_browse_active: Option<bool>,
+    #[serde(default)]
+    seal: Option<String>,
+    capabilities: Vec<koi_common::capability::CapabilityStatus>,
+}
 
-    let mut out = format!("Koi v{version}\n");
-    let _ = writeln!(out, "  Platform:  {platform}");
-    if let Some(secs) = uptime {
-        let _ = writeln!(out, "  Uptime:    {secs}s");
-    }
-    let _ = writeln!(out, "  Daemon:    running");
-    if let Some(bind) = json.get("http_bind").and_then(|v| v.as_str()) {
-        let _ = writeln!(out, "  Bind:      {bind}");
-    }
-    if let Some(active) = json.get("mdns_browse_active").and_then(|v| v.as_bool()) {
+/// Format the daemon's unified status response (JSON → human).
+///
+/// Required fields are decoded as one boundary value. A malformed or partial
+/// daemon response is a protocol error, never permission to invent
+/// `unknown`, `false`, or an empty capability set.
+pub fn unified_status(json: &serde_json::Value) -> serde_json::Result<String> {
+    let status: UnifiedStatusView = serde_json::from_value(json.clone())?;
+
+    let mut out = format!("Koi v{}\n", status.version);
+    let _ = writeln!(out, "  Platform:  {}", status.platform);
+    let _ = writeln!(out, "  Uptime:    {}s", status.uptime_secs);
+    let _ = writeln!(
+        out,
+        "  Daemon:    {}",
+        if status.daemon { "running" } else { "embedded" }
+    );
+    let _ = writeln!(out, "  Bind:      {}", status.http_bind);
+    if let Some(active) = status.mdns_browse_active {
         let _ = writeln!(
             out,
             "  Browse:    {}",
             if active { "active" } else { "idle" }
         );
     }
-    if let Some(seal) = json.get("seal").and_then(|v| v.as_str()) {
+    if let Some(seal) = status.seal {
         let _ = writeln!(out, "  Seal:      {seal}");
     }
 
-    if let Some(caps) = json.get("capabilities").and_then(|v| v.as_array()) {
-        for cap in caps {
-            let name = cap.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-            let summary = cap.get("summary").and_then(|v| v.as_str()).unwrap_or("");
-            let healthy = cap
-                .get("healthy")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let marker = if healthy { "+" } else { "-" };
-            let _ = writeln!(out, "  [{marker}] {name}:  {summary}");
-        }
+    for capability in status.capabilities {
+        let marker = if capability.healthy { "+" } else { "-" };
+        let _ = writeln!(
+            out,
+            "  [{marker}] {}:  {}",
+            capability.name, capability.summary
+        );
     }
-    out
+    Ok(out)
 }
 
 /// Render a [`TrustDiagnosis`](koi_common::diagnosis::TrustDiagnosis) as a loud,
@@ -565,16 +646,55 @@ mod tests {
     fn browse_event_json_removed_event() {
         let json = serde_json::json!({
             "event": "removed",
-            "service": { "name": "Dead Service" }
+            "service": {
+                "name": "Dead Service",
+                "type": "_http._tcp"
+            }
         });
         let out = browse_event_json(&json, false).unwrap();
         assert_eq!(out, "[removed]\tDead Service\n");
     }
 
     #[test]
-    fn browse_event_json_unknown_returns_none() {
+    fn browse_event_json_unknown_is_a_protocol_error() {
         let json = serde_json::json!({"status": "ongoing"});
-        assert!(browse_event_json(&json, false).is_none());
+        assert!(browse_event_json(&json, false).is_err());
+    }
+
+    #[test]
+    fn browse_stream_snapshot_replaces_only_the_requested_type() {
+        let json = serde_json::json!({
+            "snapshot": {
+                "revision": 5,
+                "service_types": ["_http._tcp", "_ssh._tcp"],
+                "records": [
+                    { "name": "Web", "type": "_http._tcp", "port": 80 },
+                    { "name": "Shell", "type": "_ssh._tcp", "port": 22 }
+                ]
+            }
+        });
+
+        let out = browse_stream_item_json(&json, false, "_http._tcp").unwrap();
+
+        assert!(out.contains("[resync]"));
+        assert!(out.contains("Web"));
+        assert!(!out.contains("Shell"));
+    }
+
+    #[test]
+    fn meta_browse_stream_snapshot_lists_current_types() {
+        let json = serde_json::json!({
+            "snapshot": {
+                "revision": 6,
+                "service_types": ["_http._tcp", "_ssh._tcp"],
+                "records": []
+            }
+        });
+
+        let out = browse_stream_item_json(&json, true, "_services._dns-sd._udp.local.").unwrap();
+
+        assert!(out.contains("_http._tcp"));
+        assert!(out.contains("_ssh._tcp"));
     }
 
     // ── subscribe_event_json ────────────────────────────────────────
@@ -598,15 +718,48 @@ mod tests {
     }
 
     #[test]
-    fn subscribe_event_json_missing_event_returns_none() {
+    fn subscribe_event_json_missing_event_is_a_protocol_error() {
         let json = serde_json::json!({"found": {}});
-        assert!(subscribe_event_json(&json).is_none());
+        assert!(subscribe_event_json(&json).is_err());
     }
 
     #[test]
-    fn subscribe_event_json_missing_service_returns_none() {
+    fn subscribe_event_json_missing_service_is_a_protocol_error() {
         let json = serde_json::json!({"event": "found"});
-        assert!(subscribe_event_json(&json).is_none());
+        assert!(subscribe_event_json(&json).is_err());
+    }
+
+    #[test]
+    fn stream_error_frame_is_not_silently_ignored() {
+        let json = serde_json::json!({
+            "error": "provider_unavailable",
+            "message": "mDNS provider stopped"
+        });
+        let error = browse_event_json(&json, false).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "provider_unavailable: mDNS provider stopped"
+        );
+    }
+
+    #[test]
+    fn subscribe_stream_snapshot_is_visible_and_filtered() {
+        let json = serde_json::json!({
+            "snapshot": {
+                "revision": 8,
+                "service_types": ["_http._tcp", "_ssh._tcp"],
+                "records": [
+                    { "name": "Web", "type": "_http._tcp", "port": 80 },
+                    { "name": "Shell", "type": "_ssh._tcp", "port": 22 }
+                ]
+            }
+        });
+
+        let out = subscribe_stream_item_json(&json, "_http._tcp").unwrap();
+
+        assert!(out.contains("[resync]"));
+        assert!(out.contains("Web"));
+        assert!(!out.contains("Shell"));
     }
 
     // ── registration_row ────────────────────────────────────────────
@@ -695,9 +848,11 @@ mod tests {
             "version": "0.2.0",
             "platform": "windows",
             "uptime_secs": 120,
-            "http_bind": "127.0.0.1"
+            "daemon": true,
+            "http_bind": "127.0.0.1",
+            "capabilities": []
         });
-        let out = unified_status(&json);
+        let out = unified_status(&json).unwrap();
         assert!(out.contains("Koi v0.2.0"));
         assert!(out.contains("Platform:  windows"));
         assert!(out.contains("Uptime:    120s"));
@@ -710,25 +865,24 @@ mod tests {
         let json = serde_json::json!({
             "version": "0.2.0",
             "platform": "linux",
+            "uptime_secs": 1,
+            "daemon": true,
+            "http_bind": "127.0.0.1",
             "capabilities": [
                 {"name": "mdns", "summary": "3 registered", "healthy": true},
                 {"name": "certmesh", "summary": "locked", "healthy": false}
             ]
         });
-        let out = unified_status(&json);
+        let out = unified_status(&json).unwrap();
         assert!(out.contains("[+] mdns:  3 registered"));
         assert!(out.contains("[-] certmesh:  locked"));
     }
 
     #[test]
-    fn unified_status_missing_fields_uses_defaults() {
+    fn unified_status_rejects_missing_authoritative_fields() {
         let json = serde_json::json!({});
-        let out = unified_status(&json);
-        assert!(out.contains("Koi vunknown"));
-        assert!(out.contains("Platform:  unknown"));
-        assert!(!out.contains("Uptime:"));
-        // No certmesh → no seal line (the field is absent).
-        assert!(!out.contains("Seal:"));
+        let error = unified_status(&json).unwrap_err();
+        assert!(error.to_string().contains("missing field"));
     }
 
     #[test]
@@ -755,10 +909,13 @@ mod tests {
         let json = serde_json::json!({
             "version": "0.4.2",
             "platform": "linux",
+            "uptime_secs": 1,
+            "daemon": true,
+            "http_bind": "127.0.0.1",
             "seal": "passthrough",
             "capabilities": []
         });
-        let out = unified_status(&json);
+        let out = unified_status(&json).unwrap();
         assert!(out.contains("Seal:      passthrough"), "got: {out}");
     }
 

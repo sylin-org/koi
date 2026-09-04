@@ -1,4 +1,7 @@
-use std::path::PathBuf;
+use std::io;
+use std::path::{Path, PathBuf};
+
+use koi_common::persist;
 
 /// Breadcrumb filename written by the daemon for client discovery.
 const BREADCRUMB_FILENAME: &str = "koi.endpoint";
@@ -21,6 +24,9 @@ const UNIX_FALLBACK_RUNTIME_DIR: &str = "/var/run";
 
 /// Prefix for the DAT line in the breadcrumb file.
 const DAT_PREFIX: &str = "dat:";
+
+/// Breadcrumbs contain the daemon access token and are owner-only on Unix.
+const BREADCRUMB_UNIX_MODE: u32 = 0o600;
 
 /// Parsed breadcrumb information: daemon endpoint and access token.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,94 +108,56 @@ pub fn local_control_candidates() -> Vec<PathBuf> {
 /// http://localhost:5641
 /// dat:base64_encoded_token
 /// ```
-pub fn write_breadcrumb(endpoint: &str, token: &str) {
+pub fn write_breadcrumb(endpoint: &str, token: &str) -> io::Result<()> {
     let path = breadcrumb_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
+    #[cfg(windows)]
+    let result = write_breadcrumb_at_with_prepare_stage(
+        &path,
+        endpoint,
+        token,
+        persist::restrict_windows_local_secret_acl,
+    );
+    #[cfg(not(windows))]
+    let result = write_breadcrumb_at_with_prepare_stage(&path, endpoint, token, |_| Ok(()));
 
-    let content = format!("{endpoint}\n{DAT_PREFIX}{token}\n");
-
-    // On Unix, restrict permissions to owner-only (0600) since the file
-    // contains a secret token.
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-
-        let result = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&path)
-            .and_then(|mut f| f.write_all(content.as_bytes()));
-
-        match result {
-            Ok(()) => tracing::debug!(path = %path.display(), "Breadcrumb written (mode 0600)"),
-            Err(e) => {
-                tracing::warn!(error = %e, path = %path.display(), "Failed to write breadcrumb")
-            }
+    match result? {
+        persist::AtomicCommit::Durable => {
+            tracing::debug!(path = %path.display(), "Breadcrumb written");
+            Ok(())
         }
-    }
-
-    #[cfg(not(unix))]
-    {
-        // Write to .tmp, apply ACL, then rename to avoid TOCTOU window.
-        let tmp_path = path.with_extension("tmp");
-        match std::fs::write(&tmp_path, &content) {
-            Ok(()) => {
-                #[cfg(windows)]
-                restrict_breadcrumb_acl(&tmp_path);
-                match std::fs::rename(&tmp_path, &path) {
-                    Ok(()) => tracing::debug!(path = %path.display(), "Breadcrumb written"),
-                    Err(e) => {
-                        tracing::warn!(error = %e, path = %path.display(), "Failed to rename breadcrumb")
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, path = %path.display(), "Failed to write breadcrumb")
-            }
-        }
+        persist::AtomicCommit::DurabilityUncertain(error) => Err(error),
     }
 }
 
-/// Best-effort ACL restriction on Windows using icacls.
-#[cfg(windows)]
-fn restrict_breadcrumb_acl(path: &std::path::Path) {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-    // Command::args() handles quoting automatically — no embedded quotes.
-    let path_str = path.display().to_string();
-    let mut args = vec![
-        path_str,
-        "/inheritance:r".to_string(),
-        "/grant:r".to_string(),
-        "SYSTEM:F".to_string(),
-        "/grant:r".to_string(),
-        "BUILTIN\\Administrators:F".to_string(),
-    ];
-    if let Ok(user) = std::env::var("USERNAME") {
-        if !user.eq_ignore_ascii_case("SYSTEM") {
-            args.push("/grant:r".to_string());
-            args.push(format!("{user}:F"));
-        }
-    }
-    let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    let _ = std::process::Command::new("icacls")
-        .args(&args_ref)
-        .creation_flags(CREATE_NO_WINDOW)
-        .output();
+fn write_breadcrumb_at_with_prepare_stage(
+    path: &Path,
+    endpoint: &str,
+    token: &str,
+    prepare_stage: impl FnOnce(&Path) -> io::Result<()>,
+) -> io::Result<persist::AtomicCommit> {
+    let content = format!("{endpoint}\n{DAT_PREFIX}{token}\n");
+    persist::write_bytes_atomic_with_options_and_prepare_stage(
+        path,
+        content.as_bytes(),
+        persist::AtomicWriteOptions::new().with_unix_mode(BREADCRUMB_UNIX_MODE),
+        prepare_stage,
+    )
 }
 
 /// Delete the breadcrumb file.
-pub fn delete_breadcrumb() {
+///
+/// A published endpoint is part of the daemon ownership boundary. Callers must
+/// observe cleanup failures instead of leaving discovery material behind while
+/// reporting a successful stop or uninstall.
+pub fn delete_breadcrumb() -> io::Result<()> {
     let path = breadcrumb_path();
     match std::fs::remove_file(&path) {
-        Ok(()) => tracing::debug!(path = %path.display(), "Breadcrumb deleted"),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => tracing::warn!(error = %e, path = %path.display(), "Failed to delete breadcrumb"),
+        Ok(()) => {
+            tracing::debug!(path = %path.display(), "Breadcrumb deleted");
+            Ok(())
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
     }
 }
 
@@ -201,39 +169,75 @@ pub fn delete_breadcrumb() {
 /// dat:base64_encoded_token
 /// ```
 ///
-/// Returns `None` if the file is missing, malformed, or lacks a token line.
-pub fn read_breadcrumb() -> Option<BreadcrumbInfo> {
-    let content = std::fs::read_to_string(breadcrumb_path()).ok()?;
+/// Returns `Ok(None)` only when the file does not exist. Unreadable or malformed
+/// ownership publication is uncertainty and remains an error.
+pub fn read_breadcrumb() -> io::Result<Option<BreadcrumbInfo>> {
+    read_breadcrumb_at(&breadcrumb_path())
+}
+
+fn read_breadcrumb_at(path: &Path) -> io::Result<Option<BreadcrumbInfo>> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
     let mut lines = content.lines();
 
-    let endpoint = lines.next()?.trim().to_string();
+    let endpoint = lines.next().map(str::trim).unwrap_or_default().to_string();
     if endpoint.is_empty() {
-        return None;
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "breadcrumb endpoint is missing",
+        ));
     }
 
-    // Token line is required — reject breadcrumbs without a DAT token.
+    // The DAT is required. A partially written or obsolete breadcrumb must not
+    // be reinterpreted as daemon absence.
     let token = lines
         .next()
         .and_then(|line| {
             let trimmed = line.trim();
-            trimmed.strip_prefix(DAT_PREFIX).map(|t| t.to_string())
+            trimmed.strip_prefix(DAT_PREFIX).map(str::trim)
         })
-        .filter(|t| !t.is_empty())?;
+        .filter(|token| !token.is_empty())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "breadcrumb DAT token is missing or malformed",
+            )
+        })?
+        .to_string();
 
-    Some(BreadcrumbInfo { endpoint, token })
+    if lines.any(|line| !line.trim().is_empty()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "breadcrumb contains unexpected trailing data",
+        ));
+    }
+
+    Ok(Some(BreadcrumbInfo { endpoint, token }))
 }
 
 /// Convenience: read just the endpoint from the breadcrumb file.
 ///
-/// Equivalent to `read_breadcrumb().map(|b| b.endpoint)`. Useful for
+/// Equivalent to `read_breadcrumb().map(|b| b.map(|v| v.endpoint))`. Useful for
 /// callers that only need the endpoint and not the token.
-pub fn read_breadcrumb_endpoint() -> Option<String> {
-    read_breadcrumb().map(|b| b.endpoint)
+pub fn read_breadcrumb_endpoint() -> io::Result<Option<String>> {
+    read_breadcrumb().map(|breadcrumb| breadcrumb.map(|value| value.endpoint))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn temp_root(name: &str) -> PathBuf {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        std::env::temp_dir().join(format!(
+            "koi-breadcrumb-{name}-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ))
+    }
 
     #[test]
     fn breadcrumb_path_ends_with_filename() {
@@ -261,6 +265,89 @@ mod tests {
     }
 
     #[test]
+    fn breadcrumb_write_atomically_replaces_the_complete_document() {
+        let root = temp_root("atomic-replace");
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join(BREADCRUMB_FILENAME);
+        std::fs::write(&target, b"old complete breadcrumb").unwrap();
+
+        let outcome = write_breadcrumb_at_with_prepare_stage(
+            &target,
+            "http://127.0.0.1:5641",
+            "replacement-token",
+            |stage| {
+                assert_ne!(stage, target);
+                assert_eq!(std::fs::metadata(stage)?.len(), 0);
+                assert_eq!(std::fs::read(&target)?, b"old complete breadcrumb");
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert!(matches!(outcome, persist::AtomicCommit::Durable));
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            b"http://127.0.0.1:5641\ndat:replacement-token\n"
+        );
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn breadcrumb_write_repairs_a_permissive_existing_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = temp_root("mode-repair");
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join(BREADCRUMB_FILENAME);
+        std::fs::write(&target, b"old breadcrumb").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o666)).unwrap();
+
+        let outcome = write_breadcrumb_at_with_prepare_stage(
+            &target,
+            "http://localhost:5641",
+            "token",
+            |_| Ok(()),
+        )
+        .unwrap();
+
+        assert!(matches!(outcome, persist::AtomicCommit::Durable));
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            BREADCRUMB_UNIX_MODE
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn breadcrumb_preparation_failure_preserves_the_old_target() {
+        let root = temp_root("prepare-failure");
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join(BREADCRUMB_FILENAME);
+        std::fs::write(&target, b"old complete breadcrumb").unwrap();
+
+        let error = write_breadcrumb_at_with_prepare_stage(
+            &target,
+            "http://localhost:5641",
+            "must-not-be-exposed",
+            |stage| {
+                assert_eq!(std::fs::metadata(stage)?.len(), 0);
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "injected breadcrumb hardening failure",
+                ))
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(std::fs::read(&target).unwrap(), b"old complete breadcrumb");
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn parse_new_format_with_token() {
         let dir = std::env::temp_dir().join(format!("koi-bc-new-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
@@ -284,7 +371,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_without_token_returns_none() {
+    fn missing_token_is_malformed_not_absent() {
         let dir = std::env::temp_dir().join(format!("koi-bc-notoken-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let file = dir.join("test.endpoint");
@@ -292,36 +379,22 @@ mod tests {
         // Breadcrumb without a token line is rejected (no legacy support)
         std::fs::write(&file, "http://localhost:5641\n").unwrap();
 
-        let content = std::fs::read_to_string(&file).unwrap();
-        let mut lines = content.lines();
-        let endpoint = lines.next().unwrap().trim().to_string();
-        let token = lines
-            .next()
-            .and_then(|line| line.trim().strip_prefix(DAT_PREFIX).map(|t| t.to_string()))
-            .filter(|t| !t.is_empty());
-
-        assert_eq!(endpoint, "http://localhost:5641");
-        assert!(token.is_none(), "missing token should return None");
+        let error = read_breadcrumb_at(&file).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn parse_empty_content_returns_none() {
+    fn empty_content_is_malformed_not_absent() {
         let dir = std::env::temp_dir().join(format!("koi-bc-empty2-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let file = dir.join("test.endpoint");
 
         std::fs::write(&file, "").unwrap();
 
-        let content = std::fs::read_to_string(&file).unwrap();
-        let mut lines = content.lines();
-        let endpoint = lines.next().map(|s| s.trim().to_string());
-        // Empty first line should yield None
-        assert!(
-            endpoint.is_none() || endpoint.as_deref() == Some(""),
-            "empty breadcrumb first line"
-        );
+        let error = read_breadcrumb_at(&file).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -329,9 +402,34 @@ mod tests {
     #[test]
     fn read_breadcrumb_endpoint_convenience() {
         // Just verify the function compiles and returns the right type
-        let result: Option<String> = read_breadcrumb_endpoint();
-        // On a dev machine without a daemon, this is typically None
+        let result: io::Result<Option<String>> = read_breadcrumb_endpoint();
         let _ = result;
+    }
+
+    #[test]
+    fn missing_file_is_the_only_absent_breadcrumb() {
+        let root = temp_root("missing");
+        assert_eq!(
+            read_breadcrumb_at(&root.join(BREADCRUMB_FILENAME)).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn unexpected_trailing_data_is_rejected() {
+        let root = temp_root("trailing-data");
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join(BREADCRUMB_FILENAME);
+        std::fs::write(
+            &path,
+            "http://127.0.0.1:5641\ndat:token\nlegacy-extra-field\n",
+        )
+        .unwrap();
+        assert_eq!(
+            read_breadcrumb_at(&path).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// Test the write → read → delete lifecycle using a temp directory.

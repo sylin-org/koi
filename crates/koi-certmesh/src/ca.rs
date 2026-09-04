@@ -11,6 +11,7 @@ use rcgen::{
     BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, KeyPair,
     KeyUsagePurpose, SanType,
 };
+#[cfg(test)]
 use zeroize::Zeroizing;
 
 use crate::error::CertmeshError;
@@ -56,6 +57,43 @@ pub struct CaState {
     pub(crate) cert_der: Vec<u8>,
 }
 
+/// A complete, validated CA generation that has not yet touched durable state.
+/// The aggregate command decides which other artifacts (auth, roster, identity,
+/// audit) belong to the same repository transaction.
+pub(crate) struct PreparedCa {
+    pub(crate) state: CaState,
+    pub(crate) encrypted_key: koi_crypto::keys::EncryptedKey,
+    pub(crate) slot_table: SlotTable,
+    #[cfg(test)]
+    pub(crate) master_key: Zeroizing<[u8; 32]>,
+}
+
+/// A validated CA load whose optional legacy migration has not touched disk.
+///
+/// Async domain commands prepare this on Certmesh's blocking worker, then make
+/// the migration and in-memory publication one explicit serialized tail.
+pub(crate) struct PreparedCaLoad {
+    pub(crate) state: CaState,
+    pub(crate) migration: Option<PreparedCaMigration>,
+}
+
+pub(crate) struct PreparedCaMigration {
+    encrypted_key: Vec<u8>,
+    slot_table: Vec<u8>,
+}
+
+impl PreparedCaMigration {
+    pub(crate) fn transaction(
+        self,
+        paths: &crate::CertmeshPaths,
+    ) -> crate::repository::ArtifactTransaction {
+        let mut transaction = crate::repository::ArtifactTransaction::new();
+        transaction.write(paths.ca_key_path(), self.encrypted_key, true);
+        transaction.write(paths.slot_table_path(), self.slot_table, true);
+        transaction
+    }
+}
+
 /// Result of issuing a certificate to a member.
 #[derive(Debug, Clone)]
 pub struct IssuedCert {
@@ -75,14 +113,6 @@ pub fn load_slot_table(path: &std::path::Path) -> Result<Option<SlotTable>, Cert
     }
     let table = SlotTable::load(path).map_err(|e| CertmeshError::Crypto(e.to_string()))?;
     Ok(Some(table))
-}
-
-/// Save the slot table to disk.
-pub fn save_slot_table(table: &SlotTable, path: &std::path::Path) -> Result<(), CertmeshError> {
-    table
-        .save(path)
-        .map_err(|e| CertmeshError::Crypto(e.to_string()))?;
-    Ok(())
 }
 
 /// What the issued leaf will be *used for* (ADR-026 §3).
@@ -170,11 +200,47 @@ fn build_ca_params() -> Result<CertificateParams, CertmeshError> {
 ///
 /// Returns the CA state and the master key (so callers can add
 /// additional unlock slots before discarding it).
-pub fn create_ca(
+#[cfg(test)]
+pub(crate) fn create_ca(
     passphrase: &str,
     entropy_seed: &[u8],
     paths: &crate::CertmeshPaths,
 ) -> Result<(CaState, Zeroizing<[u8; 32]>), CertmeshError> {
+    let prepared = prepare_ca(passphrase, entropy_seed)?;
+    persist_prepared_ca(&prepared, paths)?;
+
+    // Platform credential binding - seal the ciphertext in the OS
+    // credential store so the key blob is machine-bound.
+    if koi_crypto::tpm::is_available() {
+        if let Err(e) = koi_crypto::tpm::seal_key_material(
+            "koi-certmesh-ca",
+            &prepared.encrypted_key.ciphertext,
+        ) {
+            tracing::warn!(error = %e, "Platform credential sealing failed; falling back to software-only protection");
+        } else {
+            tracing::info!("CA key material sealed in platform credential store");
+        }
+    }
+
+    tracing::info!("CA created with envelope encryption");
+    Ok((prepared.state, prepared.master_key))
+}
+
+/// Generate an in-memory CA for protocol simulation and interoperability tests.
+///
+/// This helper has no filesystem or platform effects and does not create a
+/// Certmesh aggregate. Product code that wants a managed CA must use
+/// [`crate::CertmeshCore::create`], the sole command boundary that owns durable
+/// state, projections, and events.
+pub fn ephemeral_ca(entropy_seed: &[u8]) -> Result<CaState, CertmeshError> {
+    prepare_ca("koi-ephemeral-ca", entropy_seed).map(|prepared| prepared.state)
+}
+
+/// Generate and validate CA material without writing target files.
+pub(crate) fn prepare_ca(
+    passphrase: &str,
+    entropy_seed: &[u8],
+) -> Result<PreparedCa, CertmeshError> {
     let ca_key = keys::generate_ca_keypair(entropy_seed)
         .map_err(|e| CertmeshError::Crypto(e.to_string()))?;
 
@@ -195,47 +261,52 @@ pub fn create_ca(
     let cert_der = ca_cert.der().to_vec();
 
     // Envelope encryption: master key wraps CA key, passphrase wraps master key
-    let dir = paths.ca_dir();
-    std::fs::create_dir_all(&dir)?;
-
     let ca_key_der =
         keys::ca_keypair_to_der(&ca_key).map_err(|e| CertmeshError::Crypto(e.to_string()))?;
-    let (encrypted_key, slot_table, master_key) =
+    let (encrypted_key, slot_table, _master_key) =
         unlock_slots::envelope_encrypt_new(&ca_key_der, passphrase)
             .map_err(|e| CertmeshError::Crypto(e.to_string()))?;
 
-    keys::save_encrypted_key(&paths.ca_key_path(), &encrypted_key)?;
-    slot_table
-        .save(&paths.slot_table_path())
-        .map_err(|e| CertmeshError::Crypto(e.to_string()))?;
-
-    // Save CA certificate
-    std::fs::write(paths.ca_cert_path(), &cert_pem)?;
-
-    // Platform credential binding - seal the ciphertext in the OS
-    // credential store so the key blob is machine-bound.
-    if koi_crypto::tpm::is_available() {
-        if let Err(e) =
-            koi_crypto::tpm::seal_key_material("koi-certmesh-ca", &encrypted_key.ciphertext)
-        {
-            tracing::warn!(error = %e, "Platform credential sealing failed; falling back to software-only protection");
-        } else {
-            tracing::info!("CA key material sealed in platform credential store");
-        }
-    }
-
-    tracing::info!("CA created with envelope encryption");
-
-    Ok((
-        CaState {
+    Ok(PreparedCa {
+        state: CaState {
             key: ca_key,
             rcgen_key,
             ca_cert,
             cert_pem,
             cert_der,
         },
-        master_key,
-    ))
+        encrypted_key,
+        slot_table,
+        #[cfg(test)]
+        master_key: _master_key,
+    })
+}
+
+#[cfg(test)]
+fn persist_prepared_ca(
+    prepared: &PreparedCa,
+    paths: &crate::CertmeshPaths,
+) -> Result<(), CertmeshError> {
+    let mut transaction = crate::repository::ArtifactTransaction::new();
+    transaction.write(
+        paths.ca_key_path(),
+        serde_json::to_vec_pretty(&prepared.encrypted_key)
+            .map_err(|error| CertmeshError::Internal(format!("serialize CA key: {error}")))?,
+        true,
+    );
+    transaction.write(
+        paths.slot_table_path(),
+        serde_json::to_vec_pretty(&prepared.slot_table)
+            .map_err(|error| CertmeshError::Internal(format!("serialize unlock slots: {error}")))?,
+        true,
+    );
+    transaction.write(
+        paths.ca_cert_path(),
+        prepared.state.cert_pem.as_bytes().to_vec(),
+        false,
+    );
+    crate::repository::CertmeshRepository::new(paths.data_dir().to_path_buf())
+        .commit_durable(transaction)
 }
 
 /// Load an existing CA by decrypting the key with the passphrase.
@@ -243,7 +314,27 @@ pub fn create_ca(
 /// Supports both legacy (direct passphrase encryption) and envelope
 /// encryption (slot table). Legacy keys are auto-migrated to envelope
 /// encryption on load.
-pub fn load_ca(passphrase: &str, paths: &crate::CertmeshPaths) -> Result<CaState, CertmeshError> {
+pub(crate) fn load_ca(
+    passphrase: &str,
+    paths: &crate::CertmeshPaths,
+) -> Result<CaState, CertmeshError> {
+    let prepared = prepare_ca_load(passphrase, paths)?;
+    if let Some(migration) = prepared.migration {
+        crate::repository::CertmeshRepository::new(paths.data_dir().to_path_buf())
+            .commit_durable(migration.transaction(paths))?;
+        tracing::info!("CA key migrated to envelope encryption");
+    }
+    Ok(prepared.state)
+}
+
+/// Decrypt and validate an existing CA without changing its durable generation.
+///
+/// Legacy direct-passphrase material returns a prepared migration. The caller
+/// decides whether that migration belongs to its command's durable commit tail.
+pub(crate) fn prepare_ca_load(
+    passphrase: &str,
+    paths: &crate::CertmeshPaths,
+) -> Result<PreparedCaLoad, CertmeshError> {
     let key_path = paths.ca_key_path();
     let slot_path = paths.slot_table_path();
 
@@ -253,7 +344,7 @@ pub fn load_ca(passphrase: &str, paths: &crate::CertmeshPaths) -> Result<CaState
 
     let encrypted = keys::load_encrypted_key(&key_path)?;
 
-    let ca_key_der = if slot_path.exists() {
+    let (ca_key_der, migration) = if slot_path.exists() {
         // ── Envelope encryption path ──
         let slot_table =
             SlotTable::load(&slot_path).map_err(|e| CertmeshError::Crypto(e.to_string()))?;
@@ -265,8 +356,11 @@ pub fn load_ca(passphrase: &str, paths: &crate::CertmeshPaths) -> Result<CaState
                 }
                 other => CertmeshError::Crypto(other.to_string()),
             })?;
-        unlock_slots::decrypt_with_master_key(&encrypted, &master_key)
-            .map_err(|e| CertmeshError::Crypto(e.to_string()))?
+        (
+            unlock_slots::decrypt_with_master_key(&encrypted, &master_key)
+                .map_err(|e| CertmeshError::Crypto(e.to_string()))?,
+            None,
+        )
     } else {
         // ── Legacy path: direct passphrase encryption ──
         // Decrypt, then auto-migrate to envelope encryption.
@@ -277,21 +371,30 @@ pub fn load_ca(passphrase: &str, paths: &crate::CertmeshPaths) -> Result<CaState
             other => CertmeshError::Crypto(other.to_string()),
         })?;
 
-        tracing::info!("Migrating CA key from legacy encryption to envelope encryption");
         let (new_encrypted, slot_table, _master_key) =
             unlock_slots::migrate_to_envelope(&encrypted, passphrase)
                 .map_err(|e| CertmeshError::Crypto(e.to_string()))?;
 
-        keys::save_encrypted_key(&key_path, &new_encrypted)?;
-        slot_table
-            .save(&slot_path)
-            .map_err(|e| CertmeshError::Crypto(e.to_string()))?;
-        tracing::info!("CA key migrated to envelope encryption");
+        let encrypted_key = serde_json::to_vec_pretty(&new_encrypted).map_err(|error| {
+            CertmeshError::Internal(format!("serialize migrated CA key: {error}"))
+        })?;
+        let slot_table = serde_json::to_vec_pretty(&slot_table).map_err(|error| {
+            CertmeshError::Internal(format!("serialize migrated unlock slots: {error}"))
+        })?;
 
-        plaintext
+        (
+            plaintext,
+            Some(PreparedCaMigration {
+                encrypted_key,
+                slot_table,
+            }),
+        )
     };
 
-    build_ca_state_from_der(&ca_key_der, paths)
+    Ok(PreparedCaLoad {
+        state: build_ca_state_from_der(&ca_key_der, paths)?,
+        migration,
+    })
 }
 
 /// Load an existing CA using a pre-unwrapped master key.
@@ -407,6 +510,21 @@ pub fn issue_certificate(
     sans: &[String],
     validity_days: u32,
 ) -> Result<IssuedCert, CertmeshError> {
+    let days = if validity_days == 0 {
+        DEFAULT_LEAF_LIFETIME_DAYS
+    } else {
+        validity_days
+    };
+    issue_certificate_at(ca, hostname, sans, Utc::now(), i64::from(days))
+}
+
+fn issue_certificate_at(
+    ca: &CaState,
+    hostname: &str,
+    sans: &[String],
+    issued_at: DateTime<Utc>,
+    validity_days: i64,
+) -> Result<IssuedCert, CertmeshError> {
     // Generate a new keypair for the member
     let member_key = KeyPair::generate().map_err(|e| CertmeshError::Certificate(e.to_string()))?;
 
@@ -434,12 +552,7 @@ pub fn issue_certificate(
     // Least-privilege leaf profile (ADR-017 F10).
     apply_leaf_profile(&mut cert_params);
 
-    let days = if validity_days == 0 {
-        DEFAULT_LEAF_LIFETIME_DAYS
-    } else {
-        validity_days
-    };
-    let (not_before, not_after) = certificate_validity_window(i64::from(days));
+    let (not_before, not_after) = certificate_validity_window_at(issued_at, validity_days);
     cert_params.not_before = time::OffsetDateTime::from_unix_timestamp(not_before.timestamp())
         .unwrap_or(time::OffsetDateTime::now_utc());
     cert_params.not_after = time::OffsetDateTime::from_unix_timestamp(not_after.timestamp())
@@ -465,6 +578,15 @@ pub fn issue_certificate(
         fingerprint,
         expires: not_after,
     })
+}
+
+#[cfg(test)]
+pub(crate) fn issue_expired_certificate(
+    ca: &CaState,
+    hostname: &str,
+    sans: &[String],
+) -> Result<IssuedCert, CertmeshError> {
+    issue_certificate_at(ca, hostname, sans, Utc::now() - Duration::days(2), 1)
 }
 
 /// Get the SHA-256 fingerprint of the CA certificate.

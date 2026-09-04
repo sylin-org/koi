@@ -14,11 +14,12 @@ use koi_mdns::{MdnsCore, Result};
 /// Build the stable mDNS control plane around the live provider catalog.
 pub async fn build_core(cancel: CancellationToken) -> Result<MdnsCore> {
     let core = MdnsCore::with_adapters(platform_adapters(), cancel).await?;
-    let selected = core.control_plane_status();
+    let selected = core.status();
+    let control = &selected.control_plane;
     tracing::info!(
-        publish = ?selected.routes.publish,
-        browse = ?selected.routes.browse,
-        resolve = ?selected.routes.resolve,
+        publish = ?control.routes.publish,
+        browse = ?control.routes.browse,
+        resolve = ?control.routes.resolve,
         "mDNS control-plane routes armed"
     );
     Ok(core)

@@ -15,7 +15,9 @@ use tokio_stream::StreamExt;
 use koi_common::error::ErrorCode;
 use koi_common::http::error_response;
 
-use crate::{BindingInfo, UdpBindRequest, UdpDatagram, UdpRuntime, UdpSendRequest};
+use crate::{
+    BindingInfo, UdpBindRequest, UdpDatagram, UdpRuntime, UdpRuntimeStatus, UdpSendRequest,
+};
 
 // ── Route path constants ────────────────────────────────────────────
 
@@ -74,7 +76,13 @@ fn idle_duration(idle_for: Option<u64>) -> Option<Duration> {
         status_handler,
         heartbeat_handler
     ),
-    components(schemas(BindingInfo, UdpBindRequest, UdpSendRequest, UdpDatagram))
+    components(schemas(
+        BindingInfo,
+        UdpBindRequest,
+        UdpSendRequest,
+        UdpDatagram,
+        UdpRuntimeStatus
+    ))
 )]
 pub struct UdpApiDoc;
 
@@ -97,6 +105,8 @@ pub fn routes(runtime: Arc<UdpRuntime>) -> Router {
 
 fn map_error(e: crate::UdpError) -> axum::response::Response {
     match &e {
+        crate::UdpError::ShuttingDown => error_response(ErrorCode::ShuttingDown, e.to_string()),
+        crate::UdpError::Worker(_) => error_response(ErrorCode::Internal, e.to_string()),
         crate::UdpError::NotFound(_) => error_response(ErrorCode::NotFound, e.to_string()),
         crate::UdpError::InvalidAddr(_) => error_response(ErrorCode::InvalidPayload, e.to_string()),
         crate::UdpError::Io(_) => error_response(ErrorCode::IoError, e.to_string()),
@@ -143,7 +153,7 @@ async fn recv_handler(
     Path(id): Path<String>,
     Query(params): Query<RecvParams>,
 ) -> impl IntoResponse {
-    let rx = match runtime.subscribe(&id).await {
+    let rx = match runtime.subscribe_datagrams(&id).await {
         Ok(rx) => rx,
         Err(e) => return map_error(e),
     };
@@ -163,12 +173,36 @@ async fn recv_handler(
             };
             match next {
                 Some(Ok(datagram)) => {
-                    let json = serde_json::to_string(&datagram).unwrap_or_default();
+                    let json = match serde_json::to_string(&datagram) {
+                        Ok(json) => json,
+                        Err(error) => {
+                            let data = serde_json::json!({
+                                "error": "serialization_failed",
+                                "message": error.to_string(),
+                            }).to_string();
+                            let id = uuid::Uuid::now_v7().to_string();
+                            yield Ok::<_, Infallible>(
+                                Event::default().id(id).event("error").data(data)
+                            );
+                            break;
+                        }
+                    };
                     let id = uuid::Uuid::now_v7().to_string();
                     yield Ok::<_, Infallible>(Event::default().id(id).event("datagram").data(json));
                 }
-                Some(Err(_)) => continue, // lagged - skip
-                None => break,            // channel closed
+                Some(Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(dropped))) => {
+                    let data = serde_json::json!({
+                        "error": "stream_lagged",
+                        "message": format!("UDP receive stream dropped {dropped} datagrams"),
+                        "dropped": dropped,
+                    }).to_string();
+                    let id = uuid::Uuid::now_v7().to_string();
+                    yield Ok::<_, Infallible>(
+                        Event::default().id(id).event("error").data(data)
+                    );
+                    break;
+                }
+                None => break, // channel closed
             }
         }
     };
@@ -196,10 +230,9 @@ async fn send_handler(
 
 #[utoipa::path(get, path = "/status", tag = "udp",
     summary = "List all active bindings",
-    responses((status = 200)))]
-async fn status_handler(Extension(runtime): Extension<Arc<UdpRuntime>>) -> Json<serde_json::Value> {
-    let bindings = runtime.status().await;
-    Json(serde_json::json!({ "bindings": bindings }))
+    responses((status = 200, body = UdpRuntimeStatus)))]
+async fn status_handler(Extension(runtime): Extension<Arc<UdpRuntime>>) -> Json<UdpRuntimeStatus> {
+    Json(runtime.status().as_ref().clone())
 }
 
 #[utoipa::path(put, path = "/heartbeat/{id}", tag = "udp",
@@ -238,5 +271,22 @@ mod tests {
     fn idle_duration_explicit_value() {
         let d = idle_duration(Some(10));
         assert_eq!(d, Some(Duration::from_secs(10)));
+    }
+
+    #[tokio::test]
+    async fn worker_failure_is_an_internal_execution_error() {
+        let response = map_error(crate::UdpError::Worker("lost acknowledgement".into()));
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read error body");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("decode error body");
+        assert_eq!(body["error"], "internal");
+        assert!(body["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("lost acknowledgement")));
     }
 }

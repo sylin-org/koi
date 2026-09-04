@@ -36,10 +36,9 @@ fn parse_runtime_backend(value: &str) -> Result<String, String> {
 /// Accepts `1`/`true`/`yes`/`on` as true and `0`/`false`/`no`/`off`/`""` as
 /// false (case-insensitive); anything else is an error. clap's built-in `bool`
 /// parser only accepts literal `true`/`false`, so `KOI_NO_MDNS=1` (the natural
-/// `=1` form, and what the Windows-service `from_env` path already accepted)
-/// was rejected on the CLI/daemon path. Wiring this as the `value_parser` for
-/// every `--no-*`-style flag — and routing `from_env` through it too — makes a
-/// single truthy vocabulary work uniformly across both paths.
+/// `=1` form) was rejected. Wiring this as the `value_parser` for every
+/// `--no-*`-style flag gives foreground and service launches one strict truthy
+/// vocabulary through the same Clap/config composition path.
 fn parse_bool_flag(value: &str) -> Result<bool, String> {
     match value.trim().to_ascii_lowercase().as_str() {
         "1" | "true" | "yes" | "on" => Ok(true),
@@ -47,24 +46,6 @@ fn parse_bool_flag(value: &str) -> Result<bool, String> {
         other => Err(format!(
             "expected a boolean (1/true/yes/on or 0/false/no/off), got '{other}'"
         )),
-    }
-}
-
-/// Read a boolean env var for the Windows-service `from_env` path.
-///
-/// Parses with [`parse_bool_flag`]; an **unrecognized** value is logged and
-/// treated as false. The CLI/daemon path fails closed on a bad value (clap
-/// errors and the daemon refuses to start); the service path fails open so a
-/// typo can't block startup — but it must be observable, so we `warn!` rather
-/// than swallow it silently. Unset → false.
-#[cfg(windows)]
-fn env_bool(name: &str) -> bool {
-    match std::env::var(name) {
-        Ok(s) => parse_bool_flag(&s).unwrap_or_else(|e| {
-            tracing::warn!(var = name, value = %s, "ignoring {name}: {e}; treating as false");
-            false
-        }),
-        Err(_) => false,
     }
 }
 
@@ -886,122 +867,21 @@ impl Config {
 
     /// Resolve the webhook sink list for the serving stack (ADR-028).
     ///
-    /// Disabled by `--no-webhooks`/`KOI_NO_WEBHOOKS` or an absent manifest. A
-    /// manifest that exists but is invalid is a startup-time `tracing::error!`
-    /// with the fan-out disabled (matching the non-fatal mDNS init precedent):
-    /// webhooks are additive transport, never a boot blocker — and the error is
-    /// loud, not silent.
-    pub fn webhook_sinks(&self) -> Vec<koi_compose::webhook::WebhookSink> {
+    /// Disabled by `--no-webhooks`/`KOI_NO_WEBHOOKS` or an absent manifest. An
+    /// explicitly selected manifest is configuration truth: unreadable or
+    /// malformed content fails startup instead of silently running a different
+    /// topology with fan-out disabled.
+    pub fn webhook_sinks(&self) -> anyhow::Result<Vec<koi_compose::webhook::WebhookSink>> {
         if self.no_webhooks {
             tracing::info!("Webhook fan-out disabled by configuration (--no-webhooks)");
-            return Vec::new();
+            return Ok(Vec::new());
         }
         let Some(path) = self.webhooks_manifest.as_deref() else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
-        match koi_compose::webhook::parse_sinks_file(path) {
-            Ok(sinks) => sinks,
-            Err(e) => {
-                tracing::error!("Webhook fan-out disabled: {e}");
-                Vec::new()
-            }
-        }
-    }
-
-    /// Build config from environment variables only.
-    /// Used by service mode where CLI args aren't available.
-    #[cfg(windows)]
-    pub fn from_env() -> Self {
-        let http_port = std::env::var("KOI_PORT")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(DEFAULT_HTTP_PORT);
-
-        let mtls_port = std::env::var("KOI_MTLS_PORT")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(koi_serve::mtls::DEFAULT_MTLS_PORT);
-
-        let acme_port = std::env::var("KOI_ACME_PORT")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(koi_serve::acme::DEFAULT_ACME_PORT);
-
-        let pipe_path = std::env::var("KOI_PIPE")
-            .ok()
-            .map(PathBuf::from)
-            .unwrap_or_else(default_pipe_path);
-
-        let no_http = env_bool("KOI_NO_HTTP");
-        let no_ipc = env_bool("KOI_NO_IPC");
-        let no_mdns = env_bool("KOI_NO_MDNS");
-        let no_certmesh = env_bool("KOI_NO_CERTMESH");
-        let no_dns = env_bool("KOI_NO_DNS");
-        let no_health = env_bool("KOI_NO_HEALTH");
-        let no_proxy = env_bool("KOI_NO_PROXY");
-        let no_udp = env_bool("KOI_NO_UDP");
-        let no_runtime = env_bool("KOI_NO_RUNTIME");
-        let no_acme = env_bool("KOI_NO_ACME");
-        let no_mcp_http = env_bool("KOI_NO_MCP_HTTP");
-        let no_webhooks = env_bool("KOI_NO_WEBHOOKS");
-        let no_mgmt_mcp = env_bool("KOI_NO_MGMT_MCP");
-        let webhooks_manifest = std::env::var("KOI_WEBHOOKS").ok().map(PathBuf::from);
-
-        let runtime = std::env::var("KOI_RUNTIME").unwrap_or_else(|_| "auto".to_string());
-
-        let announce_http = env_bool("KOI_ANNOUNCE_HTTP");
-
-        let dns_port = std::env::var("KOI_DNS_PORT")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(53);
-
-        let dns_zone =
-            std::env::var("KOI_DNS_ZONE").unwrap_or_else(|_| koi_dns::DEFAULT_ZONE.to_string());
-
-        let dns_public = env_bool("KOI_DNS_PUBLIC");
-
-        let dns_qps = std::env::var("KOI_DNS_QPS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(200);
-
-        let http_bind = std::env::var("KOI_HTTP_BIND").unwrap_or_else(|_| "loopback".to_string());
-
-        // Composition root: resolve the data dir once (honours KOI_DATA_DIR).
-        #[allow(clippy::disallowed_methods)]
-        let data_dir = koi_common::paths::koi_data_dir();
-        let config_path = crate::config_file::default_path();
-
-        Self {
-            data_dir,
-            config_path,
-            http_port,
-            mtls_port,
-            acme_port,
-            pipe_path,
-            http_bind,
-            no_http,
-            no_ipc,
-            no_mdns,
-            no_certmesh,
-            no_dns,
-            no_health,
-            no_proxy,
-            no_udp,
-            no_runtime,
-            no_acme,
-            no_mcp_http,
-            webhooks_manifest,
-            no_webhooks,
-            no_mgmt_mcp,
-            runtime,
-            announce_http,
-            dns_port,
-            dns_zone,
-            dns_public,
-            dns_qps,
-        }
+        koi_compose::webhook::parse_sinks_file(path).map_err(|error| {
+            anyhow::anyhow!("invalid webhook manifest {}: {error}", path.display())
+        })
     }
 }
 
@@ -1050,22 +930,12 @@ impl Config {
     /// `Cli` keeps one precedence — CLI > env > file > default — across the
     /// foreground daemon and the service. Without this, a config.toml key was
     /// silently ignored in service mode (measured 2026-08-28: `http_bind =
-    /// "0.0.0.0"` for LAN access bound loopback-only). A parse/config failure
-    /// falls back to [`Config::from_env`] with a loud warning: service startup
-    /// must proceed, but the fallback is observable.
+    /// "0.0.0.0"` for LAN access bound loopback-only). A present but malformed
+    /// launch argument, environment value, or config file fails service startup;
+    /// it is never replaced with a different set of defaults.
     #[cfg(windows)]
-    pub fn from_service_launch() -> Self {
-        match Self::from_launch_args(std::env::args_os()) {
-            Ok(config) => config,
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "service launch line or config file unusable; \
-                     environment-only configuration in effect"
-                );
-                Config::from_env()
-            }
-        }
+    pub fn from_service_launch() -> Result<Self, String> {
+        Self::from_launch_args(std::env::args_os())
     }
 
     /// Resolve the full precedence chain (CLI > env > file > default) from an
@@ -2006,12 +1876,9 @@ mod tests {
 
     // ── Boolean flag / env parsing (parse_bool_flag) ────────────────
     //
-    // parse_bool_flag is the single source of truth shared by BOTH the clap
-    // `value_parser` (the CLI/daemon path, via `from_cli`) and the Windows
-    // service `from_env` path. Testing it directly is the conformance check
-    // for both: env vars are process-global so driving `KOI_NO_*` through
-    // `Cli::try_parse_from` would race other tests in this binary that also
-    // read those vars — so the shared parser carries the coverage instead.
+    // parse_bool_flag is the single source of truth used by Clap for both
+    // foreground and Windows-service launch composition. Testing it directly
+    // avoids mutating process-global `KOI_NO_*` variables in parallel tests.
 
     #[test]
     fn parse_bool_flag_accepts_truthy_set() {
@@ -2091,6 +1958,22 @@ mod tests {
         assert!(
             err.is_err(),
             "bad argv must be refused, not silently defaulted"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn service_launch_refuses_a_present_malformed_config() {
+        let path = write_launch_config("malformed.toml", "this is not = valid TOML [");
+        let result = Config::from_launch_args([
+            "koi".to_string(),
+            "--daemon".to_string(),
+            "--config".to_string(),
+            path.display().to_string(),
+        ]);
+        assert!(
+            result.is_err(),
+            "a malformed configured source must not be replaced with defaults"
         );
     }
 

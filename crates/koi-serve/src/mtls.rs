@@ -20,6 +20,7 @@ use axum::response::{IntoResponse, Response};
 use axum::{http::StatusCode, Json, Router};
 use koi_compose::cores::Cores;
 use tokio::net::TcpListener;
+use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 /// Default mTLS port for inter-node certmesh traffic.
@@ -33,7 +34,7 @@ pub struct MgmtMcp {
     pub started_at: std::time::Instant,
 }
 
-/// Start the mTLS adapter on the given port.
+/// Start the mTLS adapter on an already-bound listener.
 ///
 /// Builds a certmesh-verifying TLS config whose server leaf is resolved from the
 /// shared hot-swappable `resolver`, binds `0.0.0.0:port`, and serves the certmesh
@@ -47,15 +48,19 @@ pub struct MgmtMcp {
 /// the internal `principal_guard` (ADR-026 §5): every request must present an active,
 /// unexpired, unrevoked roster CN.
 pub async fn start(
-    port: u16,
+    listener: TcpListener,
     certmesh_core: Arc<koi_certmesh::CertmeshCore>,
     resolver: Arc<koi_certmesh::mtls::ReloadableServerCert>,
     ca_cert_pem: &str,
     cancel: CancellationToken,
     mgmt_mcp: Option<MgmtMcp>,
+    ready: oneshot::Sender<()>,
 ) -> anyhow::Result<()> {
+    let address = listener.local_addr()?;
+    let port = address.port();
     let config = koi_certmesh::mtls::build_server_config_with_resolver(resolver, ca_cert_pem)?;
     let mut app = Router::new().nest("/v1/certmesh", certmesh_core.inter_node_routes());
+    let mut mcp_source = None;
 
     if let Some(mgmt) = mgmt_mcp {
         // Non-loopback bind disables rmcp's default Host allowlist; mutual TLS +
@@ -67,7 +72,7 @@ pub async fn start(
             format!("0.0.0.0:{port}"),
             cancel.clone(),
         ));
-        let service = koi_mcp::streamable_http_service(source, Vec::new());
+        let service = koi_mcp::streamable_http_service(source.clone(), Vec::new());
         let guarded = Router::new().nest_service("/v1/mcp", service).layer(
             axum::middleware::from_fn_with_state(certmesh_core.clone(), principal_guard),
         );
@@ -76,11 +81,18 @@ pub async fn start(
             port,
             "mTLS management plane: /v1/mcp mounted (CN-authorized)"
         );
+        mcp_source = Some(source);
     }
 
-    let listener = TcpListener::bind(("0.0.0.0", port)).await?;
-    tracing::info!(port, "mTLS adapter listening");
-    koi_certmesh::mtls::serve(app, listener, config, cancel).await?;
+    // Configuration and the native socket both exist before the trust-plane owner may
+    // publish discovery. A dropped observer does not invalidate this real listener.
+    let _ = ready.send(());
+    tracing::info!(%address, "mTLS adapter listening");
+    let result = koi_certmesh::mtls::serve(app, listener, config, cancel).await;
+    if let Some(source) = mcp_source {
+        source.shutdown().await;
+    }
+    result?;
     Ok(())
 }
 

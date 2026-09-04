@@ -17,6 +17,8 @@ use axum::Router;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder;
 use tokio::net::TcpListener;
+use tokio::sync::oneshot;
+use tokio::task::JoinSet;
 use tokio_rustls::TlsAcceptor;
 use tokio_util::sync::CancellationToken;
 
@@ -33,40 +35,50 @@ pub const DEFAULT_ACME_PORT: u16 = 5643;
 /// picked up without a restart; `acme_state` carries the CA access, account/order
 /// stores, zone, and dns-01 solver. No client certificate is required or verified.
 pub async fn start(
-    port: u16,
+    listener: TcpListener,
     acme_state: Arc<AcmeState>,
     resolver: Arc<koi_certmesh::mtls::ReloadableServerCert>,
     cancel: CancellationToken,
+    ready: oneshot::Sender<()>,
 ) -> anyhow::Result<()> {
+    let address = listener.local_addr()?;
     let tls_config = koi_certmesh::mtls::build_server_auth_config_with_resolver(resolver)?;
     let tls_acceptor = TlsAcceptor::from(Arc::new(tls_config));
 
     let app = Router::new().nest("/acme", koi_certmesh::acme::routes(acme_state));
 
-    let listener = TcpListener::bind(("0.0.0.0", port)).await?;
-    tracing::info!(port, "ACME (RFC 8555) adapter listening");
+    let _ = ready.send(());
+    tracing::info!(%address, "ACME (RFC 8555) adapter listening");
+    let session_cancel = cancel.child_token();
+    let mut sessions = JoinSet::new();
 
     loop {
         let (tcp, addr) = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => break,
+            joined = sessions.join_next(), if !sessions.is_empty() => {
+                observe_session(joined);
+                continue;
+            }
             res = listener.accept() => match res {
                 Ok(v) => v,
                 Err(e) => {
                     tracing::warn!(error = %e, "ACME accept error");
                     continue;
                 }
-            },
-            _ = cancel.cancelled() => {
-                tracing::debug!("ACME adapter stopped");
-                return Ok(());
             }
         };
 
         let acceptor = tls_acceptor.clone();
         let app = app.clone();
-        let cancel = cancel.clone();
+        let cancel = session_cancel.clone();
 
-        tokio::spawn(async move {
-            let tls_stream = match acceptor.accept(tcp).await {
+        sessions.spawn(async move {
+            let tls_stream = match tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return,
+                result = acceptor.accept(tcp) => result,
+            } {
                 Ok(s) => s,
                 Err(e) => {
                     tracing::debug!(%addr, error = %e, "ACME TLS handshake failed");
@@ -87,6 +99,40 @@ pub async fn start(
                 _ = cancel.cancelled() => {}
             }
         });
+    }
+
+    session_cancel.cancel();
+    drain_sessions(&mut sessions).await;
+    tracing::debug!("ACME adapter stopped");
+    Ok(())
+}
+
+fn observe_session(result: Option<Result<(), tokio::task::JoinError>>) {
+    if let Some(Err(error)) = result {
+        if !error.is_cancelled() {
+            tracing::warn!(%error, "ACME connection task failed");
+        }
+    }
+}
+
+async fn drain_sessions(sessions: &mut JoinSet<()>) {
+    const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+    let deadline = tokio::time::Instant::now() + DRAIN_TIMEOUT;
+    while !sessions.is_empty() {
+        match tokio::time::timeout_at(deadline, sessions.join_next()).await {
+            Ok(result) => observe_session(result),
+            Err(_) => {
+                sessions.abort_all();
+                while let Some(result) = sessions.join_next().await {
+                    if let Err(error) = result {
+                        if !error.is_cancelled() {
+                            tracing::warn!(%error, "aborted ACME connection task failed");
+                        }
+                    }
+                }
+                break;
+            }
+        }
     }
 }
 

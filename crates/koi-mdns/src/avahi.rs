@@ -24,7 +24,7 @@ use crate::adapter::{
 use crate::error::{MdnsError, ProviderFailure, ProviderOperation, Result};
 use crate::provider::{
     provider_error, Announcement, BrowseLease, ProviderAddress, ProviderBrowse, ProviderEvent,
-    ProviderService, ProviderSession, PublicationLease,
+    ProviderService, ProviderSession, ProviderTask, PublicationLease,
 };
 
 const AVAHI_DESTINATION: &str = "org.freedesktop.Avahi";
@@ -46,6 +46,7 @@ const READY_TIMEOUT: Duration = Duration::from_secs(5);
 const ENTRY_GROUP_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_COLLISION_ATTEMPTS: usize = 10;
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(2);
+const SESSION_TASK_TIMEOUT: Duration = Duration::from_secs(2);
 
 const DESCRIPTOR: ProviderDescriptor = ProviderDescriptor::new(
     "avahi",
@@ -412,6 +413,7 @@ pub struct AvahiSession {
     connection: Connection,
     command_tx: mpsc::Sender<Command>,
     state_rx: watch::Receiver<ProviderSessionState>,
+    actor_task: ProviderTask,
 }
 
 impl AvahiSession {
@@ -428,11 +430,12 @@ impl AvahiSession {
             entry_groups: HashMap::new(),
             browsers: HashMap::new(),
         };
-        tokio::spawn(actor.run());
+        let actor_task = ProviderTask::new(tokio::spawn(actor.run()));
         Self {
             connection,
             command_tx,
             state_rx,
+            actor_task,
         }
     }
 
@@ -531,14 +534,32 @@ impl ProviderSession for AvahiSession {
     }
 
     async fn shutdown(&self) -> Result<()> {
+        if self.actor_task.is_reaped().await {
+            return Ok(());
+        }
         let (reply_tx, reply_rx) = oneshot::channel();
-        self.command_tx
+        if self
+            .command_tx
             .send(Command::Shutdown(reply_tx))
             .await
-            .map_err(|_| avahi_lost(ProviderOperation::Shutdown, "actor stopped"))?;
+            .is_err()
+        {
+            // A cancelled earlier shutdown can have completed the actor after
+            // losing its waiter. Reaping that same task is the idempotent
+            // acknowledgement for the provider epoch.
+            return self
+                .actor_task
+                .join(SESSION_TASK_TIMEOUT)
+                .await
+                .map_err(|detail| avahi_lost(ProviderOperation::Shutdown, detail));
+        }
         reply_rx
             .await
-            .map_err(|_| avahi_lost(ProviderOperation::Shutdown, "actor dropped reply"))?
+            .map_err(|_| avahi_lost(ProviderOperation::Shutdown, "actor dropped reply"))??;
+        self.actor_task
+            .join(SESSION_TASK_TIMEOUT)
+            .await
+            .map_err(|detail| avahi_lost(ProviderOperation::Shutdown, detail))
     }
 }
 
@@ -585,6 +606,19 @@ impl PublicationLease for AvahiPublicationLease {
     }
 }
 
+impl Drop for AvahiPublicationLease {
+    fn drop(&mut self) {
+        if self.withdrawn {
+            return;
+        }
+        let (reply, _) = oneshot::channel();
+        let _ = self.command_tx.try_send(Command::Withdraw {
+            key: self.id.clone(),
+            reply,
+        });
+    }
+}
+
 struct AvahiBrowseLease {
     key: String,
     command_tx: mpsc::Sender<Command>,
@@ -617,6 +651,19 @@ impl BrowseLease for AvahiBrowseLease {
         }
         self.closed = true;
         Ok(())
+    }
+}
+
+impl Drop for AvahiBrowseLease {
+    fn drop(&mut self) {
+        if self.closed {
+            return;
+        }
+        let (reply, _) = oneshot::channel();
+        let _ = self.command_tx.try_send(Command::CloseBrowse {
+            key: self.key.clone(),
+            reply,
+        });
     }
 }
 
@@ -1709,6 +1756,30 @@ fn avahi_protocol(operation: ProviderOperation, error: impl std::fmt::Display) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn dropped_leases_enqueue_resource_retirement() {
+        let (command_tx, mut command_rx) = mpsc::channel(2);
+        drop(AvahiPublicationLease {
+            id: "publication".to_string(),
+            command_tx: command_tx.clone(),
+            withdrawn: false,
+        });
+        drop(AvahiBrowseLease {
+            key: "_drop-test._tcp.local.".to_string(),
+            command_tx,
+            closed: false,
+        });
+
+        assert!(matches!(
+            command_rx.recv().await,
+            Some(Command::Withdraw { key, .. }) if key == "publication"
+        ));
+        assert!(matches!(
+            command_rx.recv().await,
+            Some(Command::CloseBrowse { key, .. }) if key == "_drop-test._tcp.local."
+        ));
+    }
 
     #[test]
     fn canonical_type_is_split_for_avahi() {

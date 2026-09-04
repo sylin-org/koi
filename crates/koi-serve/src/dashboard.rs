@@ -1,8 +1,8 @@
-//! Dashboard wiring — connects the daemon's domain cores to the shared dashboard
-//! infrastructure in `koi_dashboard::dashboard`.
+//! Dashboard wiring — connects the daemon's aggregate status to the shared
+//! dashboard infrastructure in `koi_dashboard::dashboard`.
 //!
 //! This module provides:
-//! - A snapshot closure that queries all domain cores (the injected `SnapshotFn`)
+//! - A snapshot closure that captures one product-status revision (the injected `SnapshotFn`)
 //! - A builder that produces the `DashboardState` consumed by `koi-dashboard`
 //!
 //! The rich snapshot detail (capabilities + health/DNS/certmesh/proxy/UDP) is built by
@@ -26,14 +26,15 @@ use koi_dashboard::dashboard::{DashboardIdentity, DashboardState};
 /// Construct the `DashboardState` for the daemon.
 pub fn build_dashboard_state(
     cores: &koi_compose::cores::Cores,
+    host: &koi_compose::host::HostIdentity,
     started_at: Instant,
     mode: &'static str,
 ) -> DashboardState {
-    let cores = cores.clone();
+    let system_status = Arc::clone(&cores.system_status);
 
     let snapshot_fn: koi_dashboard::dashboard::SnapshotFn = Arc::new(move || {
-        let cores = cores.clone();
-        Box::pin(async move { koi_compose::snapshot::build_dashboard_snapshot(&cores).await })
+        let status = system_status.status();
+        Box::pin(async move { koi_compose::snapshot::build_dashboard_snapshot(status.as_ref()) })
     });
 
     let (event_tx, _) = broadcast::channel(256);
@@ -42,6 +43,8 @@ pub fn build_dashboard_state(
         identity: DashboardIdentity {
             version: env!("CARGO_PKG_VERSION").to_string(),
             platform: std::env::consts::OS.to_string(),
+            hostname: host.hostname().to_string(),
+            hostname_fqdn: host.local_fqdn().to_string(),
         },
         mode,
         snapshot_fn,

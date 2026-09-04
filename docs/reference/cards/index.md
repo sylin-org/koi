@@ -19,9 +19,13 @@ Each card's frontmatter carries a `validation` block: **verified** means the can
 pattern is backed by a named test or the two-box integration suite; **drafted** means it was
 code-reviewed but not independently live-tested.
 
+> The cards currently record `v1.0.0-rc.2`, the exact last-published line against which
+> their evidence was collected. Repository source is `v1.0.0-dev.0`; those version stamps
+> remain provenance, not a claim that the withdrawn candidate validates current `dev`.
+
 ## Discovery & naming
 
-- [mDNS discovery](mdns-discovery.md) — find & announce services on the LAN, no daemon, no config.
+- [mDNS discovery](mdns-discovery.md) — find & announce through the installed service or an explicit one-shot session.
 - [The `.internal` zone](internal-zone.md) — Koi's default local DNS zone and warning-free in-zone TLS.
 
 ## Trust & serving

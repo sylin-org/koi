@@ -28,8 +28,8 @@ pub fn install(
 
 /// Uninstall every koi service shape found (system unit, user unit, OpenRC).
 #[cfg(target_os = "linux")]
-pub fn uninstall() -> anyhow::Result<()> {
-    super::recipes::uninstall()
+pub fn uninstall(data_dir: &std::path::Path) -> anyhow::Result<()> {
+    super::recipes::uninstall(data_dir)
 }
 
 #[cfg(all(test, target_os = "linux"))]

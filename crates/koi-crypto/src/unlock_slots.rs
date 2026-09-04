@@ -410,6 +410,67 @@ impl SlotTable {
         self.remove_totp_slot_with(path, &PlatformCredentialStore, &FileSlotPersistence)
     }
 
+    /// Capture an opaque, validated ledger for retiring every TOTP credential
+    /// owned by this slot table after a caller commits its own state removal.
+    ///
+    /// This deliberately parses without reconciliation: preparing a transaction
+    /// must never delete an external platform credential. The returned bytes are
+    /// the exact durable ownership record and can be committed atomically by the
+    /// owning domain before [`Self::retire_totp_cleanup_bytes`] is called.
+    pub fn prepare_totp_cleanup_ledger(
+        path: &std::path::Path,
+    ) -> Result<Option<Vec<u8>>, CryptoError> {
+        let bytes = std::fs::read(path)?;
+        let table: Self = serde_json::from_slice(&bytes)
+            .map_err(|error| CryptoError::Serialization(error.to_string()))?;
+        let mut has_work = false;
+        for ownership in &table.pending_totp_credentials {
+            ownership.labels()?;
+            has_work = true;
+        }
+        for slot in &table.slots {
+            if let Some(ownership) = TotpCredentialOwnership::from_slot(table.version, slot) {
+                ownership.labels()?;
+                has_work = true;
+            }
+        }
+        Ok(has_work.then_some(bytes))
+    }
+
+    /// Idempotently retire every product-owned TOTP credential named by opaque
+    /// slot-table bytes. The owning domain keeps those bytes in its durable
+    /// outbox until this call succeeds, so a partial platform-store failure is
+    /// safely replayed. Every label is validated before the first deletion.
+    pub fn retire_totp_cleanup_bytes(bytes: &[u8]) -> Result<(), CryptoError> {
+        let table: Self = serde_json::from_slice(bytes)
+            .map_err(|error| CryptoError::Serialization(error.to_string()))?;
+        let mut labels = Vec::new();
+        for ownership in &table.pending_totp_credentials {
+            labels.extend(ownership.labels()?);
+        }
+        for slot in &table.slots {
+            if let Some(ownership) = TotpCredentialOwnership::from_slot(table.version, slot) {
+                labels.extend(ownership.labels()?);
+            }
+        }
+        labels.sort();
+        labels.dedup();
+        let store = PlatformCredentialStore;
+        for label in labels {
+            store.delete(&label).map_err(|error| {
+                CryptoError::Encryption(format!(
+                    "cannot retire owned TOTP credential '{label}': {error}"
+                ))
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Path-based compatibility wrapper for a domain-owned cleanup ledger.
+    pub fn retire_totp_cleanup_ledger(path: &std::path::Path) -> Result<(), CryptoError> {
+        Self::retire_totp_cleanup_bytes(&std::fs::read(path)?)
+    }
+
     fn remove_totp_slot_with<S: CredentialStore, P: SlotPersistence>(
         &mut self,
         path: &std::path::Path,

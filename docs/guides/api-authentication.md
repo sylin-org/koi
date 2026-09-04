@@ -12,17 +12,23 @@ a language SDK, a CI job, a sidecar container.
 
 ---
 
-## The model: reads are open, writes need a token
+## The model: most reads are open; protected reads and writes need a token
 
 The daemon's HTTP API listens on `127.0.0.1:5641` (loopback) by default, so only
 processes on the same machine can reach it. Within that boundary:
 
 - **Most `GET` / `HEAD` / `OPTIONS` are unauthenticated.** Any local process can read
-  status, discovered services, DNS entries, certmesh status, and the signed trust
-  bundle without a token. The exceptions require the token on *every* method,
+  system status, discovered services, DNS entries, local certmesh status, the minimal
+  certmesh bootstrap projection, and the signed trust bundle without a token. Some
+  exceptions require the token on every resource-bearing method (body-free CORS
+  `OPTIONS` preflight remains exempt),
   including `GET`: `/v1/mcp` (its live SSE channel — see the [MCP guide](./mcp.md)),
-  the CA audit log `/v1/certmesh/log` (it narrates the full trust history), and the
+  `/v1/events`, `/v1/pond`, `/v1/certmesh/posture`, the CA audit log
+  `/v1/certmesh/log` (it narrates the full trust history), and the
   `/v1/udp/*` surface (it enumerates and streams other token-holders' bindings).
+- **Aggregate inventory and dashboard reads** (`/v1/inventory`,
+  `/v1/dashboard/snapshot`, and `/v1/dashboard/events`) remain token-free on loopback, but
+  require the token from remote or unknown peers because they carry protected domain detail.
 - **`POST` / `PUT` / `DELETE` require the daemon access token.** Send it in the
   `x-koi-token` HTTP header. Without it you get a `401`. Comparison is constant-time.
 
@@ -43,6 +49,12 @@ fresh node joining a *remote* CA host has no way to know that host's local token
 flow is owned end-to-end by `koi certmesh join`; you should not hand-roll it. Everything
 else in this guide is about the ordinary token-authenticated writes. See the
 [certmesh guide](./certmesh.md).
+
+The preflight read is `GET /v1/certmesh/bootstrap`. It intentionally needs no token and
+contains only authority availability, CA fingerprint, enrollment state, approval policy,
+and a process-local revision. `GET /v1/certmesh/status` is the full operator read model: it
+retains the loopback read exemption but requires the token from remote or unknown peers. Do
+not use it as an enrollment discovery endpoint.
 
 > `koi certmesh join`/`promote` route their key-custody calls to the **local** daemon
 > (via the breadcrumb) and reach the CA at the positional `<ca-endpoint>` argument (or
@@ -205,4 +217,3 @@ revocation, and the LAN threat model — see the
 the [HTTP API reference](../reference/http-api.md), and to browse and try calls
 interactively, open `GET /docs` on a running daemon. Back to the
 [guides index](../index.md).
-

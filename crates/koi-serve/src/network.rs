@@ -16,8 +16,8 @@ pub struct LanInterface {
 /// host has no default route, fall back to every non-loopback, non-link-local
 /// address. This keeps virtual bridges out of advertised cross-device URLs on
 /// ordinary workstations without maintaining an OS-specific interface blacklist.
-pub fn lan_ipv4_interfaces() -> Vec<LanInterface> {
-    let all = if_addrs::get_if_addrs().unwrap_or_default();
+pub fn lan_ipv4_interfaces() -> std::io::Result<Vec<LanInterface>> {
+    let all = if_addrs::get_if_addrs()?;
     let preferred = default_route_ipv4();
     let mut interfaces = all
         .into_iter()
@@ -37,12 +37,12 @@ pub fn lan_ipv4_interfaces() -> Vec<LanInterface> {
             .find(|interface| interface.address == preferred)
             .cloned()
         {
-            return vec![interface];
+            return Ok(vec![interface]);
         }
     }
     interfaces.sort_by_key(|interface| interface.address);
     interfaces.dedup_by_key(|interface| interface.address);
-    interfaces
+    Ok(interfaces)
 }
 
 /// Ask the kernel which IPv4 source address it would use for the default route.
@@ -62,7 +62,7 @@ mod tests {
 
     #[test]
     fn observations_never_advertise_loopback_or_link_local() {
-        for interface in lan_ipv4_interfaces() {
+        for interface in lan_ipv4_interfaces().expect("enumerate host interfaces") {
             assert!(!interface.address.is_loopback());
             assert!(!interface.address.is_link_local());
         }

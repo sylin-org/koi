@@ -1,13 +1,12 @@
 //! Enrollment flow logic.
 //!
 //! Processes join requests: verifies auth (TOTP), issues certificate,
-//! adds member to roster, writes cert files, appends audit log.
+//! adds member to roster, and returns prepared persistence material.
 
 use chrono::{Duration, Utc};
 use koi_crypto::auth::{AuthChallenge, AuthState};
 use koi_crypto::totp::RateLimiter;
 
-use crate::audit;
 use crate::ca::{self, CaState, IssuedCert};
 use crate::error::CertmeshError;
 use crate::protocol::{JoinRequest, JoinResponse};
@@ -23,9 +22,10 @@ use crate::roster::{MemberRole, MemberStatus, Roster, RosterMember};
 /// 6. Issue certificate
 /// 7. Write cert files
 /// 8. Add to roster
-/// 9. Audit log
+/// 9. Return prepared membership material to the aggregate command
 #[allow(clippy::too_many_arguments)]
-pub fn process_enrollment(
+#[cfg(test)]
+pub(crate) fn process_enrollment(
     ca: &CaState,
     roster: &mut Roster,
     auth_state: Option<&AuthState>,
@@ -37,20 +37,44 @@ pub fn process_enrollment(
     approved_by: Option<String>,
     paths: &crate::CertmeshPaths,
 ) -> Result<(JoinResponse, IssuedCert), CertmeshError> {
-    // Every denial below is audited *before* the error is returned (ADR-017
-    // F9/F14): a refused enrollment leaves a trail even though the roster is not
-    // mutated. `audit_denied` is a best-effort append (its own error is swallowed).
-    let audit_denied = |event: &str| {
-        let _ = audit::append_entry_to(
-            &paths.audit_log_path(),
-            event,
-            &[("hostname", hostname), ("result", "denied")],
-        );
+    let invited_role = match request.invite_token.as_deref() {
+        Some(token) => {
+            crate::invite::verify_and_consume_details(&paths.invites_path(), token, hostname)?
+        }
+        None => None,
     };
+    process_enrollment_prevalidated(
+        ca,
+        roster,
+        auth_state,
+        challenge,
+        rate_limiter,
+        request,
+        hostname,
+        sans,
+        approved_by,
+        invited_role,
+    )
+}
 
+/// Side-effect-free enrollment preparation used by the aggregate command. An
+/// invite has already been verified and marked in a prepared store generation;
+/// this function mutates only the supplied in-memory roster/limiter.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn process_enrollment_prevalidated(
+    ca: &CaState,
+    roster: &mut Roster,
+    auth_state: Option<&AuthState>,
+    challenge: &AuthChallenge,
+    rate_limiter: &mut RateLimiter,
+    request: &JoinRequest,
+    hostname: &str,
+    sans: &[String],
+    approved_by: Option<String>,
+    invited_role: Option<Option<String>>,
+) -> Result<(JoinResponse, IssuedCert), CertmeshError> {
     // 1. Check enrollment is open
     if !roster.is_enrollment_open() {
-        audit_denied("enroll_closed");
         return Err(CertmeshError::EnrollmentClosed);
     }
 
@@ -64,31 +88,18 @@ pub fn process_enrollment(
     //
     // The posture booleans (`enrollment_open` above, `requires_approval` at
     // step 5) gate both paths identically — the invite only swaps the credential.
-    let mut invited_role: Option<Option<String>> = None;
-    if let Some(token) = request.invite_token.as_deref() {
-        match crate::invite::verify_and_consume_details(&paths.invites_path(), token, hostname) {
-            Some(bound_role) => invited_role = Some(bound_role),
-            // verify_and_consume folds invalid / expired / reused / wrong-host into
-            // one fail-closed None, so a single event covers the token rejection.
-            None => {
-                audit_denied("enroll_token_invalid");
-                return Err(CertmeshError::InvalidAuth);
-            }
+    if request.invite_token.is_some() {
+        if invited_role.is_none() {
+            return Err(CertmeshError::InvalidAuth);
         }
     } else {
         let auth = match request.auth.as_ref() {
             Some(a) => a,
-            None => {
-                audit_denied("enroll_auth_missing");
-                return Err(CertmeshError::InvalidAuth);
-            }
+            None => return Err(CertmeshError::InvalidAuth),
         };
         let auth_state = match auth_state {
             Some(s) => s,
-            None => {
-                audit_denied("enroll_ca_locked");
-                return Err(CertmeshError::CaLocked);
-            }
+            None => return Err(CertmeshError::CaLocked),
         };
         let adapter = koi_crypto::auth::adapter_for(auth_state);
         let valid = adapter.verify(auth_state, challenge, auth).unwrap_or(false);
@@ -96,11 +107,9 @@ pub fn process_enrollment(
         match rate_limiter.check_and_record(valid) {
             Ok(()) => {} // Valid, proceed
             Err(koi_crypto::totp::RateLimitError::LockedOut { remaining_secs }) => {
-                audit_denied("enroll_rate_limited");
                 return Err(CertmeshError::RateLimited { remaining_secs });
             }
             Err(koi_crypto::totp::RateLimitError::InvalidCode { .. }) => {
-                audit_denied("enroll_auth_failed");
                 return Err(CertmeshError::InvalidAuth);
             }
         }
@@ -108,13 +117,11 @@ pub fn process_enrollment(
 
     // 3. Reject revoked members
     if roster.is_revoked(hostname) {
-        audit_denied("enroll_revoked_attempt");
         return Err(CertmeshError::Revoked(hostname.to_string()));
     }
 
     // 4. Check not already enrolled
     if roster.is_enrolled(hostname) {
-        audit_denied("enroll_already_enrolled");
         return Err(CertmeshError::AlreadyEnrolled(hostname.to_string()));
     }
 
@@ -126,7 +133,6 @@ pub fn process_enrollment(
         None | Some("member") => "member",
         Some("client") => {
             if roster.members.is_empty() {
-                audit_denied("enroll_client_profile_refused");
                 return Err(CertmeshError::InvalidPayload(
                     "the first enrollee bootstraps the CA host and cannot be a client principal"
                         .to_string(),
@@ -135,7 +141,6 @@ pub fn process_enrollment(
             "client"
         }
         Some(other) => {
-            audit_denied("enroll_client_profile_refused");
             return Err(CertmeshError::InvalidPayload(format!(
                 "unknown membership kind {other:?}; expected \"member\" or \"client\""
             )));
@@ -146,7 +151,6 @@ pub fn process_enrollment(
     // spends it, so the refusal is fail-closed by construction.
     if let Some(Some(bound)) = invited_role.as_ref() {
         if requested_role_name != bound.as_str() {
-            audit_denied("enroll_role_mismatch");
             return Err(CertmeshError::InvalidPayload(format!(
                 "this invite may only enroll a {bound:?} principal; the request asked for \
                  {requested_role_name:?}"
@@ -160,7 +164,6 @@ pub fn process_enrollment(
 
     // 5. Approval handled by caller when required
     if roster.requires_approval() && approved_by.as_deref().unwrap_or("").is_empty() {
-        audit_denied("enroll_approval_denied");
         return Err(CertmeshError::ApprovalDenied);
     }
 
@@ -171,7 +174,6 @@ pub fn process_enrollment(
     let csr_pem = match request.csr.as_deref() {
         Some(csr) => csr,
         None => {
-            audit_denied("enroll_no_csr");
             return Err(CertmeshError::InvalidPayload(
                 "a CSR is required to enroll; the CA does not generate member keys".to_string(),
             ));
@@ -197,12 +199,6 @@ pub fn process_enrollment(
     } else {
         MemberRole::Member
     };
-    let role_str = if is_primary {
-        "primary"
-    } else {
-        requested_role_name
-    };
-
     let ca_fp = ca::ca_fingerprint(ca);
     let member = RosterMember {
         hostname: hostname.to_string(),
@@ -222,29 +218,6 @@ pub fn process_enrollment(
         proxy_entries: Vec::new(),
     };
     roster.members.push(member);
-
-    // 9. Audit log. `via` records the credential that admitted the join
-    // (ADR-026 §6 attribution: invite token vs interactive TOTP).
-    let operator_str = approved_by
-        .as_deref()
-        .or(roster.metadata.operator.as_deref())
-        .unwrap_or("self");
-    let via = if request.invite_token.is_some() {
-        "invite"
-    } else {
-        "totp"
-    };
-    let _ = audit::append_entry_to(
-        &paths.audit_log_path(),
-        "member_joined",
-        &[
-            ("hostname", hostname),
-            ("fingerprint", &fingerprint),
-            ("role", role_str),
-            ("approved_by", operator_str),
-            ("via", via),
-        ],
-    );
 
     let ca_fingerprint = ca::ca_fingerprint(ca);
     let ca_pem = ca.cert_pem.clone();

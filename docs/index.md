@@ -11,6 +11,11 @@ New here? **[What is Koi — and is it for you?](overview.md)** is the short ori
 (the model, the trust boundary, and when *not* to use it). Then the tutorial, then the
 guide for whatever you're doing.
 
+> **Development status:** repository source is `v1.0.0-dev.0` while
+> [observable domain boundaries](adr/043-observable-domain-boundaries.md) are rebuilt and
+> revalidated. `v1.0.0-rc.2` remains the last published prerelease; its validation records do
+> not imply acceptance of current `dev`.
+
 ---
 
 ## Start here (tutorials)
@@ -120,6 +125,8 @@ Architecture Decision Records live in [docs/adr/](adr/) — why things are built
 they are. Start with [Koi's public identity: Find, Trust, Connect](adr/024-public-identity-find-trust-connect.md);
 then see [artifact-first release channels](adr/025-release-channels-and-bootstrap-contract.md)
 for how one native build reaches installers and package managers;
+the current [observable-domain-boundary decision](adr/043-observable-domain-boundaries.md)
+defines how commands, current state, and semantic events remain distinct;
 the cross-repo [stack canon (STACK-0001)](adr/STACK-0001-sylin-stack-canon.md) defines
 the wider architectural boundary.
 

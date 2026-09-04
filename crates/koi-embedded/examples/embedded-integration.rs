@@ -8,7 +8,8 @@ use axum::Router;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
-use koi_config::state::DnsEntry;
+use koi_certmesh::{CertmeshBootstrapStatus, CertmeshRole, CertmeshStatus};
+use koi_dns::DnsEntry;
 use koi_embedded::{Builder, KoiEvent, ServiceMode};
 use koi_health::{HealthCheck, ServiceCheckKind, ServiceStatus};
 use koi_mdns::protocol::RegisterPayload;
@@ -159,7 +160,7 @@ where
 async fn start_http_server(
     mdns: std::sync::Arc<koi_mdns::MdnsCore>,
     dns: std::sync::Arc<koi_dns::DnsRuntime>,
-    health: std::sync::Arc<koi_health::HealthCore>,
+    health: std::sync::Arc<koi_health::HealthRuntime>,
     certmesh: std::sync::Arc<koi_certmesh::CertmeshCore>,
     proxy: std::sync::Arc<koi_proxy::ProxyRuntime>,
 ) -> Result<(SocketAddr, CancellationToken), Box<dyn std::error::Error>> {
@@ -482,16 +483,38 @@ async fn run_http_tests(
         harness.fail("http: certmesh create", "missing totp_uri");
     }
 
-    let status: serde_json::Value = client
+    let status: CertmeshStatus = client
         .get(format!("{base_url}/v1/certmesh/status"))
         .send()
         .await?
         .json()
         .await?;
-    if status.get("ca_initialized") == Some(&serde_json::Value::Bool(true)) {
+    if status.role == CertmeshRole::Authority && status.authority.is_some() {
         harness.pass("http: certmesh status");
     } else {
-        harness.fail("http: certmesh status", "unexpected status");
+        harness.fail(
+            "http: certmesh status",
+            "expected authoritative Certmesh status",
+        );
+    }
+
+    let bootstrap: CertmeshBootstrapStatus = client
+        .get(format!("{base_url}/v1/certmesh/bootstrap"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let status_fingerprint = status
+        .authority
+        .as_ref()
+        .and_then(|authority| authority.ca_fingerprint.as_deref());
+    if bootstrap.authority_available && bootstrap.ca_fingerprint.as_deref() == status_fingerprint {
+        harness.pass("http: certmesh public bootstrap");
+    } else {
+        harness.fail(
+            "http: certmesh public bootstrap",
+            "bootstrap did not match authoritative status",
+        );
     }
 
     let _ = client
@@ -597,7 +620,7 @@ async fn run_ipc_tests(
                                     ),
                                     Err(err) => koi_mdns::protocol::error_to_pipeline(&err),
                                 },
-                                Ok(MdnsRequest::Heartbeat(id)) => match core.heartbeat(&id) {
+                                Ok(MdnsRequest::Heartbeat(id)) => match core.heartbeat(&id).await {
                                     Ok(lease_secs) => koi_mdns::protocol::MdnsPipelineResponse::clean(
                                         koi_mdns::protocol::Response::Renewed(
                                             koi_mdns::protocol::RenewalResult { id, lease_secs },
@@ -623,9 +646,22 @@ async fn run_ipc_tests(
                                             continue;
                                         }
                                     };
-                                    let handle = handle;
-                                    while let Some(event) = handle.recv().await {
-                                        let resp = koi_mdns::protocol::browse_event_to_pipeline(event);
+                                    loop {
+                                        let resp = match handle.recv().await {
+                                            Ok(event) => {
+                                                koi_mdns::protocol::browse_event_to_pipeline(event)
+                                            }
+                                            Err(koi_mdns::BrowseRecvError::Lagged { .. }) => {
+                                                koi_mdns::protocol::MdnsPipelineResponse::clean(
+                                                    koi_mdns::protocol::Response::Snapshot(
+                                                        core.discovery_snapshot()
+                                                            .as_ref()
+                                                            .clone(),
+                                                    ),
+                                                )
+                                            }
+                                            Err(koi_mdns::BrowseRecvError::Closed) => break,
+                                        };
                                         let _ = writer
                                             .write_all(serde_json::to_string(&resp).unwrap().as_bytes())
                                             .await;
@@ -645,9 +681,22 @@ async fn run_ipc_tests(
                                             continue;
                                         }
                                     };
-                                    let handle = handle;
-                                    while let Some(event) = handle.recv().await {
-                                        let resp = koi_mdns::protocol::subscribe_event_to_pipeline(event);
+                                    loop {
+                                        let resp = match handle.recv().await {
+                                            Ok(event) => {
+                                                koi_mdns::protocol::subscribe_event_to_pipeline(event)
+                                            }
+                                            Err(koi_mdns::BrowseRecvError::Lagged { .. }) => {
+                                                koi_mdns::protocol::MdnsPipelineResponse::clean(
+                                                    koi_mdns::protocol::Response::Snapshot(
+                                                        core.discovery_snapshot()
+                                                            .as_ref()
+                                                            .clone(),
+                                                    ),
+                                                )
+                                            }
+                                            Err(koi_mdns::BrowseRecvError::Closed) => break,
+                                        };
                                         let _ = writer
                                             .write_all(serde_json::to_string(&resp).unwrap().as_bytes())
                                             .await;
@@ -847,7 +896,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (http_addr, http_cancel) = start_http_server(
         mdns.core()?,
         dns.runtime()?,
-        health.core()?,
+        health.runtime()?,
         certmesh.core()?,
         proxy.runtime()?,
     )
@@ -856,7 +905,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     harness.log(format!("http base: {http_base}"));
 
     // DNS: add entry, lookup, and event.
-    let mut rx = handle.subscribe();
+    let mut rx = handle.subscribe()?;
     let entry = DnsEntry {
         name: "embedded-test.lan".to_string(),
         ip: "127.0.0.1".to_string(),
@@ -879,17 +928,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .lookup("embedded-test.lan", hickory_proto::rr::RecordType::A)
         .await;
     match result {
-        Some(result) => {
+        Ok(Some(result)) => {
             if result.ips.contains(&IpAddr::from([127, 0, 0, 1])) && result.source == "static" {
                 harness.pass("dns: lookup static entry");
             } else {
                 harness.fail("dns: lookup static entry", "unexpected lookup result");
             }
         }
-        None => harness.fail("dns: lookup static entry", "lookup returned none"),
+        Ok(None) => harness.fail("dns: lookup static entry", "lookup returned none"),
+        Err(error) => harness.fail("dns: lookup static entry", &error.to_string()),
     }
 
-    let names = dns.list_names();
+    let names = dns.list_names()?;
     if names.iter().any(|name| name == "embedded-test.lan.") {
         harness.pass("dns: list names includes entry");
     } else {
@@ -913,7 +963,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Health: run a TCP check against a local listener.
-    let mut rx = handle.subscribe();
+    let mut rx = handle.subscribe()?;
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
     tokio::spawn(async move {
@@ -931,7 +981,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     health.add_check(check).await?;
     health.core()?.run_checks_once().await;
-    let snapshot = health.status().await;
+    let snapshot = health.status().await?;
     let status = snapshot
         .services
         .iter()
@@ -959,7 +1009,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let _ = health.remove_check("tcp-local").await;
-    let snapshot = health.status().await;
+    let snapshot = health.status().await?;
     if snapshot.services.iter().any(|svc| svc.name == "tcp-local") {
         harness.fail("health: remove check", "check still present after removal");
     } else {
@@ -983,8 +1033,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Ok(reg) = reg {
             let found = tokio::time::timeout(Duration::from_secs(5), browse.recv()).await;
             match found {
-                Ok(Some(_event)) => harness.pass("mdns: register + browse"),
-                Ok(None) => harness.fail("mdns: register + browse", "browse stream ended"),
+                Ok(Ok(Some(_event))) => harness.pass("mdns: register + browse"),
+                Ok(Ok(None)) => harness.fail("mdns: register + browse", "browse stream ended"),
+                Ok(Err(error)) => harness.fail("mdns: register + browse", &error.to_string()),
                 Err(_) => harness.fail("mdns: register + browse", "no events within timeout"),
             }
 
@@ -1008,7 +1059,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Proxy: upsert and read entries.
-    let mut rx = handle.subscribe();
+    let mut rx = handle.subscribe()?;
     let entry = ProxyEntry {
         name: "embedded-proxy".to_string(),
         listen_port: 18080,
@@ -1017,7 +1068,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let result = proxy.upsert(entry.clone()).await;
     if result.is_ok() {
-        let entries = proxy.entries().await;
+        let entries = proxy.entries().await?;
         if entries.iter().any(|item| item.name == entry.name) {
             harness.pass("proxy: upsert entry");
         } else {
@@ -1036,7 +1087,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         let _ = proxy.remove("embedded-proxy").await;
-        let entries = proxy.entries().await;
+        let entries = proxy.entries().await?;
         if entries.iter().any(|item| item.name == "embedded-proxy") {
             harness.fail("proxy: remove entry", "entry still present after removal");
         } else {

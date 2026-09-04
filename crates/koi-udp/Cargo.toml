@@ -14,8 +14,6 @@ categories = ["network-programming"]
 
 [dependencies]
 koi-common.workspace = true
-async-trait.workspace = true
-
 tokio.workspace = true
 tokio-util.workspace = true
 tokio-stream = { workspace = true, features = ["sync"] }

@@ -3,20 +3,21 @@
 //! Domain-owned routes mounted by the binary crate at `/v1/certmesh/`.
 //! Handlers delegate to `CertmeshState` domain methods (shared with facade).
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::extract::Extension;
+use axum::extract::{ConnectInfo, Extension};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 
 use crate::error::CertmeshError;
-use crate::{CertmeshCore, CertmeshState};
+use crate::{CertmeshBootstrapStatus, CertmeshCore, CertmeshRole, CertmeshState, CertmeshStatus};
 use koi_common::encoding::{hex_decode, hex_encode};
 
 use crate::protocol::{
-    AuditLogResponse, BackupRequest, BackupResponse, CertmeshStatus, CreateCaRequest,
+    AcceptPromotionRequest, AuditLogResponse, BackupRequest, BackupResponse, CreateCaRequest,
     CreateCaResponse, DestroyResponse, EnrollmentSummary, HealthRequest, HealthResponse,
     InstallCertRequest, InstallCertResponse, InviteRequest, InviteResponse, JoinRequest,
     JoinResponse, MemberCsrRequest, MemberCsrResponse, PromoteRequest, PromoteResponse,
@@ -45,6 +46,11 @@ pub mod paths {
     /// Local: install a CA-signed cert next to the member key.
     pub const MEMBER_CERT: &str = "/v1/certmesh/member-cert";
     pub const STATUS: &str = "/v1/certmesh/status";
+    /// Minimal, non-sensitive authority preflight. Public so a node can discover
+    /// and pin a CA before it has credentials or a daemon access token.
+    pub const BOOTSTRAP: &str = "/v1/certmesh/bootstrap";
+    /// Public root certificate used to bootstrap external trust tooling.
+    pub const CA_CERT: &str = "/v1/certmesh/ca-cert";
     /// Trust-doctor report (ADR-020 §13). Loopback-exempt; the DAT middleware
     /// requires the token from a remote peer (gated alongside `/v1/dns/{list,zone,entries}`)
     /// since the full posture is operational detail a remote peer needn't read.
@@ -57,6 +63,12 @@ pub mod paths {
     pub const TRUST_BUNDLE: &str = "/v1/certmesh/trust-bundle";
     pub const SET_HOOK: &str = "/v1/certmesh/set-hook";
     pub const PROMOTE: &str = "/v1/certmesh/promote";
+    /// DAT-gated and loopback-only: hold the receiving daemon's ephemeral key.
+    pub const PROMOTION_SESSION: &str = "/v1/certmesh/promotion-session";
+    /// DAT-gated and loopback-only: relay the request over this member's mTLS identity.
+    pub const RELAY_PROMOTION: &str = "/v1/certmesh/relay-promotion";
+    /// DAT-gated and loopback-only: atomically install accepted CA material.
+    pub const ACCEPT_PROMOTION: &str = "/v1/certmesh/accept-promotion";
     pub const RENEW: &str = "/v1/certmesh/renew";
     /// DAT-gated local management request to rotate this member's key now.
     pub const RENEW_SELF: &str = "/v1/certmesh/renew-self";
@@ -89,10 +101,15 @@ pub(crate) fn routes(state: Arc<CertmeshState>) -> Router {
         .route(rel(paths::MEMBER_CSR), post(member_csr_handler))
         .route(rel(paths::MEMBER_CERT), post(member_cert_handler))
         .route(rel(paths::STATUS), get(status_handler))
+        .route(rel(paths::BOOTSTRAP), get(bootstrap_handler))
+        .route(rel(paths::CA_CERT), get(ca_cert_handler))
         .route(rel(paths::POSTURE), get(posture_handler))
         .route(rel(paths::DIAGNOSE), get(diagnose_handler))
         .route(rel(paths::TRUST_BUNDLE), get(trust_bundle_handler))
         .route(rel(paths::SET_HOOK), put(set_hook_handler))
+        .route(rel(paths::PROMOTION_SESSION), post(begin_promotion_handler))
+        .route(rel(paths::RELAY_PROMOTION), post(relay_promotion_handler))
+        .route(rel(paths::ACCEPT_PROMOTION), post(accept_promotion_handler))
         .route(rel(paths::RENEW_SELF), post(renew_self_handler))
         // NOTE: /renew is intentionally NOT on the plain-HTTP router. Renewal is
         // member-initiated over mTLS only (ADR-017 F6) — it lives on
@@ -287,35 +304,10 @@ async fn member_cert_handler(
 async fn trust_bundle_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
 ) -> impl IntoResponse {
-    let ca_guard = state.ca.lock().await;
-    let ca = match ca_guard.as_ref() {
-        Some(ca) => ca,
-        None => {
-            return if state.paths.is_ca_initialized() {
-                error_response(StatusCode::SERVICE_UNAVAILABLE, &CertmeshError::CaLocked)
-            } else {
-                error_response(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    &CertmeshError::CaNotInitialized,
-                )
-            };
-        }
-    };
-    let signed = {
-        let roster = state.roster.lock().await;
-        crate::bundle::sign(&roster, ca, chrono::Utc::now().to_rfc3339())
-    };
-    drop(ca_guard);
-    let signed = match signed {
-        Ok(s) => s,
-        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
-    };
-    match serde_json::to_value(&signed) {
-        Ok(val) => (StatusCode::OK, Json(val)).into_response(),
-        Err(e) => error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &CertmeshError::Internal(format!("Serialization error: {e}")),
-        ),
+    let core = CertmeshCore::from_state(state);
+    match core.signed_trust_bundle().await {
+        Ok(signed) => (StatusCode::OK, Json(signed)).into_response(),
+        Err(error) => domain_error_response(&error),
     }
 }
 
@@ -328,7 +320,7 @@ async fn trust_bundle_handler(
     summary = "Current node trust posture",
     responses((status = 200, description = "{ \"signed\": bool, \"encrypted\": bool }")))]
 async fn posture_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl IntoResponse {
-    let posture = *state.posture_tx.borrow();
+    let posture = state.status.current().posture;
     axum::Json(serde_json::json!({
         "signed": posture.signed,
         "encrypted": posture.encrypted,
@@ -341,20 +333,37 @@ async fn posture_handler(Extension(state): Extension<Arc<CertmeshState>>) -> imp
     summary = "Certificate mesh status overview",
     responses((status = 200, body = CertmeshStatus)))]
 async fn status_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl IntoResponse {
-    let ca_guard = state.ca.lock().await;
-    let roster = state.roster.lock().await;
-    let auth_guard = state.auth.lock().await;
-    let auth_method = auth_guard.as_ref().map(|a| a.method_name());
-    let status = crate::build_status(&state.paths, &ca_guard, &roster, auth_method);
-    Json(status)
+    Json((*state.status.current()).clone())
+}
+
+/// GET /bootstrap - public, minimal CA discovery/join preflight.
+#[utoipa::path(get, path = "/bootstrap", tag = "certmesh",
+    summary = "Minimal public Certmesh authority preflight",
+    responses((status = 200, body = CertmeshBootstrapStatus)))]
+async fn bootstrap_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl IntoResponse {
+    Json(state.status.current().bootstrap())
+}
+
+async fn ca_cert_handler(
+    Extension(state): Extension<Arc<CertmeshState>>,
+) -> axum::response::Response {
+    let core = CertmeshCore::from_state(state);
+    match core.ca_certificate_pem().await {
+        Ok(Some(ca_cert_pem)) => (
+            StatusCode::OK,
+            Json(crate::protocol::CaCertificateResponse { ca_cert_pem }),
+        )
+            .into_response(),
+        Ok(None) => error_response(StatusCode::NOT_FOUND, &CertmeshError::CaNotInitialized),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &error),
+    }
 }
 
 /// GET /diagnose - the trust-doctor report (ADR-020 §13). Reuses the one
 /// `CertmeshCore::diagnose` logic so the daemon/dashboard and the `koi trust
 /// diagnose` CLI render the same checks.
 async fn diagnose_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl IntoResponse {
-    let core = crate::CertmeshCore::from_state(Arc::clone(&state));
-    Json(core.diagnose().await)
+    Json(state.status.current().diagnosis.clone())
 }
 
 /// PUT /hook - Set a post-renewal reload hook for a member.
@@ -367,44 +376,12 @@ async fn set_hook_handler(
     client_cn: Option<Extension<ClientCn>>,
     Json(request): Json<SetHookRequest>,
 ) -> impl IntoResponse {
-    // CN authorization: if present, caller can only set hooks for their own hostname
-    if let Some(Extension(ClientCn(ref caller))) = client_cn {
-        if caller != &request.hostname {
-            return error_response(
-                StatusCode::FORBIDDEN,
-                &CertmeshError::Internal(format!(
-                    "CN mismatch: authenticated as '{}' but requesting hook for '{}'",
-                    caller, request.hostname
-                )),
-            );
-        }
-    }
-
-    // Boundary revocation (ADR-017 F9/F14): a revoked member retains a valid leaf
-    // until expiry, so it could still authenticate over mTLS — but it must keep no
-    // roster-mutation capability, not even for its own hostname. Refuse + audit,
-    // mirroring the renew/health handlers (the missing check here was a gap).
-    {
-        let roster = state.roster.lock().await;
-        if roster.is_revoked(&request.hostname) {
-            let _ = crate::audit::append_entry_to(
-                &state.paths.audit_log_path(),
-                "mtls_revoked_rejected",
-                &[("hostname", request.hostname.as_str()), ("op", "set_hook")],
-            );
-            return error_response(
-                StatusCode::FORBIDDEN,
-                &CertmeshError::Revoked(request.hostname.clone()),
-            );
-        }
-    }
-
-    // Delegate to the domain facade, which is the single source of truth for
-    // hook validation (forbidden metacharacters + absolute-path requirement)
-    // and persistence.
+    let caller = client_cn
+        .as_ref()
+        .map(|Extension(ClientCn(cn))| cn.as_str());
     let core = CertmeshCore::from_state(Arc::clone(&state));
     match core
-        .set_reload_hook(&request.hostname, &request.reload)
+        .set_reload_hook_for(caller, &request.hostname, &request.reload)
         .await
     {
         Ok(()) => {
@@ -467,43 +444,13 @@ async fn unlock_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<UnlockRequest>,
 ) -> impl IntoResponse {
-    let ca_state = match crate::ca::load_ca(&request.passphrase, &state.paths) {
-        Ok(ca) => ca,
-        Err(e) => {
-            // Audit the failed unlock before returning (ADR-017 F9/F14).
-            let _ = crate::audit::append_entry_to(
-                &state.paths.audit_log_path(),
-                "unlock_failed",
-                &[("via", "http")],
-            );
-            let code = koi_common::error::ErrorCode::from(&e);
-            let status = StatusCode::from_u16(code.http_status())
-                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-            return error_response(status, &e);
-        }
-    };
-
-    // Load auth credential from auth.json
-    let auth_path = state.paths.auth_path();
-    if auth_path.exists() {
-        let auth_path_clone = auth_path.clone();
-        match tokio::task::spawn_blocking(move || std::fs::read_to_string(&auth_path_clone)).await {
-            Ok(Ok(json)) => match serde_json::from_str::<koi_crypto::auth::StoredAuth>(&json) {
-                Ok(stored) => match stored.unlock(&request.passphrase) {
-                    Ok(auth_state) => {
-                        *state.auth.lock().await = Some(auth_state);
-                    }
-                    Err(e) => tracing::warn!(error = %e, "Failed to unlock auth credential"),
-                },
-                Err(e) => tracing::warn!(error = %e, "Failed to parse auth.json"),
-            },
-            Ok(Err(e)) => tracing::warn!(error = %e, "Failed to read auth.json"),
-            Err(e) => tracing::warn!(error = %e, "Failed to spawn auth.json read task"),
-        }
+    let core = CertmeshCore::from_state(state);
+    if let Err(error) = core.unlock(&request.passphrase).await {
+        let code = koi_common::error::ErrorCode::from(&error);
+        let status =
+            StatusCode::from_u16(code.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        return error_response(status, &error);
     }
-
-    *state.ca.lock().await = Some(ca_state);
-    tracing::info!("CA unlocked via service");
 
     let response = UnlockResponse { success: true };
     match serde_json::to_value(&response) {
@@ -553,7 +500,8 @@ async fn rotate_auth_handler(
     summary = "Read audit log entries",
     responses((status = 200, body = AuditLogResponse)))]
 async fn log_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl IntoResponse {
-    match crate::audit::read_log_from(&state.paths.audit_log_path()) {
+    let core = CertmeshCore::from_state(state);
+    match core.read_audit_log().await {
         Ok(entries) => {
             let response = crate::protocol::AuditLogResponse { entries };
             match serde_json::to_value(&response) {
@@ -564,7 +512,7 @@ async fn log_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl In
                 ),
             }
         }
-        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &CertmeshError::Io(e)),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
     }
 }
 
@@ -573,7 +521,8 @@ async fn log_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl In
     summary = "Destroy all certmesh state",
     responses((status = 200, body = DestroyResponse)))]
 async fn destroy_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl IntoResponse {
-    if let Err(e) = state.destroy().await {
+    let core = CertmeshCore::from_state(state);
+    if let Err(e) = core.destroy().await {
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e);
     }
 
@@ -707,24 +656,19 @@ async fn revoke_handler(
 
 // ── Enrollment toggle handlers ──────────────────────────────────────
 
-/// Toggle the enrollment window and return an [`EnrollmentSummary`] (shared by the
-/// open/close handlers). The mutation + persist happen in **one** single-writer
-/// commit (F8), so a concurrent enroll can't overwrite the posture with a stale
-/// snapshot. Posture is not bundle content, so no `seq` bump.
+/// Toggle the enrollment window through the domain facade and return its wire
+/// acknowledgement. Persistence, projection publication, and audit ordering all
+/// remain inside the domain command.
 async fn save_and_summarize_enrollment(
     state: &Arc<CertmeshState>,
     open: bool,
 ) -> axum::response::Response {
-    let committed = state
-        .touch_roster(|roster| {
-            if open {
-                roster.open_enrollment();
-            } else {
-                roster.close_enrollment();
-            }
-            Ok(())
-        })
-        .await;
+    let core = CertmeshCore::from_state(Arc::clone(state));
+    let committed = if open {
+        core.open_enrollment().await
+    } else {
+        core.close_enrollment().await
+    };
     if let Err(e) = committed {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -751,7 +695,6 @@ async fn save_and_summarize_enrollment(
 async fn open_enrollment_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
 ) -> impl IntoResponse {
-    let _ = crate::audit::append_entry_to(&state.paths.audit_log_path(), "enrollment_opened", &[]);
     save_and_summarize_enrollment(&state, true).await
 }
 
@@ -762,11 +705,58 @@ async fn open_enrollment_handler(
 async fn close_enrollment_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
 ) -> impl IntoResponse {
-    let _ = crate::audit::append_entry_to(&state.paths.audit_log_path(), "enrollment_closed", &[]);
     save_and_summarize_enrollment(&state, false).await
 }
 
 // ── Phase 3 handlers ────────────────────────────────────────────────
+
+fn is_loopback(connect_info: ConnectInfo<SocketAddr>) -> bool {
+    connect_info.0.ip().is_loopback()
+}
+
+async fn begin_promotion_handler(
+    Extension(state): Extension<Arc<CertmeshState>>,
+    connect_info: ConnectInfo<SocketAddr>,
+) -> impl IntoResponse {
+    if !is_loopback(connect_info) {
+        return error_response(StatusCode::FORBIDDEN, &CertmeshError::InvalidAuth);
+    }
+    let core = CertmeshCore::from_state(state);
+    match core.begin_promotion_acceptance().await {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(error) => domain_error_response(&error),
+    }
+}
+
+async fn accept_promotion_handler(
+    Extension(state): Extension<Arc<CertmeshState>>,
+    connect_info: ConnectInfo<SocketAddr>,
+    Json(request): Json<AcceptPromotionRequest>,
+) -> impl IntoResponse {
+    if !is_loopback(connect_info) {
+        return error_response(StatusCode::FORBIDDEN, &CertmeshError::InvalidAuth);
+    }
+    let core = CertmeshCore::from_state(state);
+    match core.accept_promotion(request).await {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(error) => domain_error_response(&error),
+    }
+}
+
+async fn relay_promotion_handler(
+    Extension(state): Extension<Arc<CertmeshState>>,
+    connect_info: ConnectInfo<SocketAddr>,
+    Json(request): Json<crate::protocol::RelayPromotionRequest>,
+) -> impl IntoResponse {
+    if !is_loopback(connect_info) {
+        return error_response(StatusCode::FORBIDDEN, &CertmeshError::InvalidAuth);
+    }
+    let core = CertmeshCore::from_state(state);
+    match core.relay_promotion(request).await {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(error) => domain_error_response(&error),
+    }
+}
 
 /// POST /promote - auth-verified CA key transfer to a standby.
 ///
@@ -782,115 +772,17 @@ async fn promote_handler(
     client_cn: Option<Extension<ClientCn>>,
     Json(request): Json<PromoteRequest>,
 ) -> impl IntoResponse {
-    if let Some(Extension(ClientCn(ref caller))) = client_cn {
-        tracing::info!(%caller, "promote requested by authenticated member");
-    }
-
-    let ca_guard = state.ca.lock().await;
-    let ca = match ca_guard.as_ref() {
-        Some(ca) => ca,
-        None => {
-            return if state.paths.is_ca_initialized() {
-                error_response(StatusCode::SERVICE_UNAVAILABLE, &CertmeshError::CaLocked)
-            } else {
-                error_response(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    &CertmeshError::CaNotInitialized,
-                )
-            };
-        }
-    };
-
-    let auth_guard = state.auth.lock().await;
-    let auth_state = match auth_guard.as_ref() {
-        Some(s) => s,
-        None => {
-            return error_response(StatusCode::SERVICE_UNAVAILABLE, &CertmeshError::CaLocked);
-        }
-    };
-
-    let mut rate_limiter = state.rate_limiter.lock().await;
-
-    // Verify auth
-    let adapter = koi_crypto::auth::adapter_for(auth_state);
-    let challenge_guard = state.pending_challenge.lock().await;
-    let challenge = challenge_guard
-        .as_ref()
-        .cloned()
-        .unwrap_or(koi_crypto::auth::AuthChallenge::Totp);
-    let valid = adapter
-        .verify(auth_state, &challenge, &request.auth)
-        .unwrap_or(false);
-    let check = rate_limiter.check_and_record(valid);
-    // Persist the limiter regardless of outcome (ADR-017 F7) — snapshot + drop the
-    // guard before the blocking write.
-    let limiter_snapshot = rate_limiter.clone();
-    drop(rate_limiter);
-    if let Err(e) = crate::persist_rate_limiter(&state.paths, &limiter_snapshot) {
-        tracing::warn!(error = %e, "Could not persist rate-limiter state");
-    }
-    match check {
-        Ok(()) => {}
-        Err(koi_crypto::totp::RateLimitError::LockedOut { remaining_secs }) => {
-            return error_response(
-                StatusCode::TOO_MANY_REQUESTS,
-                &CertmeshError::RateLimited { remaining_secs },
-            );
-        }
-        Err(koi_crypto::totp::RateLimitError::InvalidCode { .. }) => {
-            return error_response(StatusCode::UNAUTHORIZED, &CertmeshError::InvalidAuth);
-        }
-    }
-
-    let roster = state.roster.lock().await;
-
-    // Boundary revocation (ADR-017 F9/F14): a revoked member must NOT be able to
-    // recover the CA private key, even holding a still-valid leaf and the
-    // enrollment secret. The mTLS handshake admits an unexpired revoked leaf (no
-    // CRL at the TLS layer), so enforce revocation here — refuse + audit. This was
-    // the one inter-node mutation missing the check that renew/health already have.
-    if let Some(Extension(ClientCn(ref caller))) = client_cn {
-        if roster.is_revoked(caller) {
-            let _ = crate::audit::append_entry_to(
-                &state.paths.audit_log_path(),
-                "mtls_revoked_rejected",
-                &[("hostname", caller.as_str()), ("op", "promote")],
-            );
-            return error_response(
-                StatusCode::FORBIDDEN,
-                &CertmeshError::Revoked(caller.clone()),
-            );
-        }
-    }
-
-    let Some(client_pk) = request.ephemeral_public.as_ref() else {
+    let Some(Extension(ClientCn(caller))) = client_cn else {
         return error_response(
-            StatusCode::BAD_REQUEST,
-            &CertmeshError::Internal("ephemeral_public is required for promotion".into()),
+            StatusCode::FORBIDDEN,
+            &CertmeshError::Forbidden("CA promotion requires mTLS client authentication".into()),
         );
     };
-
-    match crate::failover::prepare_promotion(ca, auth_state, &roster, client_pk) {
-        Ok(response) => match serde_json::to_value(&response) {
-            Ok(val) => {
-                let _ = crate::audit::append_entry_to(
-                    &state.paths.audit_log_path(),
-                    "promotion_prepared",
-                    &[],
-                );
-                (StatusCode::OK, Json(val)).into_response()
-            }
-            Err(e) => error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &CertmeshError::Internal(format!("Serialization error: {e}")),
-            ),
-        },
-        Err(e) => {
-            let code = koi_common::error::ErrorCode::from(&e);
-            let status = StatusCode::from_u16(code.http_status())
-                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-            error_response(status, &e)
-        }
+    tracing::info!(%caller, "promote requested by authenticated member");
+    let core = CertmeshCore::from_state(state);
+    match core.promote(&caller, &request).await {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(error) => domain_error_response(&error),
     }
 }
 
@@ -1003,66 +895,18 @@ async fn health_handler(
     client_cn: Option<Extension<ClientCn>>,
     Json(request): Json<HealthRequest>,
 ) -> impl IntoResponse {
-    // CN authorization: caller can only report health for their own hostname
-    if let Some(Extension(ClientCn(ref caller))) = client_cn {
-        if caller != &request.hostname {
-            return error_response(
-                StatusCode::FORBIDDEN,
-                &CertmeshError::Internal(format!(
-                    "CN mismatch: authenticated as '{}' but reporting health for '{}'",
-                    caller, request.hostname
-                )),
-            );
+    let caller = client_cn
+        .as_ref()
+        .map(|Extension(ClientCn(cn))| cn.as_str());
+    let core = CertmeshCore::from_state(state);
+    let response = match core.health_check_for(caller, &request).await {
+        Ok(response) => response,
+        Err(error) => {
+            let status =
+                StatusCode::from_u16(koi_common::error::ErrorCode::from(&error).http_status())
+                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            return error_response(status, &error);
         }
-    }
-
-    let ca_guard = state.ca.lock().await;
-    let ca = match ca_guard.as_ref() {
-        Some(ca) => ca,
-        None => {
-            return if state.paths.is_ca_initialized() {
-                error_response(StatusCode::SERVICE_UNAVAILABLE, &CertmeshError::CaLocked)
-            } else {
-                error_response(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    &CertmeshError::CaNotInitialized,
-                )
-            };
-        }
-    };
-
-    let current_fp = crate::ca::ca_fingerprint(ca);
-    let valid =
-        crate::health::validate_pinned_fingerprint(&current_fp, &request.pinned_ca_fingerprint);
-    drop(ca_guard); // release the CA lock before the roster commit (no lock held across disk I/O)
-
-    // Boundary enforcement (ADR-017 F4): a revoked member's heartbeat is refused
-    // here at the CA, not merely recorded. Otherwise record last_seen (no seq
-    // bump — liveness is not part of the trust bundle).
-    if let Err(e) = state
-        .touch_roster(|roster| {
-            if roster.is_revoked(&request.hostname) {
-                return Err(CertmeshError::Revoked(request.hostname.clone()));
-            }
-            roster.touch_member(&request.hostname);
-            Ok(())
-        })
-        .await
-    {
-        if matches!(e, CertmeshError::Revoked(_)) {
-            // Boundary revocation, audited (ADR-017 F9/F14).
-            let _ = crate::audit::append_entry_to(
-                &state.paths.audit_log_path(),
-                "mtls_revoked_rejected",
-                &[("hostname", request.hostname.as_str()), ("op", "health")],
-            );
-        }
-        return error_response(StatusCode::FORBIDDEN, &e);
-    }
-
-    let response = HealthResponse {
-        valid,
-        ca_fingerprint: current_fp,
     };
 
     match serde_json::to_value(&response) {
@@ -1079,6 +923,13 @@ fn error_response(status: StatusCode, error: &CertmeshError) -> axum::response::
     koi_common::http::error_response_with_status(status, code, error.to_string())
 }
 
+fn domain_error_response(error: &CertmeshError) -> axum::response::Response {
+    let code = koi_common::error::ErrorCode::from(error);
+    let status =
+        StatusCode::from_u16(code.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    error_response(status, error)
+}
+
 /// Posture-aware auth gate middleware backing
 /// [`CertmeshCore::require_auth`](crate::CertmeshCore::require_auth) (ADR-020 §6).
 ///
@@ -1091,7 +942,7 @@ pub(crate) async fn require_auth_mw(
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     // Open node → no identity, no expectation of auth → pass.
-    if !crate::node_has_identity(&state.paths) {
+    if state.status.current().role == CertmeshRole::Open {
         return next.run(req).await;
     }
     // Secure node → require an authenticated client identity.
@@ -1125,7 +976,7 @@ pub(crate) async fn require_auth_with_mw(
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     // Open node → no identity, no expectation of auth → pass.
-    if !crate::node_has_identity(&state.paths) {
+    if state.status.current().role == CertmeshRole::Open {
         return next.run(req).await;
     }
     // Secure node → require an authenticated CN, then apply the policy. Clone the
@@ -1157,6 +1008,7 @@ pub(crate) async fn require_auth_with_mw(
         member_csr_handler,
         member_cert_handler,
         status_handler,
+        bootstrap_handler,
         trust_bundle_handler,
         set_hook_handler,
         promote_handler,
@@ -1183,8 +1035,13 @@ pub(crate) async fn require_auth_with_mw(
         crate::protocol::MemberCsrResponse,
         crate::protocol::InstallCertRequest,
         crate::protocol::InstallCertResponse,
-        crate::protocol::CertmeshStatus,
-        crate::protocol::MemberSummary,
+        crate::status::CertmeshStatus,
+        crate::status::CertmeshRole,
+        crate::status::CertmeshIdentityStatus,
+        crate::status::IdentityCondition,
+        crate::status::CertmeshAuthorityStatus,
+        crate::status::CertmeshMemberStatus,
+        crate::status::CertmeshBootstrapStatus,
         crate::bundle::SignedBundle,
         crate::bundle::TrustBundle,
         crate::bundle::BundleMember,
@@ -1229,6 +1086,14 @@ mod tests {
     use tower::ServiceExt;
 
     fn test_extension() -> Arc<CertmeshState> {
+        test_extension_with_authority(false)
+    }
+
+    fn authority_test_extension() -> Arc<CertmeshState> {
+        test_extension_with_authority(true)
+    }
+
+    fn test_extension_with_authority(authority: bool) -> Arc<CertmeshState> {
         use crate::certmesh_paths::CertmeshPaths;
         use crate::roster::{Roster, RosterMetadata};
         use koi_crypto::totp::RateLimiter;
@@ -1242,31 +1107,71 @@ mod tests {
         let data_dir =
             koi_common::test::ensure_data_dir("koi-certmesh-http-tests").join(format!("ext-{n}"));
         let paths = CertmeshPaths::with_data_dir(data_dir);
-        let posture_tx = crate::initial_posture_tx(&paths);
-        Arc::new(CertmeshState {
+        if authority {
+            std::fs::create_dir_all(paths.ca_dir()).unwrap();
+            std::fs::write(paths.ca_key_path(), b"test authority marker").unwrap();
+        }
+        let roster = Roster {
+            metadata: RosterMetadata {
+                created_at: chrono::Utc::now(),
+                enrollment_open: false,
+                requires_approval: false,
+                operator: None,
+                policy: crate::roster::CertPolicy::default(),
+                seq: 0,
+            },
+            members: vec![],
+            revocation_list: vec![],
+        };
+        let (initial_status, initial_tls_material) = crate::status::build_with_tls(
+            &paths,
+            Some("certmesh-test-host"),
+            false,
+            None,
+            &roster,
+            None,
+            0,
+        );
+        let initial_roster_snapshot = koi_common::integration::CertmeshRosterSnapshot {
+            revision: 0,
+            active_members: crate::status::active_members(&initial_status),
+        };
+        let initial_ca_anchor = crate::status::build_ca_anchor(
+            &paths,
+            Some("certmesh-test-host"),
+            initial_status.role,
+            0,
+        );
+        let repository = Arc::new(crate::repository::CertmeshRepository::new(
+            paths.data_dir().to_path_buf(),
+        ));
+        Arc::new(CertmeshState::own(crate::CertmeshDomain {
             paths,
+            local_hostname: crate::initial_local_hostname(),
             issuance_names: crate::IssuanceNames::default(),
-            ca: tokio::sync::Mutex::new(None),
-            roster: tokio::sync::Mutex::new(Roster {
-                metadata: RosterMetadata {
-                    created_at: chrono::Utc::now(),
-                    enrollment_open: false,
-                    requires_approval: false,
-                    operator: None,
-                    policy: crate::roster::CertPolicy::default(),
-                    seq: 0,
-                },
-                members: vec![],
-                revocation_list: vec![],
-            }),
-            auth: tokio::sync::Mutex::new(None),
-            pending_challenge: tokio::sync::Mutex::new(None),
-            rate_limiter: tokio::sync::Mutex::new(RateLimiter::new()),
-            approval_tx: tokio::sync::Mutex::new(None),
+            ca: crate::ModelCell::new(None),
+            roster: crate::ModelCell::new(roster),
+            auth: crate::ModelCell::new(None),
+            acme_accounts: crate::acme::account::AccountStore::default(),
+            pending_challenge: crate::ModelCell::new(None),
+            rate_limiter: crate::ModelCell::new(RateLimiter::new()),
+            approval_tx: crate::ModelCell::new(None),
+            pending_promotion: crate::ModelCell::new(None),
             event_tx: tokio::sync::broadcast::channel(16).0,
-            posture_tx,
-            renewal_failure_count: std::sync::atomic::AtomicU32::new(0),
-        })
+            status: koi_common::status::StatusFeed::new(initial_status),
+            roster_snapshot: koi_common::status::StatusFeed::new(initial_roster_snapshot),
+            tls_identity: koi_common::status::StatusFeed::new(
+                koi_common::integration::TlsIdentitySnapshot {
+                    revision: 0,
+                    material: initial_tls_material,
+                },
+            ),
+            ca_anchor: koi_common::status::StatusFeed::new(initial_ca_anchor),
+            transition: Arc::new(tokio::sync::Mutex::new(())),
+            repository,
+            renewal: crate::ModelCell::new(crate::CertmeshRenewalStatus::default()),
+            repository_settlement_error: crate::ModelCell::new(None),
+        }))
     }
 
     #[test]
@@ -1284,9 +1189,10 @@ mod tests {
         crate::certmesh_paths::CertmeshPaths::with_data_dir(dir)
     }
 
-    // Make `paths` read as a secure node: a member.json anchor + a leaf on disk.
+    // Make `paths` read as a durable member with deliberately incoherent leaf
+    // material. Its posture is Open but its role must still enforce auth.
     fn make_secure(paths: &crate::certmesh_paths::CertmeshPaths) {
-        let hostname = CertmeshCore::local_hostname().unwrap();
+        let hostname = "certmesh-test-host".to_string();
         let ms = crate::member::MemberState {
             hostname: hostname.clone(),
             ca_host: "h".to_string(),
@@ -1296,6 +1202,7 @@ mod tests {
             sans: vec![],
             policy: crate::roster::CertPolicy::default(),
             last_bundle_seq: 0,
+            last_bundle_digest: None,
             revoked_fingerprints: Vec::new(),
             self_revoked: false,
             reload_hook: None,
@@ -1322,25 +1229,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn require_auth_rejects_unauthenticated_when_secure() {
+    async fn require_auth_rejects_unauthenticated_for_broken_member() {
         let paths = ra_paths("secure-no-cn");
         make_secure(&paths);
         let core = CertmeshCore::uninitialized_with_paths(paths);
         let req = Request::post("/w").body(Body::empty()).unwrap();
         let resp = gated_app(&core).oneshot(req).await.unwrap();
-        // Secure + no client cert → 401.
+        // Broken member + no client cert → 401 (fail closed by durable role).
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
-    async fn require_auth_allows_authenticated_cn_when_secure() {
+    async fn require_auth_allows_authenticated_cn_for_broken_member() {
         let paths = ra_paths("secure-cn");
         make_secure(&paths);
         let core = CertmeshCore::uninitialized_with_paths(paths);
         let mut req = Request::post("/w").body(Body::empty()).unwrap();
         req.extensions_mut().insert(ClientCn("web-01".to_string()));
         let resp = gated_app(&core).oneshot(req).await.unwrap();
-        // Secure + authenticated client CN → passes.
+        // Durable member + authenticated client CN → passes.
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
@@ -1364,13 +1271,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn require_auth_with_rejects_unauthenticated_when_secure() {
+    async fn require_auth_with_rejects_unauthenticated_for_broken_member() {
         let paths = ra_paths("rw-secure-no-cn");
         make_secure(&paths);
         let core = CertmeshCore::uninitialized_with_paths(paths);
         let req = Request::post("/w").body(Body::empty()).unwrap();
         let resp = policy_gated_app(&core).oneshot(req).await.unwrap();
-        // Secure + no client cert → 401 (before the policy is consulted).
+        // Broken member + no client cert → 401 before policy is consulted.
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
@@ -1415,8 +1322,34 @@ mod tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        // CA not initialized, so ca_locked should be reported
-        assert!(json.get("ca_initialized").is_some() || json.get("ca_locked").is_some());
+        assert_eq!(
+            json.get("role").and_then(|value| value.as_str()),
+            Some("open")
+        );
+        assert!(json.get("revision").is_some());
+        assert!(json.get("posture").is_some());
+        assert!(json.get("identity").is_some());
+        assert!(json.get("diagnosis").is_some());
+        assert!(json.get("authority").is_none());
+    }
+
+    #[tokio::test]
+    async fn ca_certificate_distinguishes_absence_from_observation_failure() {
+        let open = routes(test_extension());
+        let response = open
+            .oneshot(Request::get("/ca-cert").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        // The authority fixture has its durable CA marker but deliberately no
+        // readable CA certificate. That is unavailable truth, not Open absence.
+        let unavailable = routes(test_extension_with_authority(true));
+        let response = unavailable
+            .oneshot(Request::get("/ca-cert").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[tokio::test]
@@ -1469,14 +1402,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn promote_without_ca_returns_503() {
+    async fn promote_without_mtls_identity_is_forbidden() {
         let app = inter_node_routes(test_extension());
         let req = Request::post("/promote")
             .header("content-type", "application/json")
             .body(Body::from(r#"{"auth":{"method":"totp","code":"654321"}}"#))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
@@ -1494,7 +1427,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_hook_unknown_member_returns_404() {
-        let app = routes(test_extension());
+        let app = routes(authority_test_extension());
         let reload = if cfg!(unix) {
             "/usr/bin/systemctl restart nginx"
         } else {
@@ -1563,7 +1496,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn promote_without_ca_body_has_error_code() {
+    async fn promote_without_mtls_identity_has_scope_violation_error() {
         let app = inter_node_routes(test_extension());
         let req = Request::post("/promote")
             .header("content-type", "application/json")
@@ -1574,7 +1507,10 @@ mod tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_ca_unavailable_error(&json);
+        assert_eq!(
+            json.get("error").and_then(|value| value.as_str()),
+            Some("scope_violation")
+        );
     }
 
     #[tokio::test]
@@ -1603,30 +1539,23 @@ mod tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert!(
-            json.get("ca_initialized").is_some(),
-            "missing ca_initialized"
+        assert_eq!(
+            json.get("role").and_then(|value| value.as_str()),
+            Some("open")
         );
-        assert!(json.get("ca_locked").is_some(), "missing ca_locked");
+        assert!(json.get("revision").is_some(), "missing revision");
+        assert!(json.get("posture").is_some(), "missing posture");
+        assert!(json.get("identity").is_some(), "missing identity");
+        assert!(json.get("diagnosis").is_some(), "missing diagnosis");
         assert!(
-            json.get("enrollment_open").is_some(),
-            "missing enrollment_open"
+            json.get("authority").is_none(),
+            "open nodes must not project authority-only state"
         );
-        assert!(
-            json.get("requires_approval").is_some(),
-            "missing requires_approval"
-        );
-        assert!(
-            json.get("enrollment_state").is_some(),
-            "missing enrollment_state"
-        );
-        assert!(json.get("member_count").is_some(), "missing member_count");
-        assert!(json.get("members").is_some(), "missing members");
     }
 
     #[tokio::test]
     async fn set_hook_not_found_body_has_error() {
-        let app = routes(test_extension());
+        let app = routes(authority_test_extension());
         let reload = if cfg!(unix) {
             "/usr/bin/systemctl restart nginx"
         } else {
@@ -1667,7 +1596,7 @@ mod tests {
 
     #[tokio::test]
     async fn open_enrollment_returns_200() {
-        let app = routes(test_extension());
+        let app = routes(authority_test_extension());
         let req = Request::post("/open-enrollment")
             .body(Body::empty())
             .unwrap();
@@ -1685,7 +1614,7 @@ mod tests {
 
     #[tokio::test]
     async fn close_enrollment_returns_200() {
-        let app = routes(test_extension());
+        let app = routes(authority_test_extension());
         let req = Request::post("/close-enrollment")
             .body(Body::empty())
             .unwrap();
