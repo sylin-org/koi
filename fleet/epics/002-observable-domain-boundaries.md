@@ -1,6 +1,6 @@
 # Epic 002 — Observable domain boundaries
 
-- **Status:** OD-2 complete; OD-3 freeze coordination dispatched
+- **Status:** OD-2 complete; OD-3 frozen-candidate matrix active
 - **Opened:** 2026-09-03
 - **Decision:** [ADR-043](../../docs/adr/043-observable-domain-boundaries.md)
 - **Supersedes as active dispatch:** Epic 001 PH-5 release/soak work
@@ -28,7 +28,7 @@ for the new development line.
 | OD-0 — boundary implementation | **complete at `2f967e4`** | ADR-043 types, feeds, mutation ordering, composition, protected certmesh status/public bootstrap, consumer migrations, lifecycle ownership, and transactional startup/install recovery are complete |
 | OD-1 — repository validation | **complete at `2f967e4`** | full locked workspace tests, strict clippy, formatting, architecture/status/security gates, Windows GNU checks, lean embedded builds, TypeScript tests, and documentation checks pass |
 | OD-2 — focused native validation | **complete; 5/5 hats accepted 2026-09-04** | every hat closed its row below using one installed Koi and at least one independent physical peer |
-| OD-3 — candidate matrix and soak | **active; freeze coordination dispatched** | explicitly freeze the resulting source, run only the affected final matrix, then one coordinated installed-service soak through real native observers |
+| OD-3 — candidate matrix and soak | **active; frozen at `b3eb47e`** | run only the affected final matrix, then one coordinated installed-service soak through real native observers |
 
 ## Current fleet dispatch — 2026-09-04 OD-2
 
@@ -74,22 +74,52 @@ A row closes only with a journal entry and direct push containing exact provenan
 cross-host assertion, the short native collector result, and exact final restoration. Once all
 five rows close, update this epic once to dispatch OD-3; do not start the long soak independently.
 
-## OD-3 dispatch — freeze before matrix or soak mutation
+## OD-3 dispatch — frozen candidate and one native-manager soak
 
-OD-2 is complete across all five native hats. The accepted development product baseline remains
-`e64b50e`; Debian's final follow-up is test/evidence-only and does not change shipped bytes. This
-is not itself a release freeze. CachyOS owns the coordinated next step: pull the final Debian
-acceptance publication, record one exact synchronized `dev` commit as the new frozen source, and
-publish the run ID and serial fault schedule. Any product, dependency, installer, package-recipe,
-or shipped-asset change before or during that freeze invalidates the affected native rows under
-the existing rule.
+The exact frozen source is
+`b3eb47e08817045f9371703d780ada9aab00995d`. It contains the final Debian OD-2
+acceptance and Alpine package recipe; its shipped product tree is still the accepted
+`e64b50e` baseline. Documentation/evidence commits after the freeze do not invalidate it.
+Any product, dependency, installer, package-recipe, or shipped-asset change does: stop the
+affected matrix/soak slice, fix and validate it at its owning boundary, then have CachyOS
+publish a replacement freeze. Never build a candidate from later `dev` and label it with
+the frozen SHA.
 
-After the explicit freeze, run only the final matrix slices affected since their owning OD-2
-proofs and require exact installed artifact identities on every participating host. When that
-matrix is green, execute one coordinated six-to-24-hour installed-service soak through the real
-SCM, systemd, and OpenRC observers. Debian remains the systemd anchor and aggregate timeline
-owner; CachyOS owns run coordination and the serial fault schedule. No hat starts a private soak
-or relabels OD-2 evidence as frozen-candidate evidence.
+The shared campaign ID is `v1-20260904-od3-b3eb47e`. First close the deliberately small
+candidate matrix below. This is artifact/readiness reconciliation, not permission to repeat
+OD-2's already-green provider, Pond, firewall, security, or workstation gates.
+
+| Hat | Frozen-candidate work | State |
+| --- | --- | --- |
+| `cachyos-linux` | Build `koi` and `koi-lab` from a clean export/detached worktree of the frozen source; install the exact `koi` serially through the product installer; prove one enabled/healthy systemd service, authenticated aggregate/provider/publication truth, exact installed hash, and a short systemd collector against a physical Koi Pond peer; restore the peer. | **active — coordinator owns this row** |
+| `bluefin-linux` | Repeat the same exact-source serial install and short systemd readiness/collector proof. Its prior installed binary predates the frozen Linux product tree. Restore its service, Pond desire, firewall, and desktop baseline exactly. | **ready** |
+| `windows` | Build the frozen Windows artifacts and compare them with the accepted installed artifact. Because changes since its accepted product tree are Linux OpenRC/test/docs only, do not replace or repeat SCM/provider/DACL gates when bytes are identical. If bytes differ, serially install and run only the short SCM collector/readiness proof. | **ready** |
+| `alpine-linux` | Verify the installed APKs, payload hashes, recipe source pin, service identity, and aggregate/provider readiness against the frozen source. The exact `e64b50e` product and final recipe are already installed/accepted; do not rebuild or repeat destructive gates unless equivalence fails. | **ready** |
+| `debian-linux` | Verify the installed binary/product-tree equivalence, systemd identity, and aggregate/provider readiness against the frozen source. The exact `e64b50e` product is already installed/accepted; do not repeat the just-completed Pond/collector gates unless equivalence fails. | **ready** |
+
+Each hat records `READY` with the frozen SHA, installed artifact hash/PID, and exact final
+state in its journal and pushes directly. Once all five rows are ready, CachyOS records one
+UTC `T0` at least 15 minutes ahead and changes the OD-3 state to `soak scheduled`. No private
+soak starts before that readiness barrier.
+
+The one soak lasts six hours with 60-second samples. It uses the real installed observers and
+one stable physical Bluefin Pond surface: Windows runs SCM collector
+`v1-20260904-od3-b3eb47e-win`, Alpine runs OpenRC collector
+`v1-20260904-od3-b3eb47e-alp`, and Debian runs systemd collector
+`v1-20260904-od3-b3eb47e-deb`. Bluefin owns arming/restoring its persisted Pond desire and
+any host firewall state; it performs no scheduled service fault. Observer thresholds are one
+expected service restart, at most two unavailable samples with no more than two consecutive,
+and the collector's default bounded resource-growth limits.
+
+Faults are serial and owned by the affected hat: Windows restarts its SCM service at `T0+60m`,
+Alpine restarts its OpenRC service at `T0+150m`, and Debian restarts its systemd service at
+`T0+240m`. Each verifies a new native PID plus aggregate/provider/publication recovery before
+the next window. The final two hours observe recovered steady state. CachyOS owns the shared
+timeline and final reconciliation, but runs no second Koi and invents no coordinator service.
+All three collectors must complete, make real reads from Bluefin on every sample, remain within
+their thresholds, and finish healthy. Bluefin then restores its exact pre-run Pond/firewall
+state; every hat records final service/artifact identity and pushes evidence. CachyOS closes
+OD-3 only after reconciling all four journals and the three canonical collector verdicts.
 
 ## Validation contract for OD-0/OD-1
 
