@@ -27,7 +27,7 @@ for the new development line.
 | --- | --- | --- |
 | OD-0 — boundary implementation | **complete at `2f967e4`** | ADR-043 types, feeds, mutation ordering, composition, protected certmesh status/public bootstrap, consumer migrations, lifecycle ownership, and transactional startup/install recovery are complete |
 | OD-1 — repository validation | **complete at `2f967e4`** | full locked workspace tests, strict clippy, formatting, architecture/status/security gates, Windows GNU checks, lean embedded builds, TypeScript tests, and documentation checks pass |
-| OD-2 — focused native validation | **active; 2/5 hats complete** | every hat closes its row below using one installed Koi and at least one independent physical peer |
+| OD-2 — focused native validation | **active; 3/5 hats complete** | every hat closes its row below using one installed Koi and at least one independent physical peer |
 | OD-3 — candidate matrix and soak | **waiting on OD-2** | explicitly freeze the resulting source, run only the affected final matrix, then one coordinated installed-service soak through real native observers |
 
 ## Current fleet dispatch — 2026-09-04 OD-2
