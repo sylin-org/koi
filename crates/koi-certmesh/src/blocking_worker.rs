@@ -393,6 +393,9 @@ mod tests {
         for task in admitted {
             task.await.unwrap().unwrap();
         }
+        while worker.completed_work() != CERTMESH_BLOCKING_CAPACITY + 1 {
+            tokio::task::yield_now().await;
+        }
         assert!(!overflow_ran.load(Ordering::Acquire));
         assert_eq!(worker.completed_work(), CERTMESH_BLOCKING_CAPACITY + 1);
     }
