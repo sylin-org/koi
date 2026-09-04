@@ -1,5 +1,92 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-04 (22) — OD-2 observable Windows boundaries accepted
+
+commit: tested product source `9d43746bf2b9127ad65b6d3d25476533f979d641`
+(`e64b50e` later changes only the OpenRC recipe and does not affect this row) | installed
+`koi.exe` SHA-256
+`e7c007fe57c54b15540772fcd358dd5f131c1029e735d399e5168a5751a08926`
+(48,950,784 bytes) | provider run `od2-9d-win-avahi-01` | collector run
+`v1-20260904T134802Z-windows-scm` | verdict: **PASS — Windows OD-2 row
+closed**
+
+koi state now: exactly one AutoStart LocalSystem SCM service `koi`, sole daemon PID
+`12848`, product command `"C:\Program Files\Koi\koi.exe" --daemon`, version
+`1.0.0-dev.0`, `/healthz` 200, and authenticated local control through
+`\\.\pipe\koi`. Generation 31 is Ready with
+`publish=native explicit_publish=native browse=windows-dns-sd
+resolve=windows-dns-sd`, publications desired=established=1 and pending=failed=0.
+The sole installed workbench remains PID `26760`, SHA-256
+`bb07bb2c232f1ea7398348b1cb4a215dc7d2de04c9c21461bc6fe092de05e245`.
+Pond is disabled. Bonjour is absent from SCM, System32, and its program directory;
+the uninterrupted process truthfully retains `bonjour unavailable installed=yes
+running=no` because ADR-039 keeps a successfully bound library resident until restart,
+while every route and physical provider input is back at the native baseline.
+
+evidence and findings:
+
+1. The crash-interrupted session was recovered without repeating unaffected green work.
+   The product installer upgraded the real installed service to the exact tested bytes,
+   stopped the old generation cleanly, started PID `12848`, and crossed readiness with
+   health 200 and the named-pipe listener established. Config and operator-policy hashes
+   remained byte-exact (`17fe9a66...` and `14d3432b...`), the service stayed one
+   product-path AutoStart LocalSystem own-process service, and no installer transaction
+   manifest remained. The machine crash itself also reconstructed the previous installed
+   service at boot before this controlled upgrade.
+2. Authenticated pipe evidence proves both ownership and lifecycle. The installed client
+   discovered endpoint `127.0.0.1:5641`, data root `C:\ProgramData\koi`, and config path
+   `C:\ProgramData\koi\config.toml` through local control; dropping the probe left the
+   one daemon alive. The pipe DACL is protected and grants full access only to SYSTEM,
+   Administrators, and the installing interactive SID. A separate temporary unelevated
+   account (`...-1010`) received Win32 access denied (`os error 5`), after which that
+   account was removed. Those pipe artifacts were captured on `6bb836f`; every later
+   product change through the tested source is outside the Windows local-control/DACL
+   implementation, while exact-current positive access was repeated after installation.
+3. `/v1/host` reported the composition-owned `HostIdentity` as
+   `stone-leaded-sparkle` / `stone-leaded-sparkle.local`, OS `windows`, architecture
+   `x86_64`, and default LAN interface `Ethernet` at `192.168.1.137`. In every provider
+   phase, `/v1/status` and `/v1/inventory` returned the same aggregate revision and that
+   revision advanced after the semantic change; no empty/default identity or guessed
+   service fact was used.
+4. The exact installed service and unchanged CachyOS `test-01` Koi peer (PID `1223362`,
+   SHA-256 `26ca480d0cbc0cdb5196500986ca41312a8a4ce089a5c4fc54883dbc4bf78433`)
+   exchanged real ordinary and explicit-address `_koi-od2._tcp` records. Windows resolved
+   the peer's address/TXT/interface and CachyOS resolved both Windows records through
+   native baseline generation 10, signed Bonjour promotion 14, responder-loss/native
+   fallback 19, responder return 24, and native restoration 29. Both Koi PIDs and hashes
+   stayed fixed, counts converged in every phase, and one subscription opened before the
+   run observed the peer resolved and then removed across all transitions. After
+   acknowledged Windows withdrawal, CachyOS no longer resolved either Windows record.
+5. The native Windows SCM observer in the neutral installed-service collector passed all
+   14 checks for 7 samples over 30.572 seconds. PID `12848` and the exact artifact stayed
+   fixed; every authenticated aggregate snapshot was live, every provider sample carried
+   generation and concrete routes, publications stayed converged, and 7/7 cross-host
+   Bluefin Pond reads succeeded with zero retries. There were zero PID transitions,
+   unavailable samples, or recovery events; RSS growth was 0 bytes, handle growth -2,
+   and thread growth 0. SCM cumulative restart and distinct task counters are explicitly
+   unavailable rather than fabricated. The peer label pins Bluefin service PID `207791`
+   and SHA-256
+   `298fb7208d7d4eb2f8da4f920e6a608efc4b2e61d88313fff712c7b2588f6750`.
+6. Final restoration matched Windows config/policy, adapter, IPv4, DNS, network profile,
+   effective/product firewall, Dnscache, SharedAccess, workbench, and publication
+   baselines exactly. Bonjour service/DLL/directory and its firewall rules are absent;
+   the run-owned recovery task and installer manifest are absent. Bluefin Pond returned
+   to desired=false/running=false with the same source, artifact, PID, restart count,
+   systemd enablement, desktop, and firewall facts. The exact DAT never entered evidence,
+   and the volatile peer credential file was removed. Two collector-wrapper attempts are
+   retained honestly as harness-only failures: one stale credential failed before any
+   mutation, and one asserted `ready` instead of the correct Pond state `running`; both
+   restored the peer before the accepted run.
+
+Repository gates on a detached exact-source worktree all passed: formatting; focused
+non-roster alias-feedback regression; all 14 `koi-lab installed_service` tests; strict
+all-target clippy for `koi-compose` and `koi-lab`; and locked release builds of `koi-net`
+and `koi-lab`. The installed log has no alias-feedback warning after the corrected service
+started at `2026-09-04T13:34:51Z`, physically confirming `ab84782` on the LAN population.
+Structured evidence is retained locally under
+`.tmp/od2-windows/od2-9d-win-avahi-01/` and
+`.lab-runs/v1-20260904T134802Z-windows-scm/`.
+
 ## 2026-09-03 (21) — PH-5 installed entry and Windows observer research accepted
 
 commit: PH-5 dispatch `3a28f8d8b2a21f48fedce852209633d5b70c387c`; installed product remains exact frozen source `e49bfe2b3e403fa87d4b8b237b49f3bb9e5cb5ef` | run `20260903T162035Z-windows-ph5-entry` | verdict: **PASS — neutral installed journey complete; observer implementation waits for Debian's shared contract**
