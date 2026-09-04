@@ -374,14 +374,10 @@ APIs. Koi's capability-aware supervisor gives every provider the same friendly
 front door, composes only non-overlapping operations, and builds the naming and
 trust layers on top.
 
-## Code signing policy
+## Windows release verification
 
-Windows release executables are prepared for Authenticode signing through SignPath Foundation.
-The signing scope, release controls, privacy boundary, system changes, removal instructions, and
-verification steps live in the [Code signing policy](CODE_SIGNING_POLICY.md).
-
-Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by
-[SignPath Foundation](https://signpath.org/).
+Windows release executables are unsigned. The install script verifies each archive's SHA-256
+checksum, and GitHub artifact attestations provide independently verifiable build provenance.
 
 ## License
 

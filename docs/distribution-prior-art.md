@@ -28,8 +28,7 @@ free signing wherever a genuinely free path exists.
 
 | Path | Cost | Notes |
 |---|---|---|
-| **SignPath Foundation** | **Free for OSS** | OV-level cert issued *to the Foundation*, key on their HSM, CI-integrated (GitHub Actions). They verify each signed binary was built from our public repo ("origin verification"). Conditions: OSI license ✓ (MIT/Apache dual), public repo ✓, actively maintained ✓, already-released artifacts ✓, documented download page ✓, attribution line in README ("Free code signing provided by SignPath.io, certificate by SignPath Foundation"). Publisher shown on SmartScreen = "SignPath Foundation"; reputation accrues per signing identity. **This is the load-bearing free path.** |
-| Azure Artifact Signing (ex-Trusted Signing) | $9.99/mo | Microsoft's recommended non-Store path; geo-limited (orgs US/CA/EU/UK; individuals US/CA only); reputation still builds from zero. Only worth it if SignPath doesn't fit. |
+| Azure Artifact Signing (ex-Trusted Signing) | $9.99/mo | Microsoft's recommended non-Store path; geo-limited (orgs US/CA/EU/UK; individuals US/CA only); reputation still builds from zero. Not selected for the current release. |
 | Microsoft Store (MSIX) | Free signing | Microsoft re-signs → zero SmartScreen warnings. But Store submission is an external action and MSIX identity/packaging is real work. Defer; revisit post-1.0. |
 | EV certificate ($400+/yr) | — | **No longer bypasses SmartScreen** (behavior removed 2024). Do not buy for this reason. |
 | Unsigned | Free | "Windows protected your PC" every version, forever; Win11 Smart App Control may hard-block unsigned binaries entirely. |
@@ -113,7 +112,7 @@ long-lived token; npm ≥ 11.5.1; per-package trusted-publisher setting) and set
 
 | OS | Best free one-click story | Upgrade path |
 |---|---|---|
-| Windows | Landing page → `irm get.koi.dev/ps1 \| iex` installs service + tray app; **or** winget; **or** signed NSIS installer double-click | SignPath-signed NSIS (service + workbench in one installer, registers SCM service + autostart-to-tray). Reputation accrues under the Foundation identity; warnings fade over releases. Store/MSIX much later. |
+| Windows | Landing page → `irm get.koi.dev/ps1 \| iex` installs service + tray app; **or** winget; **or** an unsigned NSIS installer | Checksums and GitHub provenance protect the release bytes. Store/MSIX or a paid certificate can be reconsidered if publisher identity becomes necessary. |
 | macOS | Landing page → `curl … \| sh` (or `brew install sylin/tap/koi`) — no quarantine, no warnings, free | Notarized DMG only if/when browser-download UX matters ($99/yr, operator call). |
 | Linux | Landing page → `curl … \| sh` invoking the product's own `koi install` (systemd unit, default data root) | deb/rpm (Tauri bundler emits them for the GUI), AUR, Nix flake, signed apt repo later. |
 
@@ -140,8 +139,8 @@ sessions). Prior art instead binds **user-session autostart of the tray app** to
   autostart wiring in the workbench; GitHub build attestations in the release workflow.
 - **P-B — operator console actions:** npm trusted publisher (OIDC) config + `NPM_PUBLISH_ENABLED`; decide
   dispatcher vs esbuild-style carriers (amends ADR-025 if carriers).
-- **P-C — free Windows signing:** apply to SignPath Foundation (operator submits; free; attribution line
-  goes in README); wire their GitHub Actions step into the release pipeline for NSIS + exe.
+- **P-C — Windows release trust:** keep archives unsigned; publish SHA-256 checksums and keyless
+  GitHub build-provenance attestations from the release workflow.
 - **P-D — taps & submissions (each its own operator approval):** Homebrew tap, Scoop bucket, winget PR,
   AUR pkgbuild, Nix flake.
 - **P-E — optional spend:** Apple Developer Program $99/yr for notarized DMG (only if browser-download
@@ -150,17 +149,15 @@ sessions). Prior art instead binds **user-session autostart of the tray app** to
 ## 6. Decision points for the operator
 
 1. npm shape: keep ADR-025's downloading dispatcher, or amend to esbuild-style platform carriers?
-2. Apply to SignPath Foundation? (attribution line in README is the string attached)
-3. Is terminal-first macOS acceptable for 1.0 (free), deferring notarization ($99/yr)?
-4. Landing page domain/host (static, e.g. GitHub Pages behind a `get.` subdomain)?
-5. Which package-manager submissions to authorize, in what order?
+2. Is terminal-first macOS acceptable for 1.0 (free), deferring notarization ($99/yr)?
+3. Landing page domain/host (static, e.g. GitHub Pages behind a `get.` subdomain)?
+4. Which package-manager submissions to authorize, in what order?
 
 ## Sources (checked 2026-08-25)
 
-- Microsoft, "Code signing options for Windows app developers" — pricing table, EV-bypass removal,
-  SignPath Foundation mention: learn.microsoft.com/en-us/windows/apps/package-and-deploy/code-signing-options
+- Microsoft, "Code signing options for Windows app developers" — pricing table and EV-bypass removal:
+  learn.microsoft.com/en-us/windows/apps/package-and-deploy/code-signing-options
 - Microsoft, "SmartScreen reputation for Windows app developers": learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation
-- SignPath Foundation program + conditions: signpath.org, signpath.org/terms.html
 - Azure Artifact Signing pricing (ex-Trusted Signing): azure.microsoft.com/en-us/products/artifact-signing
 - Tauri v2 Updater (minisign keys, latest.json): v2.tauri.app/plugin/updater/
 - Tauri v2 Autostart plugin (Win/macOS/Linux, launch args): v2.tauri.app/plugin/autostart/
