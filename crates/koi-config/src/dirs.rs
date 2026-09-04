@@ -22,47 +22,7 @@ fn restrict_data_root(data_dir: &Path) -> io::Result<()> {
 
 #[cfg(windows)]
 fn restrict_data_root(data_dir: &Path) -> io::Result<()> {
-    use std::os::windows::process::CommandExt;
-
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-
-    let mut command = std::process::Command::new("icacls");
-    command.arg(data_dir).args([
-        "/inheritance:r",
-        "/grant:r",
-        "SYSTEM:(OI)(CI)F",
-        "/grant:r",
-        "BUILTIN\\Administrators:(OI)(CI)F",
-    ]);
-    if let Some(username) = std::env::var_os("USERNAME") {
-        let comparable = username.to_string_lossy();
-        if !comparable.trim().is_empty() && !comparable.trim().eq_ignore_ascii_case("SYSTEM") {
-            let mut grant = username;
-            grant.push(":(OI)(CI)F");
-            command.arg("/grant:r").arg(grant);
-        }
-    }
-    let output = command.creation_flags(CREATE_NO_WINDOW).output()?;
-    if output.status.success() {
-        return Ok(());
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let detail = if stderr.trim().is_empty() {
-        stdout.trim()
-    } else {
-        stderr.trim()
-    };
-    Err(io::Error::other(format!(
-        "icacls failed with {}{}",
-        output.status,
-        if detail.is_empty() {
-            String::new()
-        } else {
-            format!(": {detail}")
-        }
-    )))
+    koi_common::persist::restrict_windows_private_directory_acl(data_dir)
 }
 
 #[cfg(not(any(unix, windows)))]

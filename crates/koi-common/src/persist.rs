@@ -479,11 +479,14 @@ pub fn restrict_windows_local_secret_acl(path: &Path) -> io::Result<()> {
 
     // Passing the path directly lets Command preserve non-Unicode Windows paths and perform the
     // required CreateProcess quoting itself.
-    let mut command = std::process::Command::new("icacls");
-    command.arg(path).args(windows_local_secret_acl_args(
-        std::env::var_os("USERNAME").as_deref(),
-    ));
-    let output = command.creation_flags(CREATE_NO_WINDOW).output()?;
+    let output = std::process::Command::new("icacls")
+        .arg(path)
+        .args(windows_local_secret_acl_args(
+            std::env::var_os("USERNAME").as_deref(),
+            std::env::var_os("COMPUTERNAME").as_deref(),
+        ))
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()?;
     if output.status.success() {
         return Ok(());
     }
@@ -507,7 +510,10 @@ pub fn restrict_windows_local_secret_acl(path: &Path) -> io::Result<()> {
 }
 
 #[cfg(any(windows, test))]
-fn windows_local_secret_acl_args(username: Option<&std::ffi::OsStr>) -> Vec<std::ffi::OsString> {
+fn windows_local_secret_acl_args(
+    username: Option<&std::ffi::OsStr>,
+    computer_name: Option<&std::ffi::OsStr>,
+) -> Vec<std::ffi::OsString> {
     let mut args = [
         "/inheritance:r",
         "/grant:r",
@@ -519,16 +525,87 @@ fn windows_local_secret_acl_args(username: Option<&std::ffi::OsStr>) -> Vec<std:
     .map(std::ffi::OsString::from)
     .collect::<Vec<_>>();
 
-    if let Some(username) = username {
-        let comparable = username.to_string_lossy();
-        if !comparable.trim().is_empty() && !comparable.trim().eq_ignore_ascii_case("SYSTEM") {
-            let mut grant = username.to_os_string();
-            grant.push(":F");
-            args.push(std::ffi::OsString::from("/grant:r"));
-            args.push(grant);
-        }
+    if let Some(username) = windows_interactive_acl_principal(username, computer_name) {
+        let mut grant = username;
+        grant.push(":F");
+        args.push(std::ffi::OsString::from("/grant:r"));
+        args.push(grant);
     }
     args
+}
+
+/// Restrict a Windows private directory to machine administrators and the
+/// interactive caller. Service identities are already covered by SYSTEM and
+/// must not be reinterpreted from the ambient `USERNAME` value.
+#[cfg(windows)]
+pub fn restrict_windows_private_directory_acl(path: &Path) -> io::Result<()> {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    let mut args = [
+        "/inheritance:r",
+        "/grant:r",
+        "SYSTEM:(OI)(CI)F",
+        "/grant:r",
+        "BUILTIN\\Administrators:(OI)(CI)F",
+    ]
+    .into_iter()
+    .map(std::ffi::OsString::from)
+    .collect::<Vec<_>>();
+    if let Some(mut principal) = windows_interactive_acl_principal(
+        std::env::var_os("USERNAME").as_deref(),
+        std::env::var_os("COMPUTERNAME").as_deref(),
+    ) {
+        principal.push(":(OI)(CI)F");
+        args.push(std::ffi::OsString::from("/grant:r"));
+        args.push(principal);
+    }
+
+    let output = std::process::Command::new("icacls")
+        .arg(path)
+        .args(args)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let detail = if stderr.trim().is_empty() {
+        stdout.trim()
+    } else {
+        stderr.trim()
+    };
+    Err(io::Error::other(format!(
+        "icacls failed with {}{}",
+        output.status,
+        if detail.is_empty() {
+            String::new()
+        } else {
+            format!(": {detail}")
+        }
+    )))
+}
+
+#[cfg(any(windows, test))]
+fn windows_interactive_acl_principal(
+    username: Option<&std::ffi::OsStr>,
+    computer_name: Option<&std::ffi::OsStr>,
+) -> Option<std::ffi::OsString> {
+    let username = username?;
+    let comparable = username.to_string_lossy();
+    let username = comparable.trim();
+    if username.is_empty()
+        || username.eq_ignore_ascii_case("SYSTEM")
+        || username.ends_with('$')
+        || computer_name.is_some_and(|computer| {
+            username.eq_ignore_ascii_case(&format!("{}$", computer.to_string_lossy().trim()))
+        })
+    {
+        return None;
+    }
+    Some(std::ffi::OsString::from(username))
 }
 
 fn write_bytes_atomic_with_options_and_sync(
@@ -1151,18 +1228,25 @@ mod tests {
         .collect::<Vec<_>>();
 
         assert_eq!(
-            windows_local_secret_acl_args(Some(OsStr::new("SYSTEM"))),
+            windows_local_secret_acl_args(Some(OsStr::new("SYSTEM")), None),
             machine_only
         );
         assert_eq!(
-            windows_local_secret_acl_args(Some(OsStr::new(""))),
+            windows_local_secret_acl_args(Some(OsStr::new("")), None),
+            machine_only
+        );
+        assert_eq!(
+            windows_local_secret_acl_args(
+                Some(OsStr::new("LEO-MAIN$")),
+                Some(OsStr::new("LEO-MAIN"))
+            ),
             machine_only
         );
 
         let mut interactive = machine_only;
         interactive.extend([OsString::from("/grant:r"), OsString::from("Alice:F")]);
         assert_eq!(
-            windows_local_secret_acl_args(Some(OsStr::new("Alice"))),
+            windows_local_secret_acl_args(Some(OsStr::new("Alice")), Some(OsStr::new("LEO-MAIN"))),
             interactive
         );
     }

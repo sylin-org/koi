@@ -1408,11 +1408,31 @@ pub fn try_run_as_service() -> bool {
 fn service_main(arguments: Vec<OsString>) {
     if let Err(e) = run_service(arguments) {
         tracing::error!(error = %e, "Service failed");
+        if let Err(log_error) = append_service_failure(&service_log_path(), &e) {
+            eprintln!("Koi service failed: {e:#}; could not persist the failure: {log_error}");
+        }
         // The SCM owns this process. Returning normally from a failed service
         // entry point would publish a successful process exit after startup
         // failed, defeating recovery policy and operator diagnostics.
         std::process::exit(1);
     }
+}
+
+/// Persist a startup failure synchronously. `run_service` owns non-blocking
+/// logging guards, so they are gone before an error reaches `service_main`, and
+/// `process::exit` cannot flush a replacement asynchronous writer.
+fn append_service_failure(path: &std::path::Path, error: &anyhow::Error) -> std::io::Result<()> {
+    use std::io::Write;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    writeln!(file, "Koi Windows service startup failed: {error:#}")?;
+    file.flush()
 }
 
 fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
@@ -2172,6 +2192,25 @@ fn wait_for_delete(manager: &ServiceManager) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn service_failure_is_persisted_without_an_async_guard() {
+        let dir = std::env::temp_dir().join(format!(
+            "koi-service-failure-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let path = dir.join("logs").join("koi.log");
+        append_service_failure(&path, &anyhow::anyhow!("outer").context("startup boundary"))
+            .unwrap();
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("Koi Windows service startup failed"));
+        assert!(contents.contains("startup boundary: outer"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn service_paths_respect_data_dir_override() {
