@@ -8,6 +8,9 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
+
 use serde::{Deserialize, Serialize};
 
 use super::transaction::{staged_restore_path, FileSnapshot};
@@ -213,7 +216,7 @@ pub fn install_system(operator: Option<&str>, data_dir: &Path) -> anyhow::Result
     let prior_bin = if disposition == InstallDisposition::ReplacingOwned {
         let prior_bin = installed_binary_from_initd(&initd)?;
         if was_started {
-            verify_service_process(&prior_bin)?;
+            verify_prior_service_process(&prior_bin)?;
         } else {
             verify_service_process_count(&prior_bin, 0)?;
         }
@@ -744,7 +747,22 @@ fn verify_service_process_once(bin: &Path) -> anyhow::Result<()> {
     verify_service_process_count(bin, 1)
 }
 
+fn verify_prior_service_process(bin: &Path) -> anyhow::Result<()> {
+    if rc_service_state(false)? != OpenRcState::Started {
+        anyhow::bail!("OpenRC does not report {SERVICE_NAME} started");
+    }
+    verify_service_process_count_with(bin, 1, true)
+}
+
 fn verify_service_process_count(bin: &Path, expected_count: usize) -> anyhow::Result<()> {
+    verify_service_process_count_with(bin, expected_count, false)
+}
+
+fn verify_service_process_count_with(
+    bin: &Path,
+    expected_count: usize,
+    allow_deleted_prior_image: bool,
+) -> anyhow::Result<()> {
     let expected = std::fs::canonicalize(bin)?;
     let mut daemon_pids = Vec::new();
     for entry in std::fs::read_dir("/proc")? {
@@ -756,7 +774,15 @@ fn verify_service_process_count(bin: &Path, expected_count: usize) -> anyhow::Re
         let process = entry.path();
         let actual = match std::fs::canonicalize(process.join("exe")) {
             Ok(actual) => actual,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if allow_deleted_prior_image
+                    && deleted_process_image_matches(&process.join("exe"), &expected)?
+                {
+                    expected.clone()
+                } else {
+                    continue;
+                }
+            }
             Err(error) => return Err(error.into()),
         };
         if actual != expected {
@@ -783,6 +809,22 @@ fn verify_service_process_count(bin: &Path, expected_count: usize) -> anyhow::Re
         );
     }
     Ok(())
+}
+
+fn deleted_process_image_matches(proc_exe: &Path, expected: &Path) -> anyhow::Result<bool> {
+    let target = match std::fs::read_link(proc_exe) {
+        Ok(target) => target,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    Ok(deleted_process_target_matches(&target, expected))
+}
+
+fn deleted_process_target_matches(target: &Path, expected: &Path) -> bool {
+    let Some(path) = target.as_os_str().as_bytes().strip_suffix(b" (deleted)") else {
+        return false;
+    };
+    Path::new(std::ffi::OsStr::from_bytes(path)) == expected
 }
 
 fn write_file(path: &Path, body: &str, mode: u32) -> anyhow::Result<()> {
@@ -1013,6 +1055,24 @@ mod tests {
         let error = format!("{error:#}");
         assert!(error.contains("within 0ns"));
         assert!(error.contains("child never appeared"));
+    }
+
+    #[test]
+    fn prior_package_image_accepts_only_the_exact_deleted_path() {
+        let expected = Path::new("/usr/bin/koi");
+        assert!(deleted_process_target_matches(
+            Path::new("/usr/bin/koi (deleted)"),
+            expected
+        ));
+        assert!(!deleted_process_target_matches(expected, expected));
+        assert!(!deleted_process_target_matches(
+            Path::new("/usr/bin/other (deleted)"),
+            expected
+        ));
+        assert!(!deleted_process_target_matches(
+            Path::new("/usr/bin/koi (deleted) suffix"),
+            expected
+        ));
     }
 
     #[test]
