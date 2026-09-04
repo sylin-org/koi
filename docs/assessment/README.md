@@ -1,14 +1,26 @@
 # Project Assessment Corpus
 
-A staged, multi-agent maturity assessment of Koi performed 2026-06-11, intended as a
-durable reference for future planning sessions (human or AI).
+Assessments of Koi's capabilities, repository quality, user experience, and strategic
+direction. Each report is a dated snapshot; current release acceptance lives in the
+active fleet epic and surface ledger.
 
 ## Start here
 
-- **[realignment-2026-06-22.md](realignment-2026-06-22.md)** — ⭐ **current status** (2026-06-22):
+- **[2026-09-delight-mandates-and-ux-direction.md](2026-09-delight-mandates-and-ux-direction.md)** —
+  User mandates following the assessment, screenshot findings, break-and-rebuild proposals,
+  and the installation, network launchpad, second-machine, container, and secure-access experience.
+  Distinguishes required outcomes from design recommendations.
+- **[2026-09-sylin-visual-dictionary.md](2026-09-sylin-visual-dictionary.md)** —
+  Source-derived Sylin/Ghostlight visual vocabulary for Koi: exact family tokens, components,
+  motion, product-state meanings, and the mapping to Home, Devices, Settings, and About.
+- **[2026-09-delight-and-1.0-assessment.md](2026-09-delight-and-1.0-assessment.md)** —
+  September 4 assessment: delight by audience, current capabilities, good/bad/ugly,
+  verified UX and documentation findings, repository quality, certmesh opportunities,
+  and proposed 1.0 acceptance outcomes. [Verification and limits](2026-09-assessment-verification.md).
+- **[realignment-2026-06-22.md](realignment-2026-06-22.md)** — **historical status** (2026-06-22):
   every defect, lean-plan move, shed item, and stage from the snapshot below, mapped to its
-  present state against `dev` HEAD with commit/file evidence (**11 of 12 verified defects
-  resolved**). Read this for *"what's actually left"*; read the snapshot below for the original
+  then-current state against `dev` HEAD with commit/file evidence (**11 of 12 verified defects
+  resolved**). Read this for what remained in June; read the snapshot below for the original
   analysis (preserved unchanged as history).
 - **[2026-06-maturity-assessment.md](2026-06-maturity-assessment.md)** — the synthesis
   (2026-06-11 snapshot): identity (declared vs revealed), maturity scorecard, verified defects,
@@ -53,10 +65,14 @@ durable reference for future planning sessions (human or AI).
 
 ## Execution layer
 
-- **[../prompts/](../prompts/README.md)** — the prompt stash: 13 self-contained
-  agentic session work orders (P01–P13) that operationalize this assessment's roadmap,
-  plus the [DX charter](../prompts/CHARTER.md) every session must preserve. Written to
-  be executable by smaller/faster models without this assessment in context.
+- **[Epic 003 - delight realignment](../../fleet/epics/003-delight-realignment.md)** —
+  Linux-delegated September realignment with code, installation, four-module UI, local sharing,
+  secure-service, documentation, accessibility and exact-candidate acceptance gates.
+  [Thirty bounded prompts](../prompts/delight/README.md) and a single task ledger make
+  it executable without prior conversation. Activation is separate from the current native campaign.
+- **[June prompt stash](../prompts/README.md)** — historical P01–P14 session work
+  orders and their [DX charter](../prompts/CHARTER.md). They preserve the earlier
+  roadmap and do not govern Epic 003, which has its own execution contract.
 
 ## Caveats
 

@@ -8,8 +8,11 @@ out-of-band answers) lives in gitignored `local/NOTES.md` — see
 | Kind | Where |
 |---|---|
 | Universal fleet entry (self-routing execution contract) | [`fleet/task.md`](../fleet/task.md) |
-| Current productization epic (objective, dependencies, exit gates) | [`fleet/epics/001-productization-hardening.md`](../fleet/epics/001-productization-hardening.md) |
+| Current native fleet campaign and dispatch (single live pointer) | [`fleet/coordination.md`](../fleet/coordination.md) |
+| Linux delight realignment dispatch, executable prompts and progress | [`dispatcher`](../fleet/delight-dispatch.md), [`Epic 003`](../fleet/epics/003-delight-realignment.md), [`prompt pack`](prompts/delight/README.md), [`ledger`](prompts/delight/LEDGER.md) |
 | Historical v1 campaign ledger and release-gated residue | [`SESSION-HANDOFF.md`](../SESSION-HANDOFF.md) |
+| Product experience mandates and proposed UX direction (2026-09-04; requirements distinguished from recommendations) | [`docs/assessment/2026-09-delight-mandates-and-ux-direction.md`](assessment/2026-09-delight-mandates-and-ux-direction.md) |
+| Source-derived Sylin visual dictionary for Koi (2026-09-04) | [`docs/assessment/2026-09-sylin-visual-dictionary.md`](assessment/2026-09-sylin-visual-dictionary.md) |
 | Lessons/rules that govern how work is done (RL-1..RL-16) | [`docs/lessons-learned.md`](lessons-learned.md) |
 | Decision records (why things are built this way) | [`docs/adr/`](adr/) |
 | Standing lab facts (hosts, credentials-by-env-name, catalog) | [`tools/koi-lab/lab.json`](../tools/koi-lab/lab.json), `local/NOTES.md` |

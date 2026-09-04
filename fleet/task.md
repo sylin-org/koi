@@ -65,6 +65,15 @@ or shipped-asset correction.
 
 ## 3. Select work without waiting for another prompt
 
+**Epic 003 routing:** when coordination names Epic 003, execute
+[delight-dispatch.md](delight-dispatch.md) and the R ledger. That branch includes
+the inherited Epic 002 run's handover, fixed Linux owners, dependency selection,
+claims, peer evidence and publication. It replaces the historical selector below
+and qualifies sections 4-5 for source-only work. Do not fall through to PH work.
+This same entry point resumes the next eligible R slice on later invocations.
+
+The following selector applies only to a different explicitly active epic.
+
 Choose the first unfinished, dependency-ready item in this order:
 
 1. a correctness or security defect explicitly named in the hat brief or current epic;
@@ -118,7 +127,7 @@ pre-1.0 code is authorized when it yields fewer, clearer moving parts.
 
 ## 5. Publish in the same session
 
-1. Append one evidence-dense entry to `fleet/<hat>/journal.md` containing the PH ID,
+1. Append one evidence-dense entry to `fleet/<hat>/journal.md` containing the active task/slice ID,
    source commit, installed artifact path/hash/PID, peer identities, run ID/verdict,
    exact restoration result, and final state.
 2. File an issue only for work that remains unresolved. A defect fixed and physically

@@ -1,5 +1,18 @@
 # Koi Prompt Stash — Agentic Session Work Orders
 
+## September 2026 realignment
+
+The Linux-delegated [Epic 003 - user delight](../../fleet/epics/003-delight-realignment.md)
+has its own [30-prompt execution pack](delight/README.md), [charter](delight/CHARTER.md),
+[contract handoff](delight/CONTRACT.md), and [task ledger](delight/LEDGER.md).
+Use [fleet/task.md](../../fleet/task.md) on each Linux machine. R01 prepares the
+contract and reconciles the inherited Epic 002 run before product implementation.
+
+The P01-P14 work orders below are the **historical June campaign**. Their charter,
+sequence and compatibility assumptions do not govern the September realignment.
+
+## June 2026 work orders (historical)
+
 Self-contained prompts for future agentic coding sessions, written to be executed by
 **any capable coding agent, including smaller/faster models**. Each prompt embeds its
 own research → plan → implement → verify process, target UX samples, acceptance

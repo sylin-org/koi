@@ -6,8 +6,11 @@ changes.
 Koi is consolidating toward *less but more meaningful parts* — see the
 [assessment & roadmap](docs/assessment/README.md). Contributions that delete,
 simplify, or make documentation true are as valued as features; check the
-[work-order prompts](docs/prompts/README.md) for the current plan before starting
-something big.
+[work-order index](docs/prompts/README.md) before starting something big. The
+[delight realignment epic](fleet/epics/003-delight-realignment.md) is delegated to
+Linux through [fleet/task.md](fleet/task.md), with a dedicated
+[execution pack](docs/prompts/delight/README.md). R01 records the inherited native
+run's handover before implementation. The June P01-P14 work orders are historical.
 
 ---
 

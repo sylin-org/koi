@@ -32,7 +32,8 @@ documentation needed to make its platform work; those changes go directly to
 
 Non-agent machines: brook/granite are lab production (hands off);
 limpid-dune/topaz-butte/silent-cascade are phase-two Debian twins. The Windows
-hat is also the orchestrator, but it still owns only its own system mutations.
+workstation may supervise launches; Epic 003 coordination is assigned to CachyOS.
+Every hat still owns only its own system mutations.
 
 ## The UX charter (what "simply works" means on each hat)
 
@@ -83,21 +84,31 @@ and the brief corrected.
 
 ## Current epic
 
-[`fleet/epics/002-observable-domain-boundaries.md`](epics/002-observable-domain-boundaries.md)
-is the single current objective and dispatch. ADR-043's repository implementation and gates
-are complete, all five OD-3 frozen-candidate rows are ready, and the epic's one coordinated
-native-manager soak is **scheduled for `2026-09-04T17:30:00Z`**. Every hat now has active work:
-Bluefin owns the physical Pond peer lifetime, Windows/Alpine/Debian own their real native
-collectors and one scheduled restart each, and CachyOS owns coordination and reconciliation.
-The exact commands, run IDs, times, thresholds, and restoration gates live only in the epic.
-An older brief saying to remain unchanged or await refreeze does not cancel this scheduled
-assignment. The former frozen candidate and Epic 001 PH-5 dispatch are inactive; do not repeat
-accepted evidence or resurrect a retained brief's older dispatch.
+[Epic 003 - delight realignment](epics/003-delight-realignment.md) is the current
+dispatcher target. The owner delegated implementation to the Linux machines through
+`fleet/task.md` on 2026-09-04. [The Linux dispatch](delight-dispatch.md) routes each
+bounded R task through one [assignment/progress ledger](../docs/prompts/delight/LEDGER.md).
+CachyOS owns product/UX coordination, Debian the core service/trust work, Bluefin
+documentation/containers/integration, and Alpine installation/CI/portability.
+All four retain exclusive ownership of their own native evidence and mutations.
 
-[`fleet/epics/001-productization-hardening.md`](epics/001-productization-hardening.md) and the
-hat journals remain the immutable evidence record for the exact artifacts and gates they
-accepted. Do not rewrite or reinterpret those historical results as validation of current
-`dev`.
+**Handover pending:** Epic 002's OD-3 run was scheduled on frozen source
+`b3eb47e08817045f9371703d780ada9aab00995d` for 2026-09-04, with collectors and Bluefin's
+Pond peer. Its actual completion/restoration has not been asserted by this dispatch
+change. Finish an active assigned run and reconcile its journals through R01 before
+new product implementation/deployment. R01 contract preparation may proceed now.
+Do not restart the dated schedule, assume it passed, cancel it implicitly, or ask
+again for activation once its recorded handover conditions are met.
+
+[Epic 002](epics/002-observable-domain-boundaries.md) retains the precise inherited
+run procedure and evidence. [Epic 001](epics/001-productization-hardening.md) is also
+historical. Their accepted artifacts/results remain intact; old PH selectors and
+retained brief dispatches do not assign new Epic 003 feature work.
+
+Windows source preparation belongs to named Linux owners; Windows physical proof
+remains reserved for its own later operator-dispatched hat. This does not reduce
+the native release matrix. The ledger permits explicitly qualified Linux progress
+while Windows-only evidence is pending; full acceptance still requires it.
 
 ## Mechanics (hardened by the canary — v1's traps are protocol now)
 

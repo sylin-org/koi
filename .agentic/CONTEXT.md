@@ -9,9 +9,23 @@
 When the user says **"run fleet/task.md"**, execute
 [`fleet/task.md`](../fleet/task.md). It is the universal self-routing entry point:
 the local hostname selects the hat and brief, and
-[`fleet/epics/002-observable-domain-boundaries.md`](../fleet/epics/002-observable-domain-boundaries.md)
+[`fleet/epics/003-delight-realignment.md`](../fleet/epics/003-delight-realignment.md)
 supplies the current objective, dependencies, and exit gates. Do not ask the user to
 restate an OS assignment already encoded there.
+
+## Linux delight realignment
+
+The owner delegated [Epic 003](../fleet/epics/003-delight-realignment.md) to the Linux
+machines through the universal dispatcher on 2026-09-04.
+[Routing](../fleet/delight-dispatch.md) and the
+[ledger](../docs/prompts/delight/LEDGER.md) fix owners and dependency readiness.
+Its [execution prompts](../docs/prompts/delight/README.md) provide bounded sessions,
+source contracts and evidence rules without prior conversation.
+
+R01 prepares the contract and reconciles Epic 002's actual native run/restoration.
+Implementation waits for that handover, not another routine approval. Preserve
+the historical run while active. Native Windows proof remains reserved; Linux
+implementation cannot be reported as Windows acceptance.
 
 ## Historical v1 resume
 
