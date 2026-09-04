@@ -1,12 +1,12 @@
 # Koi Epic to v1 — canonical continuation ledger
 
 **Status:** active — V1-00 through V1-02 complete; V1-03 through V1-06 in progress; ADR-026/027/028 operator-ratified; **V1-10 webhooks COMPLETE** (embedded parity closed 2026-08-24 per D10; card/SURFACES/profile done); **V1-09 short-lived defaults implemented + physically green both rotations** (diagnosis semantics fixed per D9); **V1-08 principal identity COMPLETE 2026-08-24** — implementation, Tier-2 real-binary lifecycle, and physical mgmt-principal lane green both Linux rotations; **V1-11 step 1 COMPLETE** (Agent-Door spec + executable vector) and **step 2 scaffolded** (TS + Python SDK betas, read-side, tested); owed: SDK enroll-side + publication gating
-**Last updated:** 2026-08-27
+**Last updated:** 2026-09-04
 **Resume phrase:** continue the epic to v1 - lessons ledger at docs/lessons-learned.md (RL-1..RL-18)
 
-**ADR-034 RATIFIED (2026-08-25, operator): multi-channel distribution + free signing.** Research in
-`docs/distribution-prior-art.md`; decisions in `docs/adr/034`. Ratified: SignPath Foundation for free
-Windows Authenticode (attribution line accepted); macOS terminal-first for 1.0 (notarization deferred);
+**ADR-034 RATIFIED (2026-08-25, operator): multi-channel distribution.** Research in
+`docs/distribution-prior-art.md`; decisions in `docs/adr/034`. Windows archives remain unsigned and
+use checksums plus GitHub provenance; macOS is terminal-first for 1.0 (notarization deferred);
 landing page on the operator's sylin.org Koi page (`install.sh`/`install.ps1` paths, OS-detect,
 sha256-verify, invoke `koi install`); npm amended to esbuild-pattern platform carriers
 (`@sylin-org/koi-{win32-x64,linux-x64,linux-arm64,darwin-x64,darwin-arm64}` via optionalDependencies —
@@ -15,13 +15,9 @@ law: services never register from npm-managed paths); all top free package manag
 Homebrew tap → winget → AUR(-bin) → Scoop bucket → Nix flake (Flathub/Snap/Store deferred with reasons);
 tray-minimized autostart via tauri-plugin-autostart with `--minimized` (daemon never spawns GUI).
 Implementation phases (each independently landable, external touches operator-gated):
-P-C SignPath repository preparation LANDED (`adb4c73`): public CODE_SIGNING_POLICY.md, PE version
-metadata via winresource build script, fail-closed `sign-windows` workflow lane (explicit unsigned
-status while `SIGNPATH_ENABLED` is false), post-signing checksums/manifest/attestations,
-verify-windows-signing.ps1 + checked-in artifact configuration. **Foundation application SUBMITTED
-2026-08-25** (project "Koi", repo sylin-org/koi, independent community project, GitHub Actions; account
-email on file in local/NOTES.md) — review pending; after approval the operator configures
-SignPath/GitHub values and flips `SIGNPATH_ENABLED`.
+P-C Windows release trust LANDED (`adb4c73`, simplified 2026-09-04): PE version metadata via the
+winresource build script, unsigned archive finalization, checksums, manifest generation, and keyless
+GitHub build-provenance attestations.
 P-A progress: koi-desktop login autostart + `--minimized` tray launch LANDED (koi-desktop `4f7a38b`,
 tauri-plugin-autostart =2.5.1 under the Ghostlight pin policy; Status-pane toggle with honest failure
 reporting); landing-page draft LANDED (`site/index.html` + hosting contract in `site/README.md`;
@@ -70,7 +66,7 @@ init script template shipped CRLF from a Windows checkout (phantom-interpreter s
 x86_64-unknown-linux-musl in CI-reachable form (that check caught 3 native-invisible
 errors). Gates green: fmt, clippy -D, 50/50 locked suites, audit.
 
-**STABLE-1.0 GATE CLOSED (2026-08-28). All three ADR-032 requirements are met: matrix complete, extended full profile green (twice), soak clean. The next steps are operator-gated release mechanics, not engineering: version bump rc.2 → 1.0.0 across the workspace, tags, registry publication (RL-2: immutable, one-shot), SignPath/landing-page operator actions (ADR-034). Do NOT start these without the operator.**
+**STABLE-1.0 GATE CLOSED (2026-08-28). All three ADR-032 requirements are met: matrix complete, extended full profile green (twice), soak clean. The next steps are operator-gated release mechanics, not engineering: version bump rc.2 → 1.0.0 across the workspace, tags, registry publication (RL-2: immutable, one-shot), and landing-page operator actions (ADR-034). Do NOT start these without the operator.**
 Soak evidence: bounded soak `v1-20260828T173214Z-403b0fdd` — 20/20 iterations, 4 supervised daemon restarts, `iteration_limit` termination, exact cleanup, on brook+granite with lane-level standing-service isolation. Post-soak Windows participation: the full extended profile re-ran green on the same candidate — `v1-20260828T173654Z-770faf21` (git ec919ed), 25/25 cases, all Windows-workstation lanes, baseline restored. The soak lane itself gained ADR-035 lane-level isolation (`ec919ed`) — its labeled containers would otherwise be derived by the standing daemons too.
 
 **EXTENDED FULL PROFILE GREEN — the ADR-032 stable-gate's profile requirement is CLOSED (2026-08-28, execution `v1-20260828T165112Z-f6a23b30`, git 359337a: 25/25 cases fully green — deploy, scenario, AND exact cleanup each — with `preflight-after-baseline` true). The ONLY remaining 1.0 gate is the clean soak incl. Windows participants.**

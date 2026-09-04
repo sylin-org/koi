@@ -48,13 +48,11 @@ OPERATOR-GATED release mechanics — do not start them unprompted:
 
 1. Version bump rc.2 → 1.0.0 across the workspace (Cargo.toml workspace deps),
    tags; RL-2: registries are immutable — publication is one-shot.
-2. SignPath review follow-up + `SIGNPATH_ENABLED` flip (ADR-034; application
-   submitted 2026-08-25, review pending).
-3. Landing page hosting on sylin.org; npm trusted publishers +
+2. Landing page hosting on sylin.org; npm trusted publishers +
    `NPM_PUBLISH_ENABLED` (P-B, operator console actions).
-4. P-D packaging channels fill at the stable release (homebrew/winget/AUR/
+3. P-D packaging channels fill at the stable release (homebrew/winget/AUR/
    scoop scaffolds under `packaging/`).
-5. The Windows koi service is currently UNINSTALLED on this workstation
+4. The Windows koi service is currently UNINSTALLED on this workstation
    (operator-approved for W1 in-profile) — `koi install` restores it.
 
 ## Runner / deploy discipline (unchanged, proven)
@@ -121,9 +119,9 @@ OPERATOR-GATED release mechanics — do not start them unprompted:
 ## Distribution arc (ADR-034, paused by operator — resume after 1.0 or on demand)
 
 - Landed: ADR-034 ratified; landing-page draft (`site/`); npm carrier pattern
-  implemented (packages/npm); SignPath repo prep — **application SUBMITTED
-  2026-08-25, review pending**; P-D channel scaffolds in `packaging/` (fill at
-  stable 1.0); koi-desktop autostart + --minimized landed.
-- Operator actions pending: npm trusted publishers + NPM_PUBLISH_ENABLED;
-  SignPath approval follow-up; landing page hosting on sylin.org.
+  implemented (packages/npm); unsigned Windows archives with checksums and GitHub provenance;
+  P-D channel scaffolds in `packaging/` (fill at stable 1.0); koi-desktop autostart +
+  --minimized landed.
+- Operator actions pending: npm trusted publishers + NPM_PUBLISH_ENABLED and landing page hosting
+  on sylin.org.
 - Deferred by operator: Tauri updater feed (keys + latest.json).

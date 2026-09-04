@@ -1,6 +1,6 @@
-# ADR-034: Multi-Channel Distribution & Free Signing
+# ADR-034: Multi-Channel Distribution
 
-**Status:** Accepted (operator-ratified 2026-08-25)
+**Status:** Accepted (operator-ratified 2026-08-25; Windows trust path amended 2026-09-04)
 **Date:** 2026-08-25
 **Builds on:** ADR-025 (artifact-first release channel; the manifest stays the publication chokepoint), ADR-032 P4 (installer groundwork), ADR-033 (koi-desktop workbench, tray MVP)
 **Research input:** [`docs/distribution-prior-art.md`](../distribution-prior-art.md) — per-channel prior art and signing-cost matrix, sources checked 2026-08-25
@@ -32,21 +32,12 @@ release checksums, then invoke the product's own installer (`koi install`) plus 
 registration. Terminal installs never set a quarantine attribute → no Gatekeeper/SmartScreen surface on
 this path. Precedent: deno.land/install.{sh,ps1}, bun.sh, rustup.rs.
 
-### D3 — Windows Authenticode via SignPath Foundation (free) — application submitted 2026-08-25
+### D3 — Windows archives remain unsigned
 
-The Foundation application was submitted 2026-08-25 (project "Koi", repository
-`sylin-org/koi`, maintainer type "Independent community project", build system "GitHub Actions");
-Foundation review is pending. Eligibility holds: OSI dual license
-(MIT/Apache-2.0), public repos, actively maintained, released artifacts, documented download page.
-Strings attached and accepted: publisher identity reads "SignPath Foundation"; README carries
-"Free code signing provided by SignPath.io, certificate by SignPath Foundation" (added to README and
-release notes when signing goes live); their origin-verification
-step joins the release pipeline. `SIGNPATH_ENABLED` remains false before approval, so releases stay
-possible with an explicit unsigned status. Once enabled, missing credentials or a failed signing request
-stops publication. SmartScreen reputation accrues under
-the Foundation's identity across consecutive signed releases; EV certificates are explicitly rejected
-(no SmartScreen bypass since 2024); Azure Artifact Signing ($9.99/mo, geo-limited) is the fallback only
-if SignPath declines.
+Koi publishes unsigned Windows archives. Each release includes SHA-256 checksums, and the release
+workflow creates keyless GitHub build-provenance attestations for the archives and manifest. The
+install script verifies the checksum before installation. Any future publisher-signing mechanism
+requires a new operator decision and a separately reviewed workflow change.
 
 ### D4 — macOS is terminal-first for 1.0 (free)
 
@@ -104,10 +95,9 @@ npm provenance via trusted publishing; cosign keyless on GHCR optional.
 ## Consequences
 
 - One NSIS installer (service + workbench + autostart registration) becomes the Windows double-click
-  story; the ps1 one-liner remains the no-GUI path. Both consume identical signed payloads.
-- The release workflow grows: carrier-package assembly + hash verification, `latest.json` generation,
-  SignPath step (secret-gated), attestations. All validated by the pre-tag dry run.
-- SignPath application is an external operator action; everything else in P-A/P-B is local work.
+  story; the ps1 one-liner remains the no-GUI path. Both consume identical release payloads.
+- The release workflow grows carrier-package assembly, hash verification, `latest.json` generation,
+  and attestations. All are validated by the pre-tag dry run.
 - Registry inventory grows from 17 crates + 1 npm package to ~1 entry + N carriers per release; the
   publish-inventory check must cover them.
 
@@ -115,7 +105,7 @@ npm provenance via trusted publishing; cosign keyless on GHCR optional.
 
 - Keep ADR-025's downloading dispatcher unchanged — rejected: install-time network fetch breaks behind
   proxies/custom registries and has a weaker supply-chain story than hash-pinned carriers with provenance.
-- Buy EV/Authenticode retail — rejected: EV no longer bypasses SmartScreen (2024); $150–400/yr buys
-  nothing SignPath doesn't give free.
+- Buy EV/Authenticode retail — rejected: EV no longer bypasses SmartScreen (2024), and the annual
+  cost is not justified by the current release requirements.
 - Electron-style auto-update without OS signing — rejected: updater signatures prove integrity, not
   publisher identity; first-install UX still needs the OS-level trust path (D3/D4 handle it).

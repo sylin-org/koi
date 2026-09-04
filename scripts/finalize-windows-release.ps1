@@ -7,9 +7,7 @@ param(
     [string] $OutputDirectory,
 
     [Parameter(Mandatory)]
-    [string] $VersionTag,
-
-    [switch] $RequireSignature
+    [string] $VersionTag
 )
 
 Set-StrictMode -Version Latest
@@ -19,7 +17,6 @@ function Get-AbsolutePath([string] $Path) {
     if ([IO.Path]::IsPathFullyQualified($Path)) { return [IO.Path]::GetFullPath($Path) }
     return [IO.Path]::GetFullPath((Join-Path (Get-Location) $Path))
 }
-
 $sourcePath = Get-AbsolutePath $SourceDirectory
 $outputPath = Get-AbsolutePath $OutputDirectory
 $version = $VersionTag.TrimStart('v')
@@ -56,17 +53,6 @@ foreach ($target in $targets) {
         }
     }
 
-    if ($RequireSignature) {
-        $signature = Get-AuthenticodeSignature -LiteralPath $executable.FullName
-        if ($signature.Status -ne [Management.Automation.SignatureStatus]::Valid) {
-            throw "$target Authenticode signature is '$($signature.Status)': $($signature.StatusMessage)"
-        }
-        if ($null -eq $signature.SignerCertificate -or
-            $signature.SignerCertificate.Subject -notmatch 'SignPath Foundation') {
-            throw "$target signer is not SignPath Foundation."
-        }
-    }
-
     $archivePath = Join-Path $outputPath "$archiveDirectoryName.zip"
     if (Test-Path -LiteralPath $archivePath) {
         throw "Final archive '$archivePath' already exists."
@@ -86,6 +72,5 @@ foreach ($target in $targets) {
         "$hash  $([IO.Path]::GetFileName($archivePath))`n",
         [Text.UTF8Encoding]::new($false))
 
-    $signatureState = if ($RequireSignature) { 'SIGNED' } else { 'UNSIGNED' }
-    Write-Host "WINDOWS-RELEASE|$target|$signatureState|$([IO.Path]::GetFileName($archivePath))"
+    Write-Host "WINDOWS-RELEASE|$target|UNSIGNED|$([IO.Path]::GetFileName($archivePath))"
 }

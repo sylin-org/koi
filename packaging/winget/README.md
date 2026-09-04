@@ -15,9 +15,8 @@ published policies):
 - Silent install must work unattended: NSIS `/S`, or use the portable zip with
   `InstallerType: portable` (then `ElevationRequirement` is not needed).
 - A service-installing exe needs `ElevationRequirement: elevationRequired`.
-- The Windows executables are Authenticode-signed by SignPath Foundation once
-  `SIGNPATH_ENABLED` is true — signed installers smooth SmartScreen reputation
-  checks during URL validation.
+- Windows release executables are unsigned. Validate package-manager acceptance against the real
+  release artifacts and do not claim an established SmartScreen reputation.
 
 Submission is an external action: PR to microsoft/winget-pkgs, automated
 validation, moderator review. Record the PR in SESSION-HANDOFF.md.
