@@ -481,7 +481,7 @@ impl CertmeshRepository {
                 let name = format!("backup-{index}");
                 let backup_path = transaction_dir.join(&name);
                 std::fs::copy(&change.path, &backup_path)?;
-                std::fs::File::open(&backup_path)?.sync_all()?;
+                sync_file(&backup_path)?;
                 Some(name)
             } else {
                 None
@@ -571,7 +571,7 @@ impl CertmeshRepository {
                 }
                 let restore = target.with_extension(format!("koi-rollback-{index}"));
                 std::fs::copy(backup, &restore)?;
-                std::fs::File::open(&restore)?.sync_all()?;
+                sync_file(&restore)?;
                 koi_common::persist::replace_file(&restore, &target)?;
                 if let Some(parent) = target.parent() {
                     sync_directory(parent)?;
@@ -697,6 +697,10 @@ fn write_synced(path: &Path, bytes: &[u8], private: bool) -> io::Result<()> {
     #[cfg(not(unix))]
     let _ = private;
     Ok(())
+}
+
+fn sync_file(path: &Path) -> io::Result<()> {
+    OpenOptions::new().write(true).open(path)?.sync_all()
 }
 
 fn remove_journal(transaction_dir: &Path, root: &Path) -> io::Result<()> {
