@@ -37,6 +37,9 @@ pub mod bridges;
 /// binary's `main.rs`). Shared so Windows-service and embedded daemons reach parity.
 pub mod certmesh;
 
+/// Cross-domain Device/Service/Endpoint catalog and its owned observer.
+pub mod catalog;
+
 /// Reactive desired-state bridge from Certmesh's authoritative CA anchor to
 /// the independently owned OS Trust domain.
 pub mod trust;

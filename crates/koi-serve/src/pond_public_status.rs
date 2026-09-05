@@ -89,6 +89,7 @@ mod tests {
 
         KoiStatus {
             revision: 42,
+            catalog: std::sync::Arc::new(koi_common::service::CatalogSnapshot::default()),
             capabilities: vec![
                 CapabilityReport {
                     status: CapabilityStatus {

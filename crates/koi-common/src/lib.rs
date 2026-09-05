@@ -21,6 +21,7 @@ pub mod pipeline;
 pub mod pond;
 pub mod posture;
 pub mod sealed;
+pub mod service;
 pub mod status;
 pub mod test;
 pub mod types;

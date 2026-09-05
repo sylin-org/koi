@@ -76,11 +76,11 @@ or event bus is introduced.
 
 | Concern | Authoritative owner and path | State/transport consumers | State |
 | --- | --- | --- | --- |
-| Shared service vocabulary | `koi-common::service`, `crates/koi-common/src/service.rs` | compose, serve, client, UI, SDK/MCP | proposed, R04 |
+| Shared service vocabulary | `koi-common::service`, `crates/koi-common/src/service.rs` | compose, serve, client, UI, SDK/MCP | implemented, R04 |
 | Raw DNS-SD record | `koi-common::types::ServiceRecord` | mDNS protocol and evidence | existing; not a catalog identity |
-| Installation identity | `koi-config::installation`, `crates/koi-config/src/installation.rs`; `state/installation.json` | self-announcement and catalog | proposed, R04/R11 |
+| Installation identity | `koi-config::installation`, `crates/koi-config/src/installation.rs`; `state/installation.json` | self-announcement and catalog | implemented by R04; retained by R11 |
 | Source-scoped mDNS evidence | `koi-common::integration::{MdnsDiscoverySnapshot, MdnsDiscoverySource, MdnsDiscoveryObservation}`, `crates/koi-common/src/integration.rs`; snapshot fields `sources` and `observations` | catalog, DNS, Health | existing; R03 complete, additive compatibility fields retained |
-| Authoritative service catalog | `koi-compose::catalog::ServiceCatalogRuntime`, `crates/koi-compose/src/catalog.rs` | `KoiStatus.catalog`, serve, embedded | proposed, R04 |
+| Authoritative service catalog | `koi-compose::catalog::ServiceCatalogRuntime`, `crates/koi-compose/src/catalog.rs` | `KoiStatus.catalog`, serve, embedded | implemented, R04 |
 | Durable personal preferences | `koi-preferences::PreferencesCore`, `crates/koi-preferences/src/lib.rs`; repository in `repository.rs`; `state/preferences.json` | catalog joins its status | proposed, R05 |
 | Local service candidates | `koi-runtime::local_candidates`, `crates/koi-runtime/src/local_candidates.rs`; `LocalServiceSource` port | catalog and sharing | proposed, R16 |
 | Linux candidate adapter | `crates/koi/src/platform/local_services/linux.rs` | injected into runtime | proposed, R16/linux |

@@ -42,6 +42,7 @@ pub async fn http_record(
     txt.insert("version".to_string(), env!("CARGO_PKG_VERSION").to_string());
     txt.insert("api".to_string(), "v1".to_string());
     txt.insert("dashboard".to_string(), dashboard_enabled.to_string());
+    stamp_catalog_identity(&mut txt, cores, "http");
 
     // Stamp this node's trust posture so peers discovering it read the mesh's trust map
     // directly (ADR-020 §8). Advisory hints; verify/mTLS adjudicates actual trust.
@@ -118,6 +119,7 @@ pub async fn mcp_record(
     txt.insert("path".to_string(), "/v1/mcp".to_string());
     txt.insert("version".to_string(), env!("CARGO_PKG_VERSION").to_string());
     txt.insert("name".to_string(), format!("Koi MCP ({hostname})"));
+    stamp_catalog_identity(&mut txt, cores, "mcp");
     let payload = koi_mdns::protocol::RegisterPayload {
         name: format!("Koi MCP ({hostname})"),
         service_type: "_mcp._tcp".to_string(),
@@ -180,4 +182,42 @@ pub async fn withdraw_mcp(cores: &Cores, mcp_id: Option<&str>) {
 /// The in-zone unicast DNS name for the MCP descriptor.
 fn mcp_dns_name(hostname: &str, zone: &str) -> String {
     format!("_mcp.{hostname}.{zone}")
+}
+
+fn stamp_catalog_identity(
+    txt: &mut std::collections::HashMap<String, String>,
+    cores: &Cores,
+    role: &str,
+) {
+    let (installation_id, service_id) = cores.system_status.catalog_identity(role);
+    txt.insert(
+        koi_common::service::INSTALLATION_ID_TXT_KEY.to_string(),
+        installation_id.to_string(),
+    );
+    txt.insert(
+        koi_common::service::SERVICE_ID_TXT_KEY.to_string(),
+        service_id.to_string(),
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn koi_owned_advertisements_get_stable_distinct_catalog_identity() {
+        let cores = Cores::default();
+        let mut http = std::collections::HashMap::new();
+        let mut mcp = std::collections::HashMap::new();
+        stamp_catalog_identity(&mut http, &cores, "http");
+        stamp_catalog_identity(&mut mcp, &cores, "mcp");
+        assert_eq!(
+            http[koi_common::service::INSTALLATION_ID_TXT_KEY],
+            mcp[koi_common::service::INSTALLATION_ID_TXT_KEY]
+        );
+        assert_ne!(
+            http[koi_common::service::SERVICE_ID_TXT_KEY],
+            mcp[koi_common::service::SERVICE_ID_TXT_KEY]
+        );
+    }
 }

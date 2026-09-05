@@ -445,6 +445,7 @@ mod tests {
         let status = KoiStatus {
             revision: 42,
             capabilities: Vec::new(),
+            catalog: std::sync::Arc::new(koi_common::service::CatalogSnapshot::default()),
             domains: DomainStatuses {
                 health: Some(
                     koi_health::HealthSnapshot {

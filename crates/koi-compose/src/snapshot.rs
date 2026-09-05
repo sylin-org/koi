@@ -134,6 +134,7 @@ pub fn build_dashboard_snapshot(status: &KoiStatus) -> serde_json::Value {
 
     serde_json::json!({
         "revision": status.revision,
+        "catalog": &status.catalog,
         "capabilities": capabilities,
         "health": health,
         "dns": dns,
@@ -152,6 +153,10 @@ mod tests {
         let status = KoiStatus {
             revision: 21,
             capabilities: Vec::new(),
+            catalog: std::sync::Arc::new(koi_common::service::CatalogSnapshot {
+                revision: 9,
+                ..koi_common::service::CatalogSnapshot::default()
+            }),
             domains: crate::status::DomainStatuses {
                 proxy: Some(std::sync::Arc::new(koi_proxy::ProxyRuntimeStatus {
                     revision: 8,
@@ -173,6 +178,7 @@ mod tests {
 
         let json = build_dashboard_snapshot(&status);
         assert_eq!(json["revision"], 21);
+        assert_eq!(json["catalog"]["revision"], 9);
         assert_eq!(json["proxy"]["listeners"][0]["cert_source"], "certmesh");
         assert_eq!(json["proxy"]["listeners"][0]["cert_revision"], 17);
     }

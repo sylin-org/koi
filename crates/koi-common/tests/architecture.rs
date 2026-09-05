@@ -1185,6 +1185,66 @@ fn embedded_status_boundary_consumes_the_composition_runtime_directly() {
 }
 
 #[test]
+fn service_catalog_has_one_composition_owner_and_pure_presentations() {
+    let crates_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("koi-common has a parent dir");
+    let compose_dir = crates_dir.join("koi-compose/src");
+    if !compose_dir.exists() {
+        eprintln!("workspace crates/ layout not found; skipping architecture guard");
+        return;
+    }
+
+    let mut owners = Vec::new();
+    for entry in fs::read_dir(crates_dir).expect("read crates/") {
+        let src = entry.expect("crate entry").path().join("src");
+        for file in rust_sources(&src) {
+            let source = fs::read_to_string(&file)
+                .unwrap_or_else(|error| panic!("read {}: {error}", file.display()));
+            if production_rust_source(&source).contains("pub struct ServiceCatalogRuntime") {
+                owners.push(file);
+            }
+        }
+    }
+    assert_eq!(
+        owners,
+        vec![compose_dir.join("catalog.rs")],
+        "the authoritative catalog must have exactly one composition owner"
+    );
+
+    let cores = production_rust_source(
+        &fs::read_to_string(compose_dir.join("cores.rs")).expect("read cores"),
+    );
+    let status = production_rust_source(
+        &fs::read_to_string(compose_dir.join("status.rs")).expect("read status"),
+    );
+    let dashboard = production_rust_source(
+        &fs::read_to_string(compose_dir.join("snapshot.rs")).expect("read snapshot"),
+    );
+    let inventory = production_rust_source(
+        &fs::read_to_string(crates_dir.join("koi-serve/src/inventory.rs")).expect("read inventory"),
+    );
+    let forwarder = production_rust_source(
+        &fs::read_to_string(crates_dir.join("koi-dashboard/src/forward.rs"))
+            .expect("read dashboard forwarder"),
+    );
+    assert!(
+        cores.contains("spawn_catalog_observer") && status.contains("CatalogSnapshot"),
+        "composition must own the watcher and carry its snapshot through KoiStatus"
+    );
+    assert!(
+        dashboard.contains("status.catalog") && inventory.contains("status.catalog"),
+        "dashboard and automation must project the captured catalog"
+    );
+    for forbidden in ["ServiceCatalogRuntime", "CatalogModel", "ObservationId"] {
+        assert!(
+            !forwarder.contains(forbidden),
+            "lossy dashboard events must not rebuild catalog truth through `{forbidden}`"
+        );
+    }
+}
+
+#[test]
 fn mcp_and_pond_status_presentations_consume_one_product_snapshot() {
     let crates_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()

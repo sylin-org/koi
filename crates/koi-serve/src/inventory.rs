@@ -21,6 +21,7 @@ fn project_status(status: &KoiStatus, uptime_secs: u64, http_bind: &str, daemon:
         "daemon": daemon,
         "http_bind": http_bind,
         "capabilities": capabilities,
+        "catalog": &status.catalog,
         "mdns": &status.domains.mdns,
         "dns": &status.domains.dns,
     })
@@ -59,4 +60,25 @@ pub(crate) fn project(
         "health": health,
         "dns": dns,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn automation_status_projects_the_same_catalog_revision() {
+        let status = KoiStatus {
+            revision: 11,
+            capabilities: Vec::new(),
+            catalog: std::sync::Arc::new(koi_common::service::CatalogSnapshot {
+                revision: 7,
+                ..koi_common::service::CatalogSnapshot::default()
+            }),
+            domains: koi_compose::status::DomainStatuses::default(),
+        };
+        let value = project(&status, None, 5, "127.0.0.1:5641", true).unwrap();
+        assert_eq!(value["status"]["revision"], 11);
+        assert_eq!(value["status"]["catalog"]["revision"], 7);
+    }
 }

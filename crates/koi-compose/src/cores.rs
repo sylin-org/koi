@@ -34,6 +34,7 @@ const BUILD_ROLLBACK_TIMEOUT: Duration = Duration::from_secs(20);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PersistencePaths {
     data_dir: PathBuf,
+    installation_identity: PathBuf,
     dns_state: PathBuf,
     health_state: PathBuf,
     health_log: PathBuf,
@@ -46,6 +47,7 @@ impl PersistencePaths {
         let data_dir = data_dir.into();
         let state_dir = data_dir.join("state");
         Self {
+            installation_identity: state_dir.join("installation.json"),
             dns_state: state_dir.join("dns.json"),
             health_state: state_dir.join("health.json"),
             health_log: data_dir.join("logs/health.log"),
@@ -57,6 +59,10 @@ impl PersistencePaths {
 
     pub fn data_dir(&self) -> &Path {
         &self.data_dir
+    }
+
+    pub fn installation_identity(&self) -> &Path {
+        &self.installation_identity
     }
 
     pub fn dns_state(&self) -> &Path {
@@ -487,9 +493,9 @@ impl Default for RunningCores {
     }
 }
 
-/// Error from [`crate::cores::build_cores`] when `fail_fast` is set (koi-embedded's library contract).
-/// With `fail_fast = false` (the daemon/service default) `build_cores` never returns this —
-/// a capability that fails to initialize is logged and dropped and the daemon keeps running.
+/// Error from [`crate::cores::build_cores`]. Optional domain failures are logged
+/// and dropped when `fail_fast` is false; cancellation and foundational
+/// installation-identity failure always fail the graph closed.
 #[derive(Debug, thiserror::Error)]
 pub enum BuildCoresError {
     #[error("core composition was cancelled")]
@@ -508,6 +514,8 @@ pub enum BuildCoresError {
     Trust(#[from] koi_trust::TrustError),
     #[error("runtime init/start failed: {0}")]
     Runtime(#[from] koi_runtime::RuntimeError),
+    #[error("installation identity initialization failed: {0}")]
+    Installation(#[from] koi_config::installation::InstallationError),
 }
 
 /// Capability flags + inputs needed to build the cores. A daemon-`Config` subset, kept here
@@ -664,6 +672,11 @@ pub async fn build_cores(
     let persistence = PersistencePaths::from_data_dir(
         koi_common::paths::koi_data_dir_with_override(spec.data_dir.as_deref()),
     );
+    let installation =
+        match koi_config::installation::load_or_create_at(persistence.installation_identity()) {
+            Ok(installation) => installation,
+            Err(error) => fail_build!(error.into()),
+        };
 
     let mut initial_statuses = Vec::new();
     // ── mDNS ──
@@ -1064,7 +1077,23 @@ pub async fn build_cores(
         abort_if_cancelled!();
     }
 
-    let system_status = Arc::new(crate::status::KoiStatusRuntime::default());
+    let catalog = Arc::new(crate::catalog::ServiceCatalogRuntime::new(
+        installation.installation_id,
+        host.hostname(),
+    ));
+    let catalog_sources = crate::catalog::CatalogSources {
+        mdns: mdns_snapshot,
+        certmesh: certmesh_core.as_ref().map(|core| {
+            crate::bridges::CertmeshBridge::new(core.clone()) as Arc<dyn CertmeshSnapshot>
+        }),
+        dns: dns_runtime.clone(),
+        health: health_runtime.clone(),
+        proxy: proxy_runtime.clone(),
+        runtime: runtime_core.clone(),
+    };
+    let system_status = Arc::new(crate::status::KoiStatusRuntime::with_catalog(Arc::clone(
+        &catalog,
+    )));
     system_status.install_initial_statuses(initial_statuses);
     let cores = Cores {
         mdns: mdns_core,
@@ -1078,6 +1107,12 @@ pub async fn build_cores(
         system_status,
         mdns_snapshot: mdns_bridge,
     };
+    crate::catalog::spawn_catalog_observer(
+        catalog,
+        catalog_sources,
+        startup.cancel.clone(),
+        &mut startup.tasks,
+    );
     crate::status::spawn_status_observer(cores.clone(), startup.cancel.clone(), &mut startup.tasks);
 
     // ── Certmesh background loops ──
@@ -1445,6 +1480,10 @@ mod tests {
 
         assert_eq!(paths.data_dir(), root);
         assert_eq!(paths.dns_state(), root.join("state/dns.json"));
+        assert_eq!(
+            paths.installation_identity(),
+            root.join("state/installation.json")
+        );
         assert_eq!(paths.health_state(), root.join("state/health.json"));
         assert_eq!(paths.health_log(), root.join("logs/health.log"));
         assert_eq!(paths.proxy_config(), root.join("config.toml"));

@@ -87,6 +87,7 @@ impl From<koi_compose::cores::BuildCoresError> for KoiError {
             B::Trust(e) => KoiError::Trust(e),
             B::Runtime(e) => KoiError::Runtime(e),
             B::CertmeshInit(s) => KoiError::Io(std::io::Error::other(s)),
+            B::Installation(e) => KoiError::Io(std::io::Error::other(e)),
         }
     }
 }

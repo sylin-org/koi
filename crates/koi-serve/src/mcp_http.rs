@@ -496,6 +496,7 @@ mod tests {
         let before = KoiStatus {
             revision: 0,
             capabilities: Vec::new(),
+            catalog: std::sync::Arc::new(koi_common::service::CatalogSnapshot::default()),
             domains: koi_compose::status::DomainStatuses::default(),
         };
         assert!(resource_changes(&before, &before).is_empty());
@@ -536,6 +537,7 @@ mod tests {
         let status = KoiStatus {
             revision: 41,
             capabilities: Vec::new(),
+            catalog: std::sync::Arc::new(koi_common::service::CatalogSnapshot::default()),
             domains: koi_compose::status::DomainStatuses {
                 mdns: Some(
                     koi_mdns::MdnsStatus {

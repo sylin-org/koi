@@ -198,6 +198,35 @@ evidence from PID transitions.
 | --------------------- | ------------------------ |
 | `generate_short_id()` | UUID v4 prefix (8 chars) |
 
+### `koi_common::service`
+
+| Type / constant | Purpose |
+| ---------------- | ------- |
+| `InstallationId`, `DeviceId`, `ServiceId`, `EndpointId` | Validated opaque lowercase catalog identities |
+| `ObservationId`, `OperationId`, `NetworkScopeId` | Validated evidence, operation and scope identities |
+| `CatalogSnapshot` | Schema-checked coherent Device/Service/Endpoint read model |
+| `Device`, `Service`, `Endpoint`, `Observation`, `CheckEvidence` | Shared catalog facts with provenance and freshness |
+| `AvailableAction`, `ServiceCondition`, `IdentityConfidence` | Typed presentation decisions without a `trusted` boolean |
+| `CATALOG_SCHEMA` | Current catalog/installation wire schema (`1`) |
+| `INSTALLATION_ID_TXT_KEY`, `SERVICE_ID_TXT_KEY` | Koi-owned DNS-SD identity metadata keys |
+
+### `koi_config::installation`
+
+| Type / function | Purpose |
+| --------------- | ------- |
+| `InstallationDocument` | Durable schema plus non-secret UUIDv7 installation identity |
+| `load_or_create_at()` | Atomically converge concurrent creators and reject corrupt/future schemas |
+
+### `koi_compose::catalog`
+
+| Type / constant | Purpose |
+| --------------- | ------- |
+| `ServiceCatalogRuntime` | Sole cross-domain catalog projector and coalescing latest-value feed |
+| `MAX_SERVICES` | Maximum projected services (`4,096`) |
+| `MAX_OBSERVATIONS_PER_SERVICE` | Maximum retained source observations per service (`16`) |
+| `MAX_CHECKS_PER_SERVICE` | Maximum current checks per service (`32`) |
+| `STALE_RETENTION` | Maximum source-loss evidence retention (`10 minutes`) |
+
 ---
 
 ## mDNS Domain Types (`koi-mdns`)

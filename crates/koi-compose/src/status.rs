@@ -48,6 +48,9 @@ pub struct KoiStatus {
     /// domain projection in this aggregate changes semantically.
     pub revision: u64,
     pub capabilities: Vec<CapabilityReport>,
+    /// Authoritative service catalog captured at this product revision.
+    #[serde(default)]
+    pub catalog: Arc<koi_common::service::CatalogSnapshot>,
     /// Exact domain snapshots captured alongside `capabilities`. Presentations
     /// use these values rather than rereading individual cores and creating a
     /// torn product view.
@@ -91,28 +94,48 @@ struct CompositionInputs {
 pub struct KoiStatusRuntime {
     feed: StatusFeed<KoiStatus>,
     inputs: Mutex<CompositionInputs>,
+    catalog: Arc<crate::catalog::ServiceCatalogRuntime>,
 }
 
 impl Default for KoiStatusRuntime {
     fn default() -> Self {
-        Self {
-            feed: StatusFeed::new(KoiStatus {
-                revision: 0,
-                capabilities: disabled_ladder(),
-                domains: DomainStatuses::default(),
-            }),
-            inputs: Mutex::new(CompositionInputs::default()),
-        }
+        Self::with_catalog(Arc::new(crate::catalog::ServiceCatalogRuntime::default()))
     }
 }
 
 impl KoiStatusRuntime {
+    pub(crate) fn with_catalog(catalog: Arc<crate::catalog::ServiceCatalogRuntime>) -> Self {
+        Self {
+            feed: StatusFeed::new(KoiStatus {
+                revision: 0,
+                capabilities: disabled_ladder(),
+                catalog: Arc::new(koi_common::service::CatalogSnapshot::default()),
+                domains: DomainStatuses::default(),
+            }),
+            inputs: Mutex::new(CompositionInputs::default()),
+            catalog,
+        }
+    }
+
     pub fn status(&self) -> Arc<KoiStatus> {
         self.feed.current()
     }
 
     pub fn watch_status(&self) -> tokio::sync::watch::Receiver<Arc<KoiStatus>> {
         self.feed.subscribe()
+    }
+
+    pub(crate) fn catalog_identity(
+        &self,
+        role: &str,
+    ) -> (
+        koi_common::service::InstallationId,
+        koi_common::service::ServiceId,
+    ) {
+        (
+            self.catalog.installation_id(),
+            self.catalog.owned_service_id(role),
+        )
     }
 
     /// Publish a composition-owned capability projection, then refresh the
@@ -158,13 +181,18 @@ impl KoiStatusRuntime {
     fn reconcile_with(&self, cores: &Cores, inputs: &CompositionInputs) -> Arc<KoiStatus> {
         let domains = capture_domains(cores, inputs.pond.clone());
         let capabilities = project_capabilities(&domains, &inputs.overrides);
+        let catalog = self.catalog.status();
         self.feed.update(|current| {
-            if current.capabilities == capabilities && current.domains == domains {
+            if current.capabilities == capabilities
+                && current.catalog == catalog
+                && current.domains == domains
+            {
                 None
             } else {
                 Some(KoiStatus {
                     revision: current.revision.saturating_add(1),
                     capabilities,
+                    catalog,
                     domains,
                 })
             }
@@ -601,6 +629,7 @@ pub(crate) fn spawn_status_observer(
     let mut proxy = cores.proxy.as_ref().map(|runtime| runtime.watch_status());
     let mut udp = cores.udp.as_ref().map(|runtime| runtime.watch_status());
     let mut runtime = cores.runtime.as_ref().map(|core| core.watch_status());
+    let mut catalog = Some(cores.system_status.catalog.watch_status());
     let aggregate = Arc::clone(&cores.system_status);
 
     // Subscribe before the initial reconciliation. A transition racing with
@@ -620,6 +649,7 @@ pub(crate) fn spawn_status_observer(
                 _ = watch_next(&mut proxy) => {},
                 _ = watch_next(&mut udp) => {},
                 _ = watch_next(&mut runtime) => {},
+                _ = watch_next(&mut catalog) => {},
             }
             aggregate.reconcile(&cores);
         }
@@ -857,6 +887,7 @@ mod tests {
         let expected = KoiStatus {
             revision: 11,
             capabilities: Vec::new(),
+            catalog: Arc::new(koi_common::service::CatalogSnapshot::default()),
             domains: DomainStatuses {
                 mdns_discovery: Some(Arc::new(koi_common::integration::MdnsDiscoverySnapshot {
                     revision: 9,
