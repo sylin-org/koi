@@ -111,17 +111,22 @@ and the brief corrected.
 dispatcher target. The owner delegated implementation to the Linux machines through
 `fleet/task.md` on 2026-09-04. [The Linux dispatch](delight-dispatch.md) routes each
 bounded R task through one [assignment/progress ledger](../docs/prompts/delight/LEDGER.md).
-CachyOS owns product/UX coordination, Debian the core service/trust work, Bluefin
-documentation/containers/integration, and Alpine installation/CI/portability.
-All four retain exclusive ownership of their own native evidence and mutations.
+CachyOS owns product/UX coordination, Windows now owns the upcoming R04/R05
+catalog/preferences work, Bluefin documentation/containers/integration, and Alpine
+installation/CI/portability. Debian finishes its lightweight R03 handoff; later heavy
+rows require reassignment under the capacity constraint. Each hat retains exclusive
+ownership of its own native evidence and mutations.
 
 **Campaign active; R01/G0 accepted:** Windows published the final process-restoration
 check at `b18302b`, completing the inherited handover. Epic 002 is closed with its
 OD-3 failure preserved and frozen candidate rejected. Debian and Alpine passed,
 Bluefin restored exactly, and Windows reset the unchanged service into the required
-resource envelope. Issue 004 remains open for Debian's R03 correction and later
-Windows physical proof. Through `fleet/task.md`, Bluefin may claim R02, Debian R03,
-and Alpine R28. CachyOS's next feature task R06 waits for R05. No old soak or cleanup
+resource envelope. Windows subsequently resolved issue 004 with native proof at
+`189ea32`; Debian must reconcile that evidence into R03. The 2026-09-05 coordinator
+handoff releases R28's blanket contract reservation: Bluefin completes R02's rows
+first, then Debian completes R03's rows. R28 stays pending on the final hosted
+cross-host result. Windows may claim R04/R05 when their prerequisites pass on its
+next `fleet/task.md` invocation. CachyOS R06 waits for R05. No old soak or cleanup
 assignment remains active; the ledger determines all next work.
 
 [Epic 002](epics/002-observable-domain-boundaries.md) retains the precise inherited
@@ -129,8 +134,8 @@ run procedure and evidence. [Epic 001](epics/001-productization-hardening.md) is
 historical. Their accepted artifacts/results remain intact; old PH selectors and
 retained brief dispatches do not assign new Epic 003 feature work.
 
-Windows source preparation belongs to named Linux owners; Windows physical proof
-remains reserved for its own later operator-dispatched hat. This does not reduce
+Windows source preparation follows the ledger, including Windows-owned R04/R05;
+Windows physical proof belongs to its operator-dispatched hat. This does not reduce
 the native release matrix. The ledger permits explicitly qualified Linux progress
 while Windows-only evidence is pending; full acceptance still requires it.
 

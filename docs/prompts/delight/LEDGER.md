@@ -13,15 +13,55 @@ All rows are queued at creation. No implementation or native validation is impli
 - Product implementation: eligible fixed-owner tasks may proceed; no new routine approval required.
 - Active candidate: none; Epic 002's frozen candidate is rejected.
 - Windows physical evidence: reserved for a later operator-dispatched Windows session.
-- Next eligible assignments: Bluefin R02, Debian R03 (including Windows issue 004), and Alpine R28. CachyOS R06 waits for R05.
+- Current dispatch: Bluefin finishes R02's contract rows now; Debian reconciles the
+  published R03 Windows evidence now and completes its contract rows after Bluefin.
+  CachyOS owns R28's final hosted reconciliation. Windows owns upcoming R04/R05;
+  CachyOS R06 waits for R05.
 - Capacity constraint (owner instruction, 2026-09-04): Debian is a very weak thin
-  client. Preserve its current R03 claim through checkpoint/handoff; before its
-  next iteration, CachyOS must split or reassign heavy queued work (starting with
-  R04/R05) to stronger executors. Do not assign full builds, test matrices or stress
+  client. Preserve its current R03 claim through its small documentation handoff;
+  R04/R05 are now reassigned to Windows. Before any later heavy Debian row is
+  claimed, CachyOS must split or reassign it. Do not assign full builds, test matrices or stress
   workloads to Debian. See [fleet capacity guidance](../../../fleet/coordination.md#debian-capacity-constraint--owner-instruction-2026-09-04).
 - Capacity preference: Windows is the most powerful fleet machine; prefer it for
   compatible heavy assignments when dispatched. Linux-specific evidence remains
   with appropriate Linux executors. Current claims are preserved until handoff.
+
+## Coordinator handoff — 2026-09-05
+
+The owner directed the paused fleet to proceed. R28's source changes are published
+and its remaining work is hosted-result reconciliation. CachyOS releases R28's
+blanket CONTRACT.md/LEDGER.md write reservation now; acceptance remains pending
+until the complete required CI run passes. Shared-file ownership is separate from
+task acceptance. This supersedes earlier report instructions coupling both waits.
+
+The bounded write order is:
+
+1. Bluefin owns the next CONTRACT.md edit: only R02's D01/D02/D03/D06/D09/D10
+   dispositions. Its implementation and source checks are already published at
+   `299ae89`. Finish these rows, verify docs, publish the report/status and explicitly
+   release the file to Debian. No repeated build is required for this prose change.
+2. Debian may immediately reconcile Windows journal entry 26 at `189ea32` in its
+   own R03 report and close the addressed evidence request. After Bluefin releases
+   CONTRACT.md, update R03's mDNS observation/source and D04 rows, verify docs and
+   promote R03 only when its actual acceptance cases are covered. Windows native
+   proof is now published; do not repeat the physical run or full build on Debian.
+3. Windows owns R04, then R05, when their prerequisites are accepted. These were
+   unclaimed queued rows, so no implementation transfer is needed. On its next
+   operator invocation, `fleet/task.md` routes Windows to these source tasks after
+   any ready native-proof request. Claim exact files before implementation. Request
+   Linux checks from CachyOS/Bluefin or hosted CI using the published source; required
+   Linux evidence remains a readiness condition. Debian does not build these tasks.
+4. CachyOS owns the R28 cross-host fixture correction and final reconciliation.
+   Run `33945321135`, source `1f65a0f4bebd7b485914660c70f11f7123b4aa66`, passed all
+   twelve preceding jobs but failed cross-host because its Alpine containers lack
+   the machine ID required by the enabled vault backend. The bounded correction
+   claim and verification plan are in the R28 report. Replacement complete CI is
+   required before acceptance. R28 does not block R02/R03 or the R04/R05 chain.
+
+Do not launch another host's agent from this dispatch. Each participating operator
+session resumes through the same `fleet/task.md` entry. Any CI correction that
+needs an occupied shared file must make a new bounded claim rather than restoring
+the blanket reservation. Keep all required gates and source identities intact.
 
 ## Status and selection rules
 
@@ -96,10 +136,10 @@ identity and complete hosted/native evidence, even if infrastructure tasks passe
 | ID | Dependencies | Status | Readiness | Owner | Evidence/report | Next action |
 |---|---|---|---|---|---|---|
 | [R01](R01-contract-and-handover.md) | - | accepted | ready | cachyos-linux | [reports/R01.md](reports/R01.md) | Complete; contract and inherited-run restoration verified |
-| [R02](R02-critical-documentation-truth.md) | R01 | in_progress | pending | bluefin-linux | [reports/R02.md](reports/R02.md) | Implementation and gates complete; publish checkpoint, then reacquire six CONTRACT rows after R28 releases the shared file |
-| [R03](R03-discovery-record-correctness.md) | R01 | implemented | pending | debian-linux | [reports/R03.md](reports/R03.md) | Source and repository gates published at `d48d4df`; reacquire the R03 CONTRACT rows after R28's explicit handoff, then only reserved Windows physical proof may remain |
-| [R04](R04-service-catalog.md) | R01, R03 | queued | pending | debian-linux | - | Wait for dependencies |
-| [R05](R05-catalog-api-and-preferences.md) | R04 | queued | pending | debian-linux | - | Wait for dependencies |
+| [R02](R02-critical-documentation-truth.md) | R01 | in_progress | pending | bluefin-linux | [reports/R02.md](reports/R02.md) | Proceed now: finish six CONTRACT dispositions, publish acceptance evidence, then release the file to Debian |
+| [R03](R03-discovery-record-correctness.md) | R01 | implemented | pending | debian-linux | [reports/R03.md](reports/R03.md) | Reconcile Windows proof at `189ea32` now; finish mDNS/D04 contract rows after Bluefin's handoff; documentation-only tail |
+| [R04](R04-service-catalog.md) | R01, R03 | queued | pending | windows | - | Reassigned from Debian for capacity; claim on Windows when R03 is accepted; arrange Linux checks with stronger hosts/CI |
+| [R05](R05-catalog-api-and-preferences.md) | R04 | queued | pending | windows | - | Reassigned from Debian for capacity; claim after R04 acceptance; arrange required Linux evidence |
 | [R06](R06-rust-ui-and-family-foundation.md) | R01, R05 | queued | pending | cachyos-linux | - | See required subrows below |
 | [R07](R07-home-launchpad.md) | R05, R06 | queued | pending | cachyos-linux | - | Wait for dependencies |
 | [R08](R08-devices-and-comparison.md) | R07 | queued | pending | cachyos-linux | - | Wait for dependencies |
@@ -122,7 +162,7 @@ identity and complete hosted/native evidence, even if infrastructure tasks passe
 | [R25](R25-developer-and-agent-experience.md) | R05, R17, R19, R21 | queued | pending | alpine-linux | - | See required subrows below |
 | [R26](R26-documentation-and-contributor-path.md) | R02, R09, R14, R15, R18, R22, R23, R24, R25 | queued | pending | bluefin-linux | - | Wait for dependencies |
 | [R27](R27-accessibility-and-interaction-proof.md) | R09, R10, R18, R22 | queued | pending | cachyos-linux | - | Wait for dependencies |
-| [R28](R28-ci-and-release-contracts.md) | R01 | implemented | pending | alpine-linux | [reports/R28.md](reports/R28.md) | Published through `1f65a0f`; exact-SHA CI run 33945321135 has 10 green jobs with Ubuntu/Windows still running; aggregate acceptance pending |
+| [R28](R28-ci-and-release-contracts.md) | R01 | in_progress | pending | alpine-linux | [reports/R28.md](reports/R28.md) | CachyOS owns the bounded cross-host machine-ID fixture correction and hosted reconciliation; blanket shared-file reservation released |
 | [R29](R29-candidate-fleet-acceptance.md) | R02, R03, R09, R10, R12, R13, R14, R15, R18, R23, R24, R25, R26, R27, R28 | queued | pending | cachyos-linux | - | See required subrows below |
 | [R30](R30-usability-and-release-review.md) | R29 | queued | pending | cachyos-linux | - | Wait for dependencies |
 

@@ -33,7 +33,16 @@ proved its final SCM process restoration. Epic 002 is closed as an unsuccessful
 candidate campaign: OD-3's resource failure and rejected artifact remain recorded.
 ADR-044 and CONTRACT v1 are accepted; R01/G0 is ready. Bluefin R02, Debian R03,
 and Alpine R28 may now claim work through the existing dispatcher. Windows issue
-004 transfers to R03; corrected Windows native proof remains required later.
+004 transferred to R03; corrected Windows native proof subsequently landed at
+`189ea32` and awaits Debian's source/status reconciliation.
+
+On 2026-09-05 the owner directed the paused fleet to proceed under the recorded
+capacity constraints. The ledger's coordinator handoff releases R28's blanket
+contract reservation independently of its still-pending hosted acceptance and
+orders Bluefin's R02, then Debian's R03, documentation completion. The unclaimed
+heavy R04/R05 source tasks are reassigned to Windows for its next operator
+invocation. Required Linux checks remain on suitable Linux hosts or CI; Debian
+does not inherit those builds. No acceptance gate is waived by this handoff.
 
 R01 records the actual Epic 002 disposition: finished with verified restoration,
 or explicitly superseded by the operator with verified restoration. No new

@@ -1,10 +1,15 @@
-# Epic 003 Linux dispatch
+# Epic 003 fleet dispatch
 
 This is the Epic 003 branch of [task.md](task.md), not a second operator prompt.
 The owner delegated execution to the Linux machines through `fleet/task.md` on
 2026-09-04. That authorizes this dispatch, the bounded R work orders, and the
 existing own-host test/deployment and direct-to-dev publication protocol. It does
 not authorize a public release, remote agent launch, or another host's mutation.
+
+The 2026-09-05 coordinator handoff in LEDGER.md releases R28's shared-file
+reservation and assigns the unclaimed R04/R05 source tasks to Windows under the
+owner's capacity guidance and instruction to proceed. Each host still requires
+its own operator invocation; this file never launches a remote session.
 
 ## Read and route
 
@@ -17,7 +22,8 @@ and status authority. Read only the selected prompt's source set after routing.
 | Hat | Primary responsibility |
 |---|---|
 | cachyos-linux | R01 coordination and product contract, Rust UI/Sylin integration, usability, candidate reconciliation |
-| debian-linux | Discovery/catalog, service naming/sharing, diagnostics, CertMesh and secure-service composition |
+| debian-linux | Finish R03 documentation/evidence handoff; lightweight headless/native work; later heavy rows require reassignment |
+| windows | R04 catalog and R05 preferences/API implementation when dependencies pass; Windows native evidence |
 | bluefin-linux | Documentation, container journey, SDKs/integration, Windows source preparation, immutable native recipe |
 | alpine-linux | Install contracts, Linux firewall integration, CI, CLI/MCP/embedding and musl/native portability |
 
@@ -33,17 +39,21 @@ recorded. This capacity preference does not itself activate the Windows session.
 
 Each executable ledger row has exactly one owner. A parent with subrows names its
 integration owner; it is not an additional implementation assignment. Native rows
-belong to their actual hats. The Windows hat is reserved for later native proof:
-Linux agents prepare its source and record missing evidence, never impersonate it.
-An explicit subsequent operator dispatch on Windows activates that hat's pending
-proof; no Linux session may launch it. macOS remains unverified.
+belong to their actual hats. Windows now owns R04/R05 source work as well as its
+native proof. Other Windows-related source assignments remain with their recorded
+owners. An operator invocation on Windows selects its eligible work; no Linux
+session may launch it. macOS remains unverified.
 
 On that later Windows invocation, first execute the pending Windows cases linked
 from implemented/linux-ready task reports, using their published source and
 procedures. This supplies missing evidence; it does not waive a dependency or
-transfer the Linux source assignment. Write only the Windows journal/evidence and
-link a reconciliation request for each source owner. Owners then promote the
-affected rows when their full cases pass. R29/windows waits for those predecessor
+transfer another source owner's assignment. For those peer cases, write the Windows
+journal/evidence and link a reconciliation request for each source owner. Then select
+the earliest eligible Windows-owned source task, R04 followed by R05, with the same
+claim/publication rules as other hats. These tasks require accepted prerequisites;
+the Linux readiness exception does not grant Windows permission to consume pending
+dependencies. Request required Linux validation from CachyOS/Bluefin or hosted CI.
+Owners promote rows when their full cases pass. R29/windows waits for predecessor
 acceptances before its final candidate pass.
 
 ## First: finish the inherited native run
