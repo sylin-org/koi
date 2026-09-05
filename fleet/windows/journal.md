@@ -4,8 +4,8 @@
 
 task: `R04` | source `b82281147b91c29f78fb513f25a9042a4c1e108a` |
 run `v1-20260905-r04-b822811-win-01` | verdict: **PASS — one coherent
-catalog, durable self identity and exact installed-service projection**; complete
-hosted CI run `33949639819` still supplies the Linux readiness verdict
+catalog, durable self identity and exact installed-service projection**; hosted
+CI run `33949639819` supplies the green Ubuntu workspace verdict
 
 koi state now: exactly one AutoStart LocalSystem SCM service, PID `12292`,
 descriptor `"C:\Program Files\Koi\koi.exe" --daemon`, exact release/installed
@@ -55,9 +55,8 @@ evidence and findings:
    enabled inbound Any-profile Koi rules (mDNS, HTTP, Pond and DNS TCP/UDP), with
    zero matching test rules. This residue was removed, not preserved.
 
-next: reconcile hosted run `33949639819`. A completely green Ubuntu/Windows/macOS
-matrix promotes R04 to accepted/ready and releases R05; a failing job is corrected
-at its source before any R05 claim.
+next: R04 is accepted/ready. R05 is now dependency-ready for Windows; claim its
+exact catalog API and preference paths before implementation.
 
 ## 2026-09-05 (26) — R03 Windows DNSAPI acceptance and issue 004 resource closure
 
