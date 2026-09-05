@@ -16,7 +16,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
-use crate::types::ServiceRecord;
+use crate::types::{ServiceRecord, ServiceType};
 
 // ── Summary types ──────────────────────────────────────────────────
 
@@ -133,6 +133,38 @@ impl std::fmt::Debug for TlsIdentitySnapshot {
 /// retain the surrounding [`Arc`] or subscribe to the coalescing watch feed;
 /// they never reconstruct a second cache from best-effort browse events.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct MdnsDiscoverySource {
+    /// Canonical browse query whose availability this source describes.
+    pub query: String,
+    /// Concrete adapter that produced the observation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// mDNS control-plane browse generation that admitted the observation.
+    pub generation: u64,
+    /// Whether that generation still has a live provider observation route.
+    pub available: bool,
+}
+
+/// Source-scoped evidence retained beside the compatibility discovery vectors.
+///
+/// `query` is the canonical browse owner. It matters for subtype browsing, where
+/// the query is the subtype but the resulting record belongs to the base service
+/// type named by the PTR target.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct MdnsDiscoveryObservation {
+    pub source: MdnsDiscoverySource,
+    #[serde(flatten)]
+    pub value: MdnsDiscoveryValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MdnsDiscoveryValue {
+    ServiceType { service_type: String },
+    ServiceRecord { record: ServiceRecord },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct MdnsDiscoverySnapshot {
     /// Process-local monotonic revision assigned by the mDNS domain.
     pub revision: u64,
@@ -140,9 +172,52 @@ pub struct MdnsDiscoverySnapshot {
     pub service_types: Vec<String>,
     /// Resolved service records currently visible, sorted by the mDNS domain.
     pub records: Vec<ServiceRecord>,
+    /// Availability and provenance for every currently demanded browse query,
+    /// including an empty or not-yet-routed query with no observations.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<MdnsDiscoverySource>,
+    /// Provider- and query-scoped evidence used by catalog and diagnostics.
+    /// Empty when decoding a snapshot produced before this additive field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub observations: Vec<MdnsDiscoveryObservation>,
 }
 
 impl MdnsDiscoverySnapshot {
+    /// Records observed through one canonical browse query.
+    ///
+    /// New snapshots retain the actual query so subtype resynchronization does
+    /// not confuse the selector with the base type carried by its PTR target.
+    /// The compatibility fallback is used only for snapshots that predate
+    /// source-scoped observations.
+    pub fn records_for_query(&self, canonical_query: &str) -> Vec<&ServiceRecord> {
+        if !self.observations.is_empty() {
+            return self
+                .observations
+                .iter()
+                .filter_map(|observation| {
+                    if observation.source.query != canonical_query {
+                        return None;
+                    }
+                    match &observation.value {
+                        MdnsDiscoveryValue::ServiceRecord { record } => Some(record),
+                        MdnsDiscoveryValue::ServiceType { .. } => None,
+                    }
+                })
+                .collect();
+        }
+        let base_type = ServiceType::parse_browse(canonical_query)
+            .map(|service_type| service_type.base_type())
+            .unwrap_or_else(|_| canonical_query.to_string());
+        self.records
+            .iter()
+            .filter(|record| {
+                ServiceType::parse_browse(&record.service_type)
+                    .map(|service_type| service_type.base_type() == base_type)
+                    .unwrap_or_else(|_| record.service_type == base_type)
+            })
+            .collect()
+    }
+
     /// Project the resolved records into the hostname map used by DNS and
     /// machine-health integrations.
     pub fn host_ips(&self) -> HashMap<String, IpAddr> {
@@ -251,5 +326,70 @@ mod tests {
         let decoded =
             serde_json::from_slice::<ProxyEntriesSnapshot>(&encoded).expect("decode Proxy entries");
         assert_eq!(decoded, snapshot);
+    }
+
+    fn mdns_record(name: &str) -> ServiceRecord {
+        ServiceRecord {
+            name: name.to_string(),
+            service_type: "_http._tcp.local.".to_string(),
+            host: Some("host.local.".to_string()),
+            ip: Some("192.0.2.10".to_string()),
+            port: Some(80),
+            txt: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn source_scoped_snapshot_round_trips_and_selects_subtype_observations() {
+        let record = mdns_record("Printer UI");
+        let snapshot = MdnsDiscoverySnapshot {
+            revision: 4,
+            service_types: vec!["_http._tcp.local.".to_string()],
+            records: vec![record.clone()],
+            sources: vec![MdnsDiscoverySource {
+                query: "_printer._sub._http._tcp.local.".to_string(),
+                provider: Some("windows-dns-sd".to_string()),
+                generation: 12,
+                available: true,
+            }],
+            observations: vec![MdnsDiscoveryObservation {
+                source: MdnsDiscoverySource {
+                    query: "_printer._sub._http._tcp.local.".to_string(),
+                    provider: Some("windows-dns-sd".to_string()),
+                    generation: 12,
+                    available: true,
+                },
+                value: MdnsDiscoveryValue::ServiceRecord {
+                    record: record.clone(),
+                },
+            }],
+        };
+
+        let encoded = serde_json::to_value(&snapshot).unwrap();
+        let decoded: MdnsDiscoverySnapshot = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded, snapshot);
+        assert_eq!(
+            decoded.records_for_query("_printer._sub._http._tcp.local."),
+            vec![&record]
+        );
+        assert!(decoded
+            .records_for_query("_scanner._sub._http._tcp.local.")
+            .is_empty());
+    }
+
+    #[test]
+    fn legacy_snapshot_falls_back_to_the_subtype_base_type() {
+        let record = mdns_record("Legacy Printer UI");
+        let snapshot = MdnsDiscoverySnapshot {
+            revision: 2,
+            service_types: vec!["_http._tcp.local.".to_string()],
+            records: vec![record.clone()],
+            sources: Vec::new(),
+            observations: Vec::new(),
+        };
+        assert_eq!(
+            snapshot.records_for_query("_printer._sub._http._tcp.local."),
+            vec![&record]
+        );
     }
 }

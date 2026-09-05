@@ -4,12 +4,12 @@ domain: mdns
 title: "mDNS discovery — find & announce services"
 audience: [operators, developers, ai-agents]
 status: current
-last_updated: 2026-08-31
+last_updated: 2026-09-05
 koi_version: v1.0.0-rc.2
 validation:
   date_last_tested: 2026-08-31
   status: verified
-  scope: "unit (provider policy, transitions, boundaries, browse hub/cache/activity); physical Avahi adapter; one-installed-process Linux provider transitions; prior two-box LAN interoperability; coordinated transition lane prepared at `scripts/integration/mdns-provider-transition.sh`"
+  scope: "unit (provider policy, DNS-SD owner/target classification, subtype/escape normalization, transitions, boundaries, browse hub/cache/activity); Windows GNU cross-target compile; physical Avahi adapter; one-installed-process Linux provider transitions; prior two-box LAN interoperability; coordinated transition lane prepared at `scripts/integration/mdns-provider-transition.sh`; corrected Windows adapter still awaits physical issue-004 proof"
 ---
 
 # mDNS discovery — find & announce services
@@ -38,6 +38,14 @@ koi mdns subscribe _http._tcp
 
 `discover`/`subscribe` are SSE-style streams that auto-close after an idle window (default 5s, override with `--timeout <secs>`, `0` = run forever). A service type may be given bare (`http`) or fully qualified (`_http._tcp`).
 
+DNS-SD subtype selectors are also accepted, for example
+`_printer._sub._http._tcp.local.`. The selector remains the observation query, but
+matching PTR targets resolve in the base `_http._tcp.local.` instance namespace.
+The authoritative snapshot exposes each demanded query's provider, generation and
+availability separately from its accepted facts. This lets diagnostics distinguish
+an empty browse from an unavailable source without inventing or discarding service
+types. Unknown valid service types remain visible.
+
 ## Commands & flags you'll use
 
 | Command / flag | What it does |
@@ -59,6 +67,12 @@ How long a record lives depends on **who registered it**: an explicit standalone
 Unit: the `koi-mdns` suite guards capability planning, hysteretic transitions,
 break-before-make ordering, publication replay, generation fencing, provider
 isolation, one-browse-per-type fan-out, warm-cache replay, and receive activity.
+Its mixed DNS-SD fixture proves that a meta-query accepts only PTRs whose owner is
+the requested enumeration name, while ignoring legal additional instance/host
+records; companion cases cover subtype targets, escaped labels, case/trailing-dot
+normalization, duplicates, goodbye and source loss. A Windows GNU cross-target
+check compiles that adapter path, but it is repository evidence rather than the
+pending installed Windows issue-004 resource acceptance.
 Physical adapter testing against CachyOS's Avahi proves entry-group publication,
 browse, IPv4/IPv6 resolve, interface identity, TXT, explicit IP, and removal. The
 same installed Koi process also completed live

@@ -392,15 +392,11 @@ fn reconcile_browse_snapshot(
         return Ok(());
     }
 
-    let canonical = ServiceType::parse(service_type)
+    let canonical = ServiceType::parse_browse(service_type)
         .map_err(|error| SourceError(error.to_string()))?
         .as_str()
         .to_string();
-    for record in snapshot
-        .records
-        .iter()
-        .filter(|record| record.service_type == canonical)
-    {
+    for record in snapshot.records_for_query(&canonical) {
         seen.insert(record.name.clone(), record.clone());
     }
     Ok(())

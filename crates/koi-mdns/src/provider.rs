@@ -11,6 +11,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
 use koi_common::mdns_protocol::{MdnsCapabilities, ProviderSessionState};
+use koi_common::types::{ServiceType, META_QUERY};
 
 use crate::adapter::ProviderDescriptor;
 use crate::error::{MdnsError, ProviderFailure, ProviderOperation};
@@ -54,6 +55,136 @@ pub enum ProviderEvent {
     Removed { name: String, service_type: String },
 }
 
+/// DNS-SD meaning of one PTR whose owner matches an active browse query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) enum DnsSdPtr {
+    ServiceType {
+        service_type: String,
+    },
+    Instance {
+        full_name: String,
+        name: String,
+        service_type: String,
+    },
+}
+
+/// Admit one DNS-SD PTR at an adapter boundary.
+///
+/// A multicast callback can include records additional to the requested answer.
+/// The record owner, not the callback batch, determines whether the PTR belongs
+/// to this browse. The target then determines the service type: subtype queries
+/// still point at the base service instance namespace.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) fn classify_dnssd_ptr(
+    requested_query: &str,
+    record_owner: &str,
+    target: &str,
+) -> Option<DnsSdPtr> {
+    if !dns_name_eq(requested_query, record_owner) {
+        return None;
+    }
+    if dns_name_eq(requested_query, META_QUERY) {
+        return ServiceType::parse(target)
+            .ok()
+            .map(|service_type| DnsSdPtr::ServiceType {
+                service_type: service_type.as_str().to_string(),
+            });
+    }
+    ServiceType::parse_browse(requested_query).ok()?;
+    let (name, service_type) = parse_service_instance_name(target)?;
+    Some(DnsSdPtr::Instance {
+        full_name: target.to_string(),
+        name,
+        service_type,
+    })
+}
+
+pub(crate) fn dns_name_eq(left: &str, right: &str) -> bool {
+    left.trim_end_matches('.')
+        .eq_ignore_ascii_case(right.trim_end_matches('.'))
+}
+
+/// Parse the presentation form of `<Instance>.<Service>.<Domain>` while
+/// preserving escaped dots as part of the single instance label.
+pub(crate) fn parse_service_instance_name(value: &str) -> Option<(String, String)> {
+    let labels = split_presentation_labels(value.trim_end_matches('.'))?;
+    if labels.len() != 4 || !labels[3].eq_ignore_ascii_case("local") {
+        return None;
+    }
+    let service_name = format!("{}.{}.local.", labels[1], labels[2]);
+    let service_type = ServiceType::parse(&service_name).ok()?.as_str().to_string();
+    let name = unescape_dns_label(labels[0])?;
+    (!name.is_empty()).then_some((name, service_type))
+}
+
+fn split_presentation_labels(value: &str) -> Option<Vec<&str>> {
+    if value.is_empty() {
+        return None;
+    }
+    let bytes = value.as_bytes();
+    let mut labels = Vec::new();
+    let mut start = 0usize;
+    let mut cursor = 0usize;
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'\\' => {
+                cursor += 1;
+                if cursor >= bytes.len() {
+                    return None;
+                }
+                cursor += 1;
+            }
+            b'.' => {
+                if cursor == start {
+                    return None;
+                }
+                labels.push(&value[start..cursor]);
+                cursor += 1;
+                start = cursor;
+            }
+            _ => cursor += 1,
+        }
+    }
+    if start == bytes.len() {
+        return None;
+    }
+    labels.push(&value[start..]);
+    Some(labels)
+}
+
+fn unescape_dns_label(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut cursor = 0usize;
+    while cursor < bytes.len() {
+        if bytes[cursor] != b'\\' {
+            decoded.push(bytes[cursor]);
+            cursor += 1;
+            continue;
+        }
+        cursor += 1;
+        if cursor >= bytes.len() {
+            return None;
+        }
+        if cursor + 2 < bytes.len() && bytes[cursor..cursor + 3].iter().all(u8::is_ascii_digit) {
+            let value = std::str::from_utf8(&bytes[cursor..cursor + 3])
+                .ok()?
+                .parse::<u16>()
+                .ok()?;
+            if value > u8::MAX.into() {
+                return None;
+            }
+            decoded.push(value as u8);
+            cursor += 3;
+        } else {
+            decoded.push(bytes[cursor]);
+            cursor += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
 /// Ownership token for one established native publication.
 #[async_trait::async_trait]
 pub trait PublicationLease: Send {
@@ -73,6 +204,13 @@ pub trait BrowseLease: Send {
 pub struct ProviderBrowse {
     events: mpsc::Receiver<ProviderEvent>,
     lease: Option<Box<dyn BrowseLease>>,
+    source: ProviderBrowseSource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderBrowseSource {
+    pub provider: String,
+    pub generation: u64,
 }
 
 /// Exclusive owner for one asynchronous provider worker.
@@ -147,10 +285,27 @@ impl Drop for ProviderTask {
 
 impl ProviderBrowse {
     pub fn new(events: mpsc::Receiver<ProviderEvent>, lease: Box<dyn BrowseLease>) -> Self {
+        let provider = lease.provider_name().to_string();
         Self {
             events,
             lease: Some(lease),
+            source: ProviderBrowseSource {
+                provider,
+                generation: 0,
+            },
         }
+    }
+
+    pub(crate) fn with_source(mut self, provider: impl Into<String>, generation: u64) -> Self {
+        self.source = ProviderBrowseSource {
+            provider: provider.into(),
+            generation,
+        };
+        self
+    }
+
+    pub(crate) fn source(&self) -> &ProviderBrowseSource {
+        &self.source
     }
 
     pub async fn recv(&mut self) -> Option<ProviderEvent> {
@@ -214,9 +369,90 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use koi_common::types::META_QUERY;
     use tokio::sync::Notify;
 
-    use super::ProviderTask;
+    use super::{classify_dnssd_ptr, dns_name_eq, DnsSdPtr, ProviderTask};
+
+    #[derive(Clone, Copy)]
+    enum FixtureRecord<'a> {
+        Ptr { owner: &'a str, target: &'a str },
+        Srv,
+        Txt,
+        A,
+        Aaaa,
+    }
+
+    fn ptrs_for_query(query: &str, records: &[FixtureRecord<'_>]) -> Vec<DnsSdPtr> {
+        records
+            .iter()
+            .filter_map(|record| match record {
+                FixtureRecord::Ptr { owner, target } => classify_dnssd_ptr(query, owner, target),
+                FixtureRecord::Srv
+                | FixtureRecord::Txt
+                | FixtureRecord::A
+                | FixtureRecord::Aaaa => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn mixed_meta_response_admits_only_service_enumeration_ptrs() {
+        let records = [
+            FixtureRecord::Ptr {
+                owner: "_SERVICES._DNS-SD._UDP.LOCAL",
+                target: "_UnKnOwN._TcP.LoCaL.",
+            },
+            FixtureRecord::Ptr {
+                owner: "_unknown._tcp.local.",
+                target: r"Living\032Room\.Display._unknown._tcp.local.",
+            },
+            FixtureRecord::Ptr {
+                owner: "speaker.local.",
+                target: "elsewhere.local.",
+            },
+            FixtureRecord::Srv,
+            FixtureRecord::Txt,
+            FixtureRecord::A,
+            FixtureRecord::Aaaa,
+        ];
+
+        assert_eq!(
+            ptrs_for_query(META_QUERY, &records),
+            vec![DnsSdPtr::ServiceType {
+                service_type: "_unknown._tcp.local.".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn ordinary_and_subtype_browses_use_owner_and_target_semantics() {
+        let unrelated = classify_dnssd_ptr(
+            "_http._tcp.local.",
+            "_ipp._tcp.local.",
+            "Printer._ipp._tcp.local.",
+        );
+        assert!(unrelated.is_none());
+
+        assert_eq!(
+            classify_dnssd_ptr(
+                "_Printer._SUB._HTTP._TCP.LOCAL",
+                "_printer._sub._http._tcp.local.",
+                r"A\. printer\\desk._HTTP._TCP.local.",
+            ),
+            Some(DnsSdPtr::Instance {
+                full_name: r"A\. printer\\desk._HTTP._TCP.local.".to_string(),
+                name: "A. printer\\desk".to_string(),
+                service_type: "_http._tcp.local.".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn dns_name_comparison_is_ascii_case_and_trailing_dot_insensitive() {
+        assert!(dns_name_eq("_HTTP._TCP.LOCAL", "_http._tcp.local."));
+        assert!(!dns_name_eq("_http._tcp.local.", "host.local."));
+    }
 
     #[tokio::test]
     async fn provider_task_join_is_cancellation_safe() {

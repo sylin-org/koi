@@ -869,6 +869,8 @@ mod tests {
                         port: Some(9464),
                         txt: std::collections::HashMap::new(),
                     }],
+                    sources: Vec::new(),
+                    observations: Vec::new(),
                 })),
                 certmesh_roster: Some(Arc::new(koi_common::integration::CertmeshRosterSnapshot {
                     revision: 4,

@@ -476,6 +476,8 @@ mod tests {
                         revision: 9,
                         service_types: vec!["_http._tcp".to_string()],
                         records: vec![discovered],
+                        sources: Vec::new(),
+                        observations: Vec::new(),
                     }
                     .into(),
                 ),

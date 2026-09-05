@@ -42,8 +42,9 @@ use crate::adapter::{
 };
 use crate::error::{MdnsError, ProviderFailure, ProviderOperation};
 use crate::provider::{
-    provider_error, Announcement, BrowseLease, ProviderAddress, ProviderBrowse, ProviderEvent,
-    ProviderService, ProviderSession, ProviderTask, PublicationLease,
+    classify_dnssd_ptr, parse_service_instance_name, provider_error, Announcement, BrowseLease,
+    DnsSdPtr, ProviderAddress, ProviderBrowse, ProviderEvent, ProviderService, ProviderSession,
+    ProviderTask, PublicationLease,
 };
 use crate::Result;
 
@@ -547,13 +548,13 @@ impl DnsApiBrowseRegistry {
 /// pointer reclaimed only after the query is stopped.
 struct BrowseContext {
     events: mpsc::Sender<BrowseObservation>,
+    requested_query: String,
 }
 
 enum BrowseObservation {
     /// One PTR response, including the TTL-zero goodbye signal.
     Ptr {
-        target: String,
-        query_name: String,
+        ptr: DnsSdPtr,
         removed: bool,
     },
     Terminal(i32),
@@ -644,7 +645,7 @@ impl Drop for DnsApiBrowseOwner {
 
 async fn open_dnsapi_browse(
     service_type: &str,
-    is_meta: bool,
+    _is_meta: bool,
 ) -> Result<(ProviderBrowse, Arc<DnsApiBrowseOwner>)> {
     let (event_tx, event_rx) = tokio_mpsc::channel(BROWSE_CHANNEL_CAPACITY);
     let (observation_tx, observation_rx) = mpsc::channel::<BrowseObservation>();
@@ -656,6 +657,7 @@ async fn open_dnsapi_browse(
     let context_ptr = unsafe {
         into_raw_context(Box::new(BrowseContext {
             events: observation_tx,
+            requested_query: query_name.clone(),
         }))
     };
 
@@ -687,18 +689,18 @@ async fn open_dnsapi_browse(
             let entry = unsafe { &*current };
             if entry.wType == DNS_TYPE_PTR {
                 let target = unsafe { read_wide(entry.Data.PTR.pNameHost) };
-                let query = unsafe { read_wide(entry.pName) };
-                if !target.is_empty()
-                    && context
+                let owner = unsafe { read_wide(entry.pName) };
+                if let Some(ptr) = classify_dnssd_ptr(&context.requested_query, &owner, &target) {
+                    if context
                         .events
                         .send(BrowseObservation::Ptr {
-                            target,
-                            query_name: query,
+                            ptr,
                             removed: ptr_is_removed(entry.dwTtl),
                         })
                         .is_err()
-                {
-                    break;
+                    {
+                        break;
+                    }
                 }
             }
             current = entry.pNext;
@@ -735,63 +737,76 @@ async fn open_dnsapi_browse(
     // two-step) before surfacing. The cancel token breaks the wait so shutdown
     // cannot hang on a silent channel.
     let reap_cancel = cancel.clone();
-    let reaper = ProviderTask::new(tokio::task::spawn_blocking(move || {
-        loop {
-            if reap_cancel.is_cancelled() {
+    let reaper = ProviderTask::new(tokio::task::spawn_blocking(move || loop {
+        if reap_cancel.is_cancelled() {
+            break;
+        }
+        match observation_rx.recv_timeout(EVENT_BRIDGE_POLL) {
+            Ok(BrowseObservation::Terminal(status)) => {
+                tracing::debug!(
+                    provider = DESCRIPTOR.name,
+                    status,
+                    "dnsapi multicast browse stream ended"
+                );
                 break;
             }
-            match observation_rx.recv_timeout(EVENT_BRIDGE_POLL) {
-                Ok(BrowseObservation::Terminal(status)) => {
-                    tracing::debug!(
-                        provider = DESCRIPTOR.name,
-                        status,
-                        "dnsapi multicast browse stream ended"
-                    );
-                    break;
-                }
-                Ok(BrowseObservation::Ptr {
-                    target,
-                    query_name,
-                    removed,
-                }) => {
-                    if removed {
-                        let event = removed_ptr_event(is_meta, &target, &query_name);
-                        if event_tx.blocking_send(event).is_err() {
-                            break;
+            Ok(BrowseObservation::Ptr { ptr, removed }) => match ptr {
+                DnsSdPtr::ServiceType { service_type } => {
+                    let event = if removed {
+                        ProviderEvent::Removed {
+                            name: service_type,
+                            service_type: String::new(),
                         }
-                        continue;
-                    }
-                    if is_meta {
-                        // Meta observations enumerate service types; the type
-                        // name itself is the record Koi surfaces.
-                        let _ = event_tx.blocking_send(ProviderEvent::Found(ProviderService {
-                            name: trim_local(&target),
+                    } else {
+                        ProviderEvent::Found(ProviderService {
+                            name: service_type,
                             service_type: String::new(),
                             host: None,
                             addresses: Vec::new(),
                             port: None,
                             txt: HashMap::new(),
-                        }));
-                    } else {
-                        let service_type = trim_local(&query_name);
-                        match blocking_resolve(&target, &service_type) {
-                            Ok(service) => {
-                                let _ = event_tx.blocking_send(ProviderEvent::Resolved(service));
+                        })
+                    };
+                    if event_tx.blocking_send(event).is_err() {
+                        break;
+                    }
+                }
+                DnsSdPtr::Instance {
+                    full_name,
+                    name,
+                    service_type,
+                } => {
+                    if removed {
+                        if event_tx
+                            .blocking_send(ProviderEvent::Removed { name, service_type })
+                            .is_err()
+                        {
+                            break;
+                        }
+                        continue;
+                    }
+                    match blocking_resolve(&full_name, &service_type) {
+                        Ok(service) => {
+                            if event_tx
+                                .blocking_send(ProviderEvent::Resolved(service))
+                                .is_err()
+                            {
+                                break;
                             }
-                            Err(error) => {
-                                tracing::debug!(
-                                    provider = DESCRIPTOR.name,
-                                    instance = %target,
-                                    %error,
-                                    "browse resolve failed; instance stays unresolved"
-                                );
-                            }
+                        }
+                        Err(error) => {
+                            tracing::debug!(
+                                provider = DESCRIPTOR.name,
+                                instance = %full_name,
+                                %error,
+                                "browse resolve failed; instance stays unresolved"
+                            );
                         }
                     }
                 }
-                Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            }
+            },
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }));
 
@@ -812,27 +827,6 @@ async fn open_dnsapi_browse(
         }),
     );
     Ok((browse, owner))
-}
-
-fn trim_local(value: &str) -> String {
-    value
-        .trim_end_matches('.')
-        .trim_end_matches(".local")
-        .to_string()
-}
-
-fn removed_ptr_event(is_meta: bool, target: &str, query_name: &str) -> ProviderEvent {
-    if is_meta {
-        ProviderEvent::Removed {
-            name: trim_local(target),
-            service_type: String::new(),
-        }
-    } else {
-        ProviderEvent::Removed {
-            name: instance_label(target),
-            service_type: trim_local(query_name),
-        }
-    }
 }
 
 fn ptr_is_removed(ttl: u32) -> bool {
@@ -969,7 +963,7 @@ fn blocking_resolve(instance_full_name: &str, service_type: &str) -> Result<Prov
 /// `instance` must be a live dnsapi allocation whose callback already ran.
 unsafe fn instance_to_service(
     instance: *const DNS_SERVICE_INSTANCE,
-    service_type: &str,
+    _service_type: &str,
 ) -> Result<ProviderService> {
     let full_name = read_wide((*instance).pszInstanceName);
     if full_name.is_empty() {
@@ -980,6 +974,14 @@ unsafe fn instance_to_service(
             "resolved instance carries no name",
         ));
     }
+    let (name, service_type) = parse_service_instance_name(&full_name).ok_or_else(|| {
+        provider_error(
+            DESCRIPTOR.name,
+            ProviderOperation::Resolve,
+            ProviderFailure::Protocol,
+            format!("resolved instance has an invalid DNS-SD name: {full_name}"),
+        )
+    })?;
     let mut addresses = Vec::new();
     if !(*instance).ip4Address.is_null() {
         let octets = (*(*instance).ip4Address).to_le_bytes();
@@ -1011,21 +1013,13 @@ unsafe fn instance_to_service(
         }
     }
     Ok(ProviderService {
-        name: instance_label(&full_name),
-        service_type: service_type.to_string(),
+        name,
+        service_type,
         host: non_empty(read_wide((*instance).pszHostName)),
         addresses,
         port: ((*instance).wPort != 0).then_some((*instance).wPort),
         txt,
     })
-}
-
-/// The instance label is everything before the first service-type label.
-fn instance_label(full_name: &str) -> String {
-    match full_name.find("._") {
-        Some(index) => full_name[..index].to_string(),
-        None => full_name.to_string(),
-    }
 }
 
 fn non_empty(value: String) -> Option<String> {
@@ -1086,49 +1080,24 @@ mod tests {
     }
 
     #[test]
-    fn instance_labels_split_at_the_service_type() {
+    fn instance_labels_preserve_escaped_dns_label_boundaries() {
         assert_eq!(
-            instance_label("Koi MCP (test-01)._mcp._tcp.local"),
-            "Koi MCP (test-01)"
+            parse_service_instance_name(r"Koi\032MCP\.test._mcp._tcp.local."),
+            Some(("Koi MCP.test".to_string(), "_mcp._tcp.local.".to_string()))
         );
-        assert_eq!(instance_label("plainname"), "plainname");
-    }
-
-    #[test]
-    fn local_suffixes_trim_for_record_projection() {
-        assert_eq!(trim_local("_mcp._tcp.local."), "_mcp._tcp");
-        assert_eq!(
-            trim_local("_services._dns-sd._udp.local"),
-            "_services._dns-sd._udp"
-        );
+        assert_eq!(parse_service_instance_name("plainname"), None);
     }
 
     #[test]
     fn ttl_zero_ptrs_normalize_to_removed_events() {
         assert!(ptr_is_removed(0));
         assert!(!ptr_is_removed(1));
-        assert_eq!(
-            removed_ptr_event(
-                false,
-                "Peer One._koi-ph4._tcp.local.",
-                "_koi-ph4._tcp.local."
-            ),
-            ProviderEvent::Removed {
-                name: "Peer One".to_string(),
-                service_type: "_koi-ph4._tcp".to_string(),
-            }
-        );
-        assert_eq!(
-            removed_ptr_event(
-                true,
-                "_koi-ph4._tcp.local.",
-                "_services._dns-sd._udp.local."
-            ),
-            ProviderEvent::Removed {
-                name: "_koi-ph4._tcp".to_string(),
-                service_type: String::new(),
-            }
-        );
+        assert!(classify_dnssd_ptr(
+            "_koi-ph4._tcp.local.",
+            "_other._tcp.local.",
+            "Peer One._other._tcp.local."
+        )
+        .is_none());
     }
 
     #[test]

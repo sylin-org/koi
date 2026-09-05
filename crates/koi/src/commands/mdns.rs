@@ -76,7 +76,7 @@ pub async fn discover(
     let canonical_type = if is_meta {
         META_QUERY.to_string()
     } else {
-        ServiceType::parse(browse_type)?.as_str().to_string()
+        ServiceType::parse_browse(browse_type)?.as_str().to_string()
     };
 
     match mode {
@@ -296,7 +296,9 @@ pub async fn subscribe(
     timeout: Option<u64>,
     mode: Mode,
 ) -> anyhow::Result<()> {
-    let canonical_type = ServiceType::parse(service_type)?.as_str().to_string();
+    let canonical_type = ServiceType::parse_browse(service_type)?
+        .as_str()
+        .to_string();
     match mode {
         Mode::Standalone => {
             let core = standalone_core().await?;
@@ -423,12 +425,10 @@ fn output_discovery_resync(
         return Ok(());
     }
 
-    let canonical = ServiceType::parse(service_type)?.as_str().to_string();
-    for record in snapshot
-        .records
-        .iter()
-        .filter(|record| record.service_type == canonical)
-    {
+    let canonical = ServiceType::parse_browse(service_type)?
+        .as_str()
+        .to_string();
+    for record in snapshot.records_for_query(&canonical) {
         let event = MdnsEvent::Resolved(record.clone());
         if subscription {
             format_subscribe_standalone(&event);

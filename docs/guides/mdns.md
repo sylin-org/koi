@@ -76,6 +76,13 @@ Koi is liberal about type formats. These are all equivalent:
 
 If you omit the protocol, TCP is assumed. Service names must be 1–15 characters; protocol must be `tcp` or `udp`.
 
+You can also browse a DNS-SD subtype with its full selector, such as
+`_printer._sub._http._tcp.local.`. A subtype is a browse filter, not a registrable
+service type: matching instances still carry the base `_http._tcp.local.` type.
+Koi compares DNS names without ASCII case or trailing-dot sensitivity and preserves
+escaped dots, backslashes and decimal escapes in instance labels. Unknown but valid
+service types are shown rather than filtered through a familiar-type allowlist.
+
 ### How long to listen
 
 Discovery is inherently a streaming operation - services arrive over time as they respond to the multicast query. By default Koi listens for **5 seconds**, which is usually enough for a populated network. Override with `--timeout`:
@@ -92,6 +99,14 @@ commits each observation to its revisioned discovery snapshot before emitting th
 a bounded stream lags, the wire stream emits a `resync` frame containing that authoritative
 snapshot; replace your local view with it. You can also read the latest value directly at
 `GET /v1/mdns/snapshot`.
+
+That snapshot separates facts from their source state. `sources` lists every
+currently demanded canonical query with its provider, route generation and
+availability, even when it has no answers. `observations` attaches the same source
+identity to each accepted service type or record. If `available` is false, retained
+facts are stale evidence during provider recovery; it is not proof that the LAN is
+empty. Matching goodbye/TTL-zero records remove facts, and retiring the complete
+browse generation removes its source-scoped projection.
 
 ---
 

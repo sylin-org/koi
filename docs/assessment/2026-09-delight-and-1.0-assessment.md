@@ -113,6 +113,17 @@ The following deserve explicit ownership before release. “High” means a user
 | D09 — Medium | `koi.certmesh=true` is accepted and represented in [runtime metadata](../../crates/koi-runtime/src/instance.rs), but does not issue or inject a workload certificate. The README's “announce, name, certify, and watch” language suggests a more complete automatic path. | A plausible configuration carries an unmet expectation at the heart of the product promise. | Show an explicit unsupported/request-only result, correct the headline, and design service identity as a complete later feature. |
 | D10 — Medium | [Certmesh prose](../guides/certmesh.md) still says there is no distributed revocation list, while the trust protocol/source implement signed trust-bundle propagation for Koi-aware participants. It also calls a 24-hour lifetime effectively instantaneous revocation. | Operators cannot tell which clients stop accepting a revoked identity and when. | Explain Koi-aware enforcement and ordinary third-party TLS separately. A day is not instantaneous. State remaining validity and observation delay explicitly. |
 
+**D04 disposition (2026-09-05):** the assessment's suspected boundary is now
+confirmed. Windows `DnsStartMulticastQuery` returns a linked result containing the
+requested PTR plus legal additional PTR/SRV/TXT/A/AAAA records. The adapter walked
+that complete list but did not compare each PTR owner with the requested browse
+owner, so additional service-instance and host PTRs were projected as meta-query
+service types. R03 corrects this at the provider boundary with ASCII
+case-insensitive, trailing-dot-insensitive owner comparison; keeps unknown valid
+base service types; and handles subtype queries and escaped instance labels without
+UI filtering. The synthetic regression proves classification and convergence, not
+the still-pending installed Windows resource gate.
+
 Several additional inconsistencies share the same cause. The [ACME guide](../guides/acme.md) opens with a no-plugin/no-special-configuration promise, then correctly explains that stock Caddy needs a DNS provider module. The HTTPS tutorial says browsers, curl, and language runtimes all pick up OS root installation; actual client behavior varies. Current Node documents explicit system-CA configuration, and Android distinguishes system roots from application acceptance of user-added roots. Those distinctions should be part of a client-specific verification flow. [Node CA options](https://nodejs.org/api/cli.html#--use-system-ca), [Android trust configuration](https://developer.android.com/privacy-and-security/security-config).
 
 The recurring failure is **drift between a completed implementation, an older explanation, and the user's actual outcome**. Documentation cleanup alone will recur unless critical examples, policy values, and public contract claims receive executable checks.

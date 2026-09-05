@@ -911,6 +911,8 @@ mod tests {
             revision,
             service_types: vec!["_ipp._tcp.local.".to_string()],
             records,
+            sources: Vec::new(),
+            observations: Vec::new(),
         }
     }
 
@@ -1078,6 +1080,8 @@ mod tests {
             revision: 6,
             service_types: Vec::new(),
             records: Vec::new(),
+            sources: Vec::new(),
+            observations: Vec::new(),
         };
         assert!(cache.reconcile(&removed).await);
         assert!(!cache.reconcile(&discovery(5, vec![record("stale")])).await);

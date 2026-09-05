@@ -1,7 +1,7 @@
 # Issue 004 — Windows DNS-SD meta-browse admits unrelated PTRs and expands native resources
 
 **Opened:** 2026-09-04 during Epic 002 OD-3 soak
-**Status:** open — diagnosed; product correction waits for the Epic 003 R01 handover gate
+**Status:** open — R03 source correction implemented; installed Windows acceptance pending
 **Machine:** stone-leaded-sparkle
 **Run:** `v1-20260904-od3-b3eb47e-win`
 **Frozen source:** `b3eb47e08817045f9371703d780ada9aab00995d`
@@ -67,6 +67,24 @@ passed. Raising thresholds would conceal the boundary failure.
 4. A product correction invalidates the frozen OD-3 candidate. Do not relabel this
    failed report or reuse its run ID; the fleet owner must publish a replacement
    freeze and schedule any required physical rerun after the R01 handover decision.
+
+## R03 implementation status — 2026-09-05
+
+The source boundary now retains the requested query in the DNSAPI callback context
+and admits a PTR only when its owner matches that query using ASCII
+case-insensitive, trailing-dot-insensitive DNS comparison. Matching meta answers are
+parsed as base service types; matching ordinary and subtype targets are parsed as
+instances in their base service namespace, including escaped presentation labels.
+The discovery snapshot now carries query/provider/generation/availability for empty
+sources and source-scoped facts, while its compatibility vectors converge duplicate
+case variants and matching goodbyes.
+
+Portable regression coverage uses a synthetic mixed PTR/SRV/TXT/A/AAAA result and
+negative unrelated-owner cases. The complete workspace also compiles for
+`x86_64-pc-windows-gnu`, covering the changed adapter and Windows-only tests. These
+are source checks only. This issue remains open until an operator-dispatched Windows
+session proves matching instance resolution and withdrawal on the installed Koi,
+then repeats the bounded lived-in meta-browser handle/thread gate under a new run ID.
 
 ## Evidence
 

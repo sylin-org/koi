@@ -69,25 +69,52 @@ impl ServiceType {
     /// Accepts liberal input: "http", "_http", "_http._tcp", "_http._tcp.local."
     /// Always produces the canonical form: "_name._tcp.local."
     pub fn parse(s: &str) -> Result<Self, ServiceTypeError> {
-        let s = s.trim().trim_end_matches('.');
-        let s = s.trim_end_matches(".local");
+        Self::parse_inner(s, false)
+    }
 
-        let parts: Vec<&str> = s.split('.').collect();
+    /// Parse and normalize a type used for service browsing.
+    ///
+    /// In addition to the liberal base forms accepted by [`Self::parse`], this
+    /// accepts the DNS-SD selective-enumeration form
+    /// `<subtype>._sub._service._tcp.local.`. Registration intentionally keeps
+    /// using [`Self::parse`]: a subtype is a browse selector, not a distinct
+    /// service-instance namespace.
+    pub fn parse_browse(s: &str) -> Result<Self, ServiceTypeError> {
+        Self::parse_inner(s, true)
+    }
 
-        let (name, proto) = match parts.len() {
-            1 => {
-                let name = parts[0].strip_prefix('_').unwrap_or(parts[0]);
-                (name, "tcp")
+    fn parse_inner(input: &str, allow_subtype: bool) -> Result<Self, ServiceTypeError> {
+        let trimmed = input.trim().trim_end_matches('.');
+        let mut parts = split_presentation_labels(trimmed)
+            .ok_or_else(|| ServiceTypeError::Invalid(input.to_string()))?;
+        if parts
+            .last()
+            .is_some_and(|label| label.eq_ignore_ascii_case("local"))
+        {
+            parts.pop();
+        }
+
+        let (subtype, name, proto) = match parts.as_slice() {
+            [single] => {
+                let name = single.strip_prefix('_').unwrap_or(single);
+                (None, name, "tcp")
             }
-            2 => {
-                let name = parts[0].strip_prefix('_').unwrap_or(parts[0]);
-                let proto = parts[1].strip_prefix('_').unwrap_or(parts[1]);
-                (name, proto)
+            [name, proto] => {
+                let name = name.strip_prefix('_').unwrap_or(name);
+                let proto = proto.strip_prefix('_').unwrap_or(proto);
+                (None, name, proto)
             }
-            _ => return Err(ServiceTypeError::Invalid(s.to_string())),
+            [subtype, marker, name, proto]
+                if allow_subtype && marker.eq_ignore_ascii_case("_sub") =>
+            {
+                let name = name.strip_prefix('_').unwrap_or(name);
+                let proto = proto.strip_prefix('_').unwrap_or(proto);
+                (Some(*subtype), name, proto)
+            }
+            _ => return Err(ServiceTypeError::Invalid(input.to_string())),
         };
 
-        if proto != "tcp" && proto != "udp" {
+        if !proto.eq_ignore_ascii_case("tcp") && !proto.eq_ignore_ascii_case("udp") {
             return Err(ServiceTypeError::Invalid(format!(
                 "protocol must be tcp or udp, got '{proto}'"
             )));
@@ -98,9 +125,25 @@ impl ServiceType {
                 "service name must be 1-15 characters, got '{name}'"
             )));
         }
+        if subtype.is_some_and(|value| value.is_empty() || value.len() > 63) {
+            return Err(ServiceTypeError::Invalid(
+                "DNS-SD subtype must contain 1-63 bytes".to_string(),
+            ));
+        }
 
-        let canonical = format!("_{name}._{proto}.local.");
-        tracing::debug!("Normalized service type: \"{s}\" → \"{canonical}\"");
+        let mut name = name.to_string();
+        name.make_ascii_lowercase();
+        let mut proto = proto.to_string();
+        proto.make_ascii_lowercase();
+        let canonical = match subtype {
+            Some(subtype) => {
+                let mut subtype = subtype.to_string();
+                subtype.make_ascii_lowercase();
+                format!("{subtype}._sub._{name}._{proto}.local.")
+            }
+            None => format!("_{name}._{proto}.local."),
+        };
+        tracing::debug!("Normalized service type: \"{input}\" → \"{canonical}\"");
         Ok(ServiceType(canonical))
     }
 
@@ -112,6 +155,57 @@ impl ServiceType {
     pub fn short(&self) -> &str {
         self.0.trim_end_matches(".local.").trim_end_matches('.')
     }
+
+    /// Canonical base type for either a base browse or a subtype browse.
+    pub fn base_type(&self) -> String {
+        let labels = self.0.split('.').collect::<Vec<_>>();
+        if labels.get(1).is_some_and(|label| *label == "_sub") {
+            format!("{}.{}.local.", labels[2], labels[3])
+        } else {
+            self.0.clone()
+        }
+    }
+
+    pub fn is_subtype(&self) -> bool {
+        self.0.split('.').nth(1) == Some("_sub")
+    }
+}
+
+/// Split a DNS presentation name without treating an escaped dot as a label
+/// separator. The returned slices retain their presentation escaping.
+fn split_presentation_labels(value: &str) -> Option<Vec<&str>> {
+    if value.is_empty() {
+        return Some(Vec::new());
+    }
+    let bytes = value.as_bytes();
+    let mut labels = Vec::new();
+    let mut start = 0usize;
+    let mut cursor = 0usize;
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'\\' => {
+                cursor += 1;
+                if cursor >= bytes.len() {
+                    return None;
+                }
+                cursor += 1;
+            }
+            b'.' => {
+                if cursor == start {
+                    return None;
+                }
+                labels.push(&value[start..cursor]);
+                cursor += 1;
+                start = cursor;
+            }
+            _ => cursor += 1,
+        }
+    }
+    if start == bytes.len() {
+        return None;
+    }
+    labels.push(&value[start..]);
+    Some(labels)
 }
 
 impl std::fmt::Display for ServiceType {
@@ -166,6 +260,29 @@ mod tests {
     fn service_type_parse_udp() {
         let st = ServiceType::parse("_dns._udp").unwrap();
         assert_eq!(st.as_str(), "_dns._udp.local.");
+    }
+
+    #[test]
+    fn service_type_browse_accepts_subtypes_without_making_them_registrable() {
+        let subtype = ServiceType::parse_browse("_Printer._SUB._HTTP._TCP.LOCAL.").unwrap();
+        assert_eq!(subtype.as_str(), "_printer._sub._http._tcp.local.");
+        assert_eq!(subtype.base_type(), "_http._tcp.local.");
+        assert!(subtype.is_subtype());
+        assert!(ServiceType::parse(subtype.as_str()).is_err());
+    }
+
+    #[test]
+    fn service_type_parse_is_ascii_case_and_trailing_dot_insensitive() {
+        assert_eq!(
+            ServiceType::parse("_CuStOm._UdP.LoCaL.").unwrap().as_str(),
+            "_custom._udp.local."
+        );
+    }
+
+    #[test]
+    fn subtype_label_may_use_dns_presentation_escaping() {
+        let subtype = ServiceType::parse_browse(r"Printer\.Color._sub._ipp._tcp.local.").unwrap();
+        assert_eq!(subtype.as_str(), r"printer\.color._sub._ipp._tcp.local.");
     }
 
     #[test]

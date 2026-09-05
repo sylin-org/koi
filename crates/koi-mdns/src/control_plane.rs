@@ -249,6 +249,7 @@ impl MdnsControlPlane {
         let (mut raw, generation) = reply_rx
             .await
             .map_err(|_| stopped_error(ProviderOperation::Browse))??;
+        let provider = raw.source().provider.clone();
 
         let mut generation_rx = self.browse_generation_tx.subscribe();
         let (event_tx, event_rx) = mpsc::channel(BROWSE_CAPACITY);
@@ -279,7 +280,8 @@ impl MdnsControlPlane {
                 cancel_tx: Some(cancel_tx),
                 done_rx: Some(done_rx),
             }),
-        ))
+        )
+        .with_source(provider, generation))
     }
 
     pub(crate) async fn resolve(&self, name: &str, service_type: &str) -> Result<ProviderService> {
@@ -2118,6 +2120,8 @@ mod tests {
             .browse("_koi-test._tcp.local.", false)
             .await
             .expect("browse");
+        assert_eq!(browse.source().provider, "fallback");
+        assert!(browse.source().generation > 0);
         let generation = control_plane.status().generation;
         resolver.set_available(true);
         wait_for_route(

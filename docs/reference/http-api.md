@@ -230,10 +230,26 @@ domain. This is the recovery/read-model endpoint for late or lagged stream consu
   "revision": 12,
   "service_types": ["_http._tcp.local."],
   "records": [
-    {"name":"My NAS","service_type":"_http._tcp.local.","host":"nas.local.","ip":"192.168.1.50","port":8080,"txt":{}}
+    {"name":"My NAS","type":"_http._tcp.local.","host":"nas.local.","ip":"192.168.1.50","port":8080,"txt":{}}
+  ],
+  "sources": [
+    {"query":"_http._tcp.local.","provider":"avahi","generation":7,"available":true}
+  ],
+  "observations": [
+    {"source":{"query":"_http._tcp.local.","provider":"avahi","generation":7,"available":true},"kind":"service_record","record":{"name":"My NAS","type":"_http._tcp.local.","host":"nas.local.","ip":"192.168.1.50","port":8080,"txt":{}}}
   ]
 }
 ```
+
+`service_types` and `records` are compatibility projections. `sources` reports every
+currently demanded canonical browse query, including an empty or temporarily
+unavailable query. `observations` retains the query, concrete provider, route
+generation and availability beside each accepted fact. For subtype browsing the
+source query remains `_printer._sub._http._tcp.local.`, while the returned record's
+`type` is the base instance namespace `_http._tcp.local.`. Unknown but valid DNS-SD
+service types are preserved. A provider becoming unavailable does not mean an empty
+network; retained observations are marked unavailable until the generation is
+retired or matching removals arrive.
 
 ### GET /v1/mdns/discover
 
@@ -241,7 +257,7 @@ Browse for services via mDNS. Returns an SSE stream.
 
 | Parameter  | Type  | Default                         | Description                                    |
 | ---------- | ----- | ------------------------------- | ---------------------------------------------- |
-| `type`     | query | `_services._dns-sd._udp.local.` | Service type to browse                         |
+| `type`     | query | `_services._dns-sd._udp.local.` | Base service type or DNS-SD subtype to browse  |
 | `idle_for` | query | `5`                             | Seconds of quiet before closing (0 = infinite) |
 
 Each SSE event includes an `id:` field (UUIDv7) for deduplication.

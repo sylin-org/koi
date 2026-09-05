@@ -1431,11 +1431,17 @@ mod tests {
         assert_eq!(first.to_string(), second.to_string());
         assert!(first.to_string().contains("stopped unexpectedly"));
         assert!(core.workers.lock().await.is_empty());
-        assert!(core.discovery_snapshot().service_types.is_empty());
-        assert!(core.discovery_snapshot().records.is_empty());
+        let discovery = core.discovery_snapshot();
+        assert!(discovery.service_types.is_empty());
+        assert!(discovery.records.is_empty());
+        assert!(discovery.sources.is_empty());
+        assert!(discovery.observations.is_empty());
         let status = core.status();
         assert_eq!(status.control_plane.state, ControlPlaneState::Stopped);
         assert_eq!(status.registrations.total, 0);
-        assert_eq!(status.discovery, MdnsDiscoverySummary::default());
+        assert_eq!(status.discovery.revision, discovery.revision);
+        assert_eq!(status.discovery.service_type_count, 0);
+        assert_eq!(status.discovery.record_count, 0);
+        assert_eq!(status.discovery.unavailable_browse_count, 0);
     }
 }

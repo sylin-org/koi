@@ -1149,6 +1149,8 @@ mod tests {
                     txt: HashMap::new(),
                 })
                 .collect(),
+            sources: Vec::new(),
+            observations: Vec::new(),
         }
     }
 

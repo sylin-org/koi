@@ -764,7 +764,7 @@ impl MdnsHandle {
         let canonical = if service_type == META_QUERY {
             META_QUERY.to_string()
         } else {
-            ServiceType::parse(service_type)
+            ServiceType::parse_browse(service_type)
                 .map_err(|error| KoiError::Mdns(error.into()))?
                 .as_str()
                 .to_string()
@@ -1816,11 +1816,7 @@ fn reconcile_peer_snapshot(
         }
         return;
     }
-    for record in snapshot
-        .records
-        .iter()
-        .filter(|record| record.service_type == canonical_type)
-    {
+    for record in snapshot.records_for_query(canonical_type) {
         by_name.insert(record.name.clone(), record.clone());
     }
 }
@@ -2505,6 +2501,8 @@ mod tests {
             revision: 7,
             service_types: vec!["_http._tcp".to_string()],
             records: vec![replacement.clone()],
+            sources: Vec::new(),
+            observations: Vec::new(),
         };
 
         reconcile_peer_snapshot(&mut peers, &snapshot, "_http._tcp");
@@ -2518,6 +2516,8 @@ mod tests {
             revision: 9,
             service_types: vec!["_http._tcp".to_string()],
             records: vec![rec("remote", &[])],
+            sources: Vec::new(),
+            observations: Vec::new(),
         };
         let json = serde_json::json!({ "snapshot": snapshot });
 

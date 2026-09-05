@@ -5,14 +5,19 @@ use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
-use koi_common::integration::MdnsDiscoverySnapshot;
+use koi_common::integration::{
+    MdnsDiscoveryObservation, MdnsDiscoverySnapshot, MdnsDiscoverySource, MdnsDiscoveryValue,
+};
 use koi_common::status::StatusFeed;
 use koi_common::types::{ServiceRecord, ServiceType, META_QUERY};
 
 use crate::control_plane::MdnsControlPlane;
 use crate::error::{MdnsError, Result};
 use crate::events::MdnsEvent as KoiEvent;
-use crate::provider::{ProviderBrowse, ProviderEvent, ProviderService};
+use crate::provider::{
+    parse_service_instance_name, ProviderBrowse, ProviderBrowseSource, ProviderEvent,
+    ProviderService,
+};
 use crate::{MdnsDiscoverySummary, MdnsStatus};
 
 /// How long to wait for a service to resolve before giving up.
@@ -49,6 +54,8 @@ struct TypeBrowse {
     cancel: CancellationToken,
     records: HashMap<String, ServiceRecord>, // instance name -> record
     gen: u64,
+    /// Concrete provider route that produced this generation's retained facts.
+    source: Option<ProviderBrowseSource>,
     /// Whether this generation currently owns a live provider observation
     /// route. Accepted records survive a route loss; this bit tells the cheap
     /// primary status that those facts are temporarily stale while the pump
@@ -139,6 +146,7 @@ impl DiscoveryHub {
                     cancel,
                     records: HashMap::new(),
                     gen,
+                    source: None,
                     observing: false,
                 }
             });
@@ -181,24 +189,21 @@ impl DiscoveryHub {
     /// kill concurrent subscribers, and it answers immediately from the per-type
     /// records cache when a browse is already warm.
     pub async fn resolve(self: &Arc<Self>, instance: &str) -> Result<ServiceRecord> {
-        let parts: Vec<&str> = instance.splitn(2, '.').collect();
-        if parts.len() < 2 {
-            return Err(MdnsError::ResolveTimeout(format!(
-                "Invalid instance name: {instance}"
-            )));
-        }
-        let target_name = parts[0];
-        let (key, is_meta) = canonical_key(parts[1])?;
+        let (target_name, service_type) =
+            parse_service_instance_name(instance).ok_or_else(|| {
+                MdnsError::ResolveTimeout(format!("Invalid instance name: {instance}"))
+            })?;
+        let (key, is_meta) = canonical_key(&service_type)?;
 
         // Prefer an already-resolved hub fact, then use a provider's native
         // point-resolution surface when the active capability plan has one.
         // Partial system facilities such as resolve1 are therefore useful
         // without being asked to impersonate a continuous browser.
-        if let Some(record) = self.fresh_cached_record(&key, target_name) {
+        if let Some(record) = self.fresh_cached_record(&key, &target_name) {
             return Ok(record);
         }
         if self.control_plane.status().routes.resolve.is_some() {
-            match self.control_plane.resolve(target_name, &key).await {
+            match self.control_plane.resolve(&target_name, &key).await {
                 Ok(service) => {
                     return Ok(provider_service_to_record(service));
                 }
@@ -217,7 +222,7 @@ impl DiscoveryHub {
 
         // Recheck after subscribing: a concurrent pump may have resolved the
         // record while the direct lookup was in flight.
-        if let Some(record) = self.fresh_cached_record(&key, target_name) {
+        if let Some(record) = self.fresh_cached_record(&key, &target_name) {
             return Ok(record);
         }
 
@@ -226,13 +231,13 @@ impl DiscoveryHub {
             tokio::select! {
                 event = sub.recv() => {
                     match event {
-                        Ok(KoiEvent::Resolved(record)) if record.name == target_name => {
+                        Ok(KoiEvent::Resolved(record)) if record_key(&record.name) == record_key(&target_name) => {
                             return Ok(record);
                         }
                         Ok(_) => continue,
                         Err(BrowseRecvError::Lagged { dropped }) => {
                             tracing::debug!(dropped, %instance, "resolve subscriber lagged; rereading discovery state");
-                            if let Some(record) = self.fresh_cached_record(&key, target_name) {
+                            if let Some(record) = self.fresh_cached_record(&key, &target_name) {
                                 return Ok(record);
                             }
                         }
@@ -242,7 +247,7 @@ impl DiscoveryHub {
                 _ = tokio::time::sleep_until(deadline) => {
                     // A resolved event can be overwritten in the bounded stream
                     // while its current fact is already committed to the domain.
-                    if let Some(record) = self.fresh_cached_record(&key, target_name) {
+                    if let Some(record) = self.fresh_cached_record(&key, &target_name) {
                         return Ok(record);
                     }
                     return Err(MdnsError::ResolveTimeout(format!(
@@ -268,7 +273,7 @@ impl DiscoveryHub {
         if !entry.observing {
             return None;
         }
-        entry.records.get(target_name).cloned()
+        entry.records.get(&record_key(target_name)).cloned()
     }
 
     /// Pump output: update the records cache and fan out to the per-type channel
@@ -383,7 +388,7 @@ impl DiscoveryHub {
     /// current merely because a replacement receiver opened. Remove them while
     /// the route is still unavailable, publish both status projections, notify
     /// subscribers of those removals, and only then admit fresh observations.
-    fn admit_observation_route(&self, key: &str, gen: u64) {
+    fn admit_observation_route(&self, key: &str, gen: u64, source: ProviderBrowseSource) {
         let (type_tx, retired_records) = {
             let mut types = self.types.lock().unwrap_or_else(|e| e.into_inner());
             let Some(entry) = types.get_mut(key) else {
@@ -392,6 +397,7 @@ impl DiscoveryHub {
             if entry.gen != gen || entry.observing {
                 return;
             }
+            entry.source = Some(source);
 
             let type_tx = entry.tx.clone();
             let mut retired_records = entry
@@ -458,19 +464,25 @@ fn publish_snapshot_to(
     domain_status: &StatusFeed<MdnsStatus>,
     types: &HashMap<String, TypeBrowse>,
 ) {
-    let (service_types, records) = snapshot_contents(types);
+    let (service_types, records, sources, observations) = snapshot_contents(types);
     let unavailable_browse_count = types
         .values()
         .filter(|entry| entry.refcount > 0 && !entry.observing)
         .count();
     let snapshot = status.update(move |current| {
-        if current.service_types == service_types && current.records == records {
+        if current.service_types == service_types
+            && current.records == records
+            && current.sources == sources
+            && current.observations == observations
+        {
             return None;
         }
         Some(MdnsDiscoverySnapshot {
             revision: current.revision.saturating_add(1),
             service_types,
             records,
+            sources,
+            observations,
         })
     });
     publish_domain_discovery(domain_status, &snapshot, unavailable_browse_count);
@@ -643,7 +655,14 @@ impl Drop for DiscoveryHub {
     }
 }
 
-fn snapshot_contents(types: &HashMap<String, TypeBrowse>) -> (Vec<String>, Vec<ServiceRecord>) {
+fn snapshot_contents(
+    types: &HashMap<String, TypeBrowse>,
+) -> (
+    Vec<String>,
+    Vec<ServiceRecord>,
+    Vec<MdnsDiscoverySource>,
+    Vec<MdnsDiscoveryObservation>,
+) {
     let mut service_types = types
         .get(META_QUERY)
         .into_iter()
@@ -666,7 +685,62 @@ fn snapshot_contents(types: &HashMap<String, TypeBrowse>) -> (Vec<String>, Vec<S
             .then_with(|| left.ip.cmp(&right.ip))
             .then_with(|| left.port.cmp(&right.port))
     });
-    (service_types, records)
+    records.dedup();
+
+    let mut sources = types
+        .iter()
+        .map(|(query, browse)| MdnsDiscoverySource {
+            query: query.clone(),
+            provider: browse.source.as_ref().map(|source| source.provider.clone()),
+            generation: browse
+                .source
+                .as_ref()
+                .map_or(browse.gen, |source| source.generation),
+            available: browse.observing,
+        })
+        .collect::<Vec<_>>();
+    sources.sort_by(|left, right| left.query.cmp(&right.query));
+
+    let mut observations = types
+        .iter()
+        .flat_map(|(query, browse)| {
+            let source = browse.source.as_ref().map(|source| MdnsDiscoverySource {
+                query: query.clone(),
+                provider: Some(source.provider.clone()),
+                generation: source.generation,
+                available: browse.observing,
+            });
+            browse.records.values().filter_map(move |record| {
+                let source = source.clone()?;
+                let value = if query.as_str() == META_QUERY {
+                    MdnsDiscoveryValue::ServiceType {
+                        service_type: record.name.clone(),
+                    }
+                } else {
+                    MdnsDiscoveryValue::ServiceRecord {
+                        record: record.clone(),
+                    }
+                };
+                Some(MdnsDiscoveryObservation { source, value })
+            })
+        })
+        .collect::<Vec<_>>();
+    observations.sort_by(|left, right| {
+        left.source
+            .query
+            .cmp(&right.source.query)
+            .then_with(|| observation_name(left).cmp(observation_name(right)))
+            .then_with(|| left.source.provider.cmp(&right.source.provider))
+            .then_with(|| left.source.generation.cmp(&right.source.generation))
+    });
+    (service_types, records, sources, observations)
+}
+
+fn observation_name(observation: &MdnsDiscoveryObservation) -> &str {
+    match &observation.value {
+        MdnsDiscoveryValue::ServiceType { service_type } => service_type,
+        MdnsDiscoveryValue::ServiceRecord { record } => &record.name,
+    }
 }
 
 // ── Pump ──────────────────────────────────────────────────────────
@@ -691,7 +765,8 @@ fn spawn_type_pump(
             };
             let mut receiver = match opened {
                 Ok(receiver) => {
-                    daemon.admit_observation_route(&key, gen);
+                    let source = receiver.source().clone();
+                    daemon.admit_observation_route(&key, gen, source);
                     receiver
                 }
                 Err(e) => {
@@ -773,17 +848,21 @@ fn next_browse_retry(current: Duration) -> Duration {
 fn cache_update(key: &str, records: &mut HashMap<String, ServiceRecord>, event: &KoiEvent) {
     match event {
         KoiEvent::Resolved(record) => {
-            records.insert(record.name.clone(), record.clone());
+            records.insert(record_key(&record.name), record.clone());
         }
         KoiEvent::Removed { name, .. } => {
-            records.remove(name);
+            records.remove(&record_key(name));
         }
         KoiEvent::Found(record) => {
             if key == META_QUERY {
-                records.insert(record.name.clone(), record.clone());
+                records.insert(record_key(&record.name), record.clone());
             }
         }
     }
+}
+
+fn record_key(name: &str) -> String {
+    name.to_ascii_lowercase()
 }
 
 /// Build the replay for a new subscriber of a type. Meta entries replay as
@@ -811,11 +890,13 @@ fn replay_events(is_meta: bool, records: &HashMap<String, ServiceRecord>) -> Vec
 /// would open two queriers for "the same" type and re-trigger the single-querier
 /// overwrite bug. `ServiceType::parse` yields the canonical `_name._proto.local.`.
 pub(crate) fn canonical_key(service_type: &str) -> Result<(String, bool)> {
-    if service_type == META_QUERY {
+    if crate::provider::dns_name_eq(service_type, META_QUERY) {
         Ok((META_QUERY.to_string(), true))
     } else {
         Ok((
-            ServiceType::parse(service_type)?.as_str().to_string(),
+            ServiceType::parse_browse(service_type)?
+                .as_str()
+                .to_string(),
             false,
         ))
     }
@@ -881,9 +962,13 @@ mod tests {
             cancel: CancellationToken::new(),
             records: records
                 .into_iter()
-                .map(|record| (record.name.clone(), record))
+                .map(|record| (record_key(&record.name), record))
                 .collect(),
             gen: 1,
+            source: Some(ProviderBrowseSource {
+                provider: "test-provider".to_string(),
+                generation: 3,
+            }),
             observing: true,
         }
     }
@@ -980,7 +1065,7 @@ mod tests {
             ),
         ]);
 
-        let (service_types, records) = snapshot_contents(&types);
+        let (service_types, records, sources, observations) = snapshot_contents(&types);
         assert_eq!(service_types, vec!["_http._tcp.local.", "_ssh._tcp.local."]);
         assert_eq!(
             records
@@ -989,15 +1074,88 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["alpha", "zeta"]
         );
+        assert_eq!(observations.len(), 4);
+        assert!(observations
+            .iter()
+            .all(|observation| observation.source.provider.as_deref() == Some("test-provider")));
+        assert_eq!(sources.len(), 2);
+        assert!(sources.iter().all(|source| source.available));
 
         types
             .get_mut("_http._tcp.local.")
             .unwrap()
             .records
             .remove("alpha");
-        let (_, records) = snapshot_contents(&types);
+        let (_, records, _, observations) = snapshot_contents(&types);
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].name, "zeta");
+        assert_eq!(observations.len(), 3);
+    }
+
+    #[test]
+    fn base_and_subtype_observations_deduplicate_compatibility_records() {
+        let shared = record("Printer UI", "_http._tcp.local.");
+        let types = HashMap::from([
+            (
+                "_http._tcp.local.".to_string(),
+                cached_browse([shared.clone()]),
+            ),
+            (
+                "_printer._sub._http._tcp.local.".to_string(),
+                cached_browse([shared.clone()]),
+            ),
+        ]);
+
+        let (_, records, sources, observations) = snapshot_contents(&types);
+        assert_eq!(records, vec![shared]);
+        assert_eq!(sources.len(), 2);
+        assert_eq!(observations.len(), 2);
+        assert!(observations
+            .iter()
+            .any(|observation| { observation.source.query == "_printer._sub._http._tcp.local." }));
+    }
+
+    #[test]
+    fn empty_browse_still_publishes_source_availability() {
+        let mut browse = cached_browse([]);
+        browse.observing = false;
+        browse.source = None;
+        let types = HashMap::from([("_http._tcp.local.".to_string(), browse)]);
+
+        let (_, records, sources, observations) = snapshot_contents(&types);
+        assert!(records.is_empty());
+        assert!(observations.is_empty());
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].query, "_http._tcp.local.");
+        assert_eq!(sources[0].provider, None);
+        assert!(!sources[0].available);
+    }
+
+    #[test]
+    fn duplicate_case_variants_and_case_changed_goodbye_converge() {
+        let key = "_http._tcp.local.";
+        let mut records = HashMap::new();
+        cache_update(
+            key,
+            &mut records,
+            &KoiEvent::Resolved(record("Printer", key)),
+        );
+        cache_update(
+            key,
+            &mut records,
+            &KoiEvent::Resolved(record("PRINTER", key)),
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records.values().next().unwrap().name, "PRINTER");
+        cache_update(
+            key,
+            &mut records,
+            &KoiEvent::Removed {
+                name: "printer".to_string(),
+                service_type: key.to_string(),
+            },
+        );
+        assert!(records.is_empty());
     }
 
     #[test]
@@ -1060,7 +1218,10 @@ mod tests {
         let pending_replay = hub.subscribe_type(key, false);
 
         hub.set_generation_observing(key, 1, false);
-        assert_eq!(hub.snapshot().records, vec![stale]);
+        let unavailable_snapshot = hub.snapshot();
+        assert_eq!(unavailable_snapshot.records, vec![stale]);
+        assert_eq!(unavailable_snapshot.observations.len(), 1);
+        assert!(!unavailable_snapshot.observations[0].source.available);
         assert_eq!(domain.current().discovery.unavailable_browse_count, 1);
         assert!(hub.fresh_cached_record(key, "old").is_none());
         assert!(pending_replay.pop_fresh_replay().is_none());
@@ -1101,7 +1262,14 @@ mod tests {
         assert_eq!(unavailable.discovery.record_count, 1);
         assert_eq!(unavailable.discovery.unavailable_browse_count, 1);
 
-        hub.admit_observation_route(key, 9);
+        hub.admit_observation_route(
+            key,
+            9,
+            ProviderBrowseSource {
+                provider: "replacement-provider".to_string(),
+                generation: 12,
+            },
+        );
 
         let snapshot = hub.snapshot();
         let current = domain.current();
@@ -1169,6 +1337,8 @@ mod tests {
             revision: 4,
             service_types: vec!["_http._tcp.local.".to_string()],
             records: vec![record("api", "_http._tcp.local.")],
+            sources: Vec::new(),
+            observations: Vec::new(),
         };
 
         publish_domain_discovery(&status, &snapshot, 1);

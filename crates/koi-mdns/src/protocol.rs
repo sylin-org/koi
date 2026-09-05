@@ -338,6 +338,8 @@ mod tests {
             revision: 7,
             service_types: vec!["_http._tcp.local.".to_string()],
             records: vec![test_record()],
+            sources: Vec::new(),
+            observations: Vec::new(),
         }));
         let value = serde_json::to_value(resp).unwrap();
         assert_eq!(value["snapshot"]["revision"], 7);

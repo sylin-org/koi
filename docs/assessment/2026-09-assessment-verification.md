@@ -27,6 +27,17 @@ Total: **84 targeted tests passed**, plus formatting. This total combines differ
 
 No local CA, firewall, trust store, persistent daemon configuration, or service lifecycle was changed. Opening discovery presentation can create its normal temporary browse demand; this was not a passive packet capture. Raw household/device names and addresses are omitted from this note.
 
+**D04 source addendum (2026-09-05):** R03 reduced the observed failure shape to a
+synthetic meta-query result containing a matching unknown service-type PTR, an
+additional service-to-instance PTR, a host PTR, and SRV/TXT/A/AAAA records. The
+portable classifier admits only the matching service enumeration PTR. Companion
+tests cover unrelated ordinary owners, subtype-to-base instance projection, DNS
+presentation escapes, duplicate/case convergence, goodbye removal, provider loss,
+and empty-source availability. The Windows GNU workspace cross-check compiles the
+changed DNSAPI adapter and its tests; no physical Windows observation was made in
+this addendum, so issue 004 remains open for installed browse/withdrawal and bounded
+handle/thread proof.
+
 **Hosted and recorded evidence, not rerun here**
 
 GitHub release API reported `v0.9.0` as the newest stable release (2026-06-25) and `v1.0.0-rc.2` as newest prerelease (2026-08-24). Repository default branch was `main`; reviewed local branch was `dev`.

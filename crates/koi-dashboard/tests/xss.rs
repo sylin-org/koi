@@ -116,6 +116,8 @@ async fn snapshot_serves_hostile_names_as_inert_json() {
         revision: 1,
         service_types: vec!["_http._tcp.local.".to_string()],
         records: vec![resolved(img, HashMap::new()), resolved(handler, js_txt)],
+        sources: Vec::new(),
+        observations: Vec::new(),
     };
     cache.reconcile(&discovery).await;
     let source: Arc<dyn BrowseSource> = Arc::new(StubSource {
