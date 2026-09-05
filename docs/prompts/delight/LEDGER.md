@@ -13,10 +13,9 @@ All rows are queued at creation. No implementation or native validation is impli
 - Product implementation: eligible fixed-owner tasks may proceed; no new routine approval required.
 - Active candidate: none; Epic 002's frozen candidate is rejected.
 - Windows physical evidence: reserved for a later operator-dispatched Windows session.
-- Current dispatch: Bluefin finishes R02's contract rows now; Debian reconciles the
-  published R03 Windows evidence now and completes its contract rows after Bluefin.
-  CachyOS owns R28's final hosted reconciliation. Windows owns upcoming R04/R05;
-  CachyOS R06 waits for R05.
+- Current dispatch: R02/R03/R04 and R28 are accepted. Windows has implemented R05
+  at Koi `e673af6` and desktop `ba39faf`, with installed Windows proof published;
+  complete hosted Linux CI remains pending. CachyOS R06 waits for R05 acceptance.
 - Capacity constraint (owner instruction, 2026-09-04): Debian is a very weak thin
   client. Preserve its current R03 claim through its small documentation handoff;
   R04/R05 are now reassigned to Windows. Before any later heavy Debian row is
@@ -55,8 +54,10 @@ The bounded write order is:
    Run `33945321135`, source `1f65a0f4bebd7b485914660c70f11f7123b4aa66`, passed all
    twelve preceding jobs but failed cross-host because its Alpine containers lack
    the machine ID required by the enabled vault backend. The bounded correction
-   claim and verification plan are in the R28 report. Replacement complete CI is
-   required before acceptance. R28 does not block R02/R03 or the R04/R05 chain.
+   claim and verification plan are in the R28 report. Replacement run `33946904793`
+   passed all 13 jobs on `aa229ea0604cadd7a7d36d81e7f107716dbc686f`; CachyOS has
+   accepted R28. This accepts CI infrastructure only; R29 requires fresh candidate
+   evidence after subsequent product changes.
 
 Do not launch another host's agent from this dispatch. Each participating operator
 session resumes through the same `fleet/task.md` entry. Any CI correction that
@@ -162,7 +163,7 @@ identity and complete hosted/native evidence, even if infrastructure tasks passe
 | [R25](R25-developer-and-agent-experience.md) | R05, R17, R19, R21 | queued | pending | alpine-linux | - | See required subrows below |
 | [R26](R26-documentation-and-contributor-path.md) | R02, R09, R14, R15, R18, R22, R23, R24, R25 | queued | pending | bluefin-linux | - | Wait for dependencies |
 | [R27](R27-accessibility-and-interaction-proof.md) | R09, R10, R18, R22 | queued | pending | cachyos-linux | - | Wait for dependencies |
-| [R28](R28-ci-and-release-contracts.md) | R01 | implemented | pending | alpine-linux | [reports/R28.md](reports/R28.md) | CachyOS implemented the cross-host machine-ID fixture correction; replacement hosted CI pending; blanket shared-file reservation released |
+| [R28](R28-ci-and-release-contracts.md) | R01 | accepted | ready | alpine-linux | [reports/R28.md](reports/R28.md) | CachyOS reconciled run 33946904793: all 13 jobs passed on `aa229ea`; CI infrastructure accepted, fresh candidate proof remains R29 |
 | [R29](R29-candidate-fleet-acceptance.md) | R02, R03, R09, R10, R12, R13, R14, R15, R18, R23, R24, R25, R26, R27, R28 | queued | pending | cachyos-linux | - | See required subrows below |
 | [R30](R30-usability-and-release-review.md) | R29 | queued | pending | cachyos-linux | - | Wait for dependencies |
 

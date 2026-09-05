@@ -291,3 +291,25 @@ host has no Docker/Podman executable; the actual container exchange is left to
 replacement CI and is not claimed from static checks. No installed Koi, provider,
 firewall, peer, credential or native machine state changed in this session. R28's
 report contains the exact claim, exploration, local results and remaining evidence.
+
+## 2026-09-05 — R28 hosted acceptance reconciled
+
+task: R28 final coordinator reconciliation | synchronized evidence/source head
+`c02282f6a8d4e7e447deb04e14d8e17f7622d677` | accepted infrastructure source
+`aa229ea0604cadd7a7d36d81e7f107716dbc686f` | verdict: **R28 accepted/ready**
+
+GitHub [run 33946904793](https://github.com/sylin-org/koi/actions/runs/33946904793)
+completed successfully at `2026-09-05T05:44:33Z`. All 13 jobs passed: three OS
+workspace suites, Clippy, MSRV, Windows GNU cross-check, client/release/frontend
+contracts, architecture, lean-embedded, audit, formatting, surfaces and cross-host.
+This supplies the missing actual container exchange after the fixture machine-ID
+correction. Failed earlier runs remain recorded; no gate or job was skipped.
+
+Updated R28's report and ledger acceptance under Alpine's published coordinator
+handoff. This is CI infrastructure acceptance, not acceptance of later R04/R05
+product source or an R29 release candidate. R02, R03 and R04 are also now accepted.
+Windows implemented R05 and published installed proof, but its complete hosted run
+is still pending; CachyOS R06 remains gated on the R05 owner's acceptance.
+
+This session changed documentation only. No service, build artifact, provider,
+firewall, peer or credential was mutated. Documentation and diff guards passed.
