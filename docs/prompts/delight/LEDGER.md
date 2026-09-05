@@ -136,7 +136,7 @@ identity and complete hosted/native evidence, even if infrastructure tasks passe
 | ID | Dependencies | Status | Readiness | Owner | Evidence/report | Next action |
 |---|---|---|---|---|---|---|
 | [R01](R01-contract-and-handover.md) | - | accepted | ready | cachyos-linux | [reports/R01.md](reports/R01.md) | Complete; contract and inherited-run restoration verified |
-| [R02](R02-critical-documentation-truth.md) | R01 | in_progress | pending | bluefin-linux | [reports/R02.md](reports/R02.md) | Proceed now: finish six CONTRACT dispositions, publish acceptance evidence, then release the file to Debian |
+| [R02](R02-critical-documentation-truth.md) | R01 | accepted | ready | bluefin-linux | [reports/R02.md](reports/R02.md) | Complete on implementation source `299ae89`; six finding dispositions published and CONTRACT/LEDGER reservation released to Debian for R03 |
 | [R03](R03-discovery-record-correctness.md) | R01 | implemented | pending | debian-linux | [reports/R03.md](reports/R03.md) | Reconcile Windows proof at `189ea32` now; finish mDNS/D04 contract rows after Bluefin's handoff; documentation-only tail |
 | [R04](R04-service-catalog.md) | R01, R03 | queued | pending | windows | - | Reassigned from Debian for capacity; claim on Windows when R03 is accepted; arrange Linux checks with stronger hosts/CI |
 | [R05](R05-catalog-api-and-preferences.md) | R04 | queued | pending | windows | - | Reassigned from Debian for capacity; claim after R04 acceptance; arrange required Linux evidence |

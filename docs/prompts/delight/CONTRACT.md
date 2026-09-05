@@ -618,16 +618,16 @@ acceptance requirements.
 
 | Finding | Contract disposition | Implementing owner/task |
 | --- | --- | --- |
-| D01 recovery policy/deadlines | CheckEvidence separates observed expiry/deadline; no assumed policy | Debian, R23 after R02 |
-| D02 certificate names/client trust | secure path binds exact authorized SAN and separate client TLS evidence | Debian, R20-R22 after R02 |
-| D03 route/auth documentation | full routes protected; local mutations loopback+DAT; Pond separate DTO | Bluefin R02, R05/R09/R28 |
+| D01 recovery policy/deadlines | R02 retired fixed 90/30/14 advice: new meshes default to 7/3/1, persisted policy and earliest actual `cert_expires` drive guidance, and grace authorizes renewal without extending TLS validity; CheckEvidence remains R23 | Bluefin R02 complete; Debian R23 later |
+| D02 certificate names/client trust | R02 records current hostname plus configured-zone SANs, the v0.9.0 `.local` behavior, exact `cert_sans`, and per-client root/resolver verification; authorized service aliases and named second-client proof remain later work | Bluefin R02 complete; Debian R20-R22 later |
+| D03 route/auth documentation | R02's tested route/auth matrix proves public bootstrap/trust, DAT-protected remote full status and mutations, the narrow invite/TOTP enrollment exception, and separate Pond/mTLS/ACME authorities | Bluefin R02 complete; R05/R09 later, R28 contract job |
 | D04 discovery type pollution | mDNS source classification/provenance feeds catalog; UI filtering forbidden | Debian R03/R04/R14 |
 | D05 candidate/hosted CI gap | R28 binds exact source, required hosted results and the six-target manifest in ADR-025's schema-1 report; source-only results keep native fields pending | Alpine R28 infrastructure, CachyOS/native hats R29 acceptance |
-| D06 installer next-action mismatch | recommended install must end at started catalog/open result | Alpine/Bluefin R11-R14 |
+| D06 installer next-action mismatch | R02 labels bootstrap as binary-only and prints an executable full-path standalone discovery action; stable v0.9.0 and prerelease v1.0.0-rc.2 fixtures run it without a daemon, while durable service/catalog completion remains R11-R14 | Bluefin R02 complete; Alpine/Bluefin R11-R14 later |
 | D07 no-match vs no-discovery | snapshot carries source availability, empty, absent favorite, and search state separately | CachyOS R07/R27 |
 | D08 accessibility | shared UI contract reserves focus/keyboard/narrow/reduced-motion evidence | CachyOS R06-R09/R27 |
-| D09 misleading workload certification | runtime flag remains request evidence only; secure host termination is separate | Bluefin/Alpine/Debian R02/R15/R20-R22 |
-| D10 revocation scope | client TLS and Koi-aware enforcement remain distinct; ordinary leaf validity explicit | Bluefin/Debian R02/R20/R23/R26 |
+| D09 misleading workload certification | R02 states `koi.certmesh` is parsed request metadata only, not workload-certificate injection; secure host termination and client proof remain separate | Bluefin R02 complete; Alpine/Debian R15/R20-R22 later |
+| D10 revocation scope | R02 distinguishes immediate Koi CA/principal and signed-bundle enforcement from ordinary TLS clients without CRL/OCSP, which may accept a leaf until its actual `NotAfter` | Bluefin R02 complete; Debian/Bluefin R20/R23/R26 later |
 
 Other mandate mappings: catalog collapses overlapping Discover/Browser only when
 evidence supports identity; Home replaces Glance noise; comparison has an explicit
