@@ -2,7 +2,11 @@
 
 Docker containers start and stop. Every time one starts, you want it discoverable — announced via mDNS, resolvable by name, health-checked. Every time it stops, all of that should clean up. Automatically.
 
-Koi's runtime adapter watches Docker or Podman for lifecycle events and drives Koi's capabilities without manual API calls. Add one label to your container, and Koi handles the rest.
+Koi's runtime adapter watches Docker or Podman for lifecycle events and drives the
+currently implemented discovery, DNS, health, and optional host-proxy operations.
+The `koi.certmesh` label is parsed request metadata only: it does not issue or inject
+a workload certificate. Automatic per-workload secure-service composition is planned
+work, not behavior shipped by this adapter.
 
 ```bash
 docker run -d -p 3000:3000 --label koi.announce=grafana grafana/grafana

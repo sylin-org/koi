@@ -1,11 +1,12 @@
 # Certmesh HA & disaster recovery
 
 Your certmesh CA host is one machine. When it dies — disk failure, a reinstall, a
-laptop left at the office — the mesh does **not** go down with it. Member
-certificates live for 90 days and renew at 30 days remaining (with a 14-day
-post-expiry grace), so a dead CA *pauses* renewals; it does not break TLS that
-already works. That buys you weeks, not minutes. This is a runbook for using that
-runway: how to prepare before the failure, and the ordered steps to recover after one.
+laptop left at the office — already-issued member certificates remain usable only
+until each certificate's real `NotAfter`. New meshes default to 7-day leaves,
+renewal below 3 days remaining, and a 1-day post-expiry *renewal authorization*
+grace. A persisted mesh can carry a different policy. Read the `policy` and every
+member's `cert_expires` in `koi certmesh status --json`; the earliest unexpired
+`cert_expires` is your actual recovery deadline. Grace never extends TLS validity.
 
 There is **no automatic failover** in certmesh — no election, no absence-watch, no
 self-healing. Every continuity action here is a deliberate command you run. That is
@@ -127,8 +128,10 @@ with the bundle *and* its passphrase can stand up a CA that every member trusts.
 
 ## After disaster: the recovery checklist
 
-The CA host is gone. Member certs still work (they have days left). Work through this in
-order — stop as soon as the mesh is issuing certificates again.
+The CA host is gone. Any member leaf whose `NotAfter` has not passed can still work.
+Work through this in order — stop as soon as the mesh is issuing certificates again. Do not infer the
+runway from current defaults: use the stored policy and earliest actual expiry shown
+by `koi certmesh status --json`.
 
 ### 0. Confirm it is actually down
 
@@ -251,19 +254,15 @@ You just spent your safety margin. Rebuild it before the next failure:
 Knowing the limits keeps the runbook from over-promising under pressure:
 
 - **No automatic failover.** Nothing detects a dead CA or elects a replacement. Every
-  step above is a manual command. The 90-day cert lifetime (renew at 30 days remaining)
-  is the cushion that makes manual recovery acceptable — a dead CA is a maintenance task,
-  not an outage.
-- **Revocation is roster-only — there is no CRL/OCSP.** `koi certmesh revoke <hostname>`
-  marks a member revoked in the roster and stops Koi from renewing its cert, so it dies
-  at its (≤90-day) expiry. A revoked member is also locked out at the CA boundary
-  immediately — its `/renew` and `/health` calls return `403` — so it can never pull a
-  fresh leaf. But already-issued, still-valid certificates are **not** actively
-  invalidated across the network. After a restore, the restored roster's revocations
-  apply going forward; a cert revoked before the backup is still on the revoked member's
-  disk and valid to TLS verifiers until it expires. If you need a member gone *now*,
-  revocation alone is not enough — the bound is the cert lifetime. See
-  [the security model](../reference/security-model.md).
+  step above is a manual command. The available cushion is the time until the earliest
+  member certificate expiry, not the configured lifetime and never the renewal grace.
+- **Koi-aware revocation is not CRL/OCSP.** `koi certmesh revoke <hostname>` immediately
+  blocks that identity at Koi's CA and authenticated-principal boundaries. Signed trust
+  bundles also carry revoked certificate fingerprints; Koi-aware verification consumes
+  that metadata after it pulls a fresh bundle. Ordinary TLS stacks do not read Koi's
+  bundle, so an already-issued leaf can still validate there until its own `NotAfter`.
+  After restoring an older roster, reapply any later revocations and allow peers to pull
+  the new signed bundle. See [the security model](../reference/security-model.md).
 - **A backup is only as fresh as its roster.** Restoring an old bundle brings back an old
   roster. Members that joined or were revoked since are not reflected until you re-join /
   re-revoke them. This is why backup cadence tracks roster changes.

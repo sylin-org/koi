@@ -1,18 +1,19 @@
-# ACME — Get Certs from Koi's CA with Any Standard Client
+# ACME — Get certs from Koi's CA with dns-01 clients
 
 Here's the problem: you already run Caddy, Traefik, or `lego`. They know how to get
 certificates over **ACME** (RFC 8555). Koi has a private CA (the certmesh) that the rest
 of your network already trusts. Wouldn't it be nice if those tools could just *ask Koi* for
-a certificate the same way they ask Let's Encrypt — no plugin, no Koi-specific config,
-no rip-and-replace?
+a certificate through their existing ACME support, without replacing the proxy?
 
 That is exactly what the ACME facade does. Koi runs a small **RFC 8555 server** in front of
 its CA. Point an ACME client at Koi's directory URL, have it trust the CA root once, and
 connect its dns-01 provider to Koi's two-command TXT interface. It can then obtain and
 renew certificates for names inside your Koi DNS zone.
 
-This is the collaboration doctrine in action: Koi is the substrate under the tools you
-already run. You keep Caddy/Traefik; Koi is just the CA they talk to.
+You keep Caddy/Traefik, but this is not zero-configuration interoperability: the
+client must support P-256 ACME accounts, a private CA root, and a dns-01 provider
+that maps present/cleanup to Koi's TXT operations. The recipes below state those
+requirements instead of implying every stock client works unchanged.
 
 ---
 
@@ -27,6 +28,10 @@ already run. You keep Caddy/Traefik; Koi is just the CA they talk to.
   (default `internal`). An order for `evil.example.com` is rejected with `rejectedIdentifier`.
   The wildcard `*.<zone>` is allowed.
 - **No OCSP, no CT, no pre-authorization.** This is a homelab/LAN CA facade, not a public CA.
+- **Revocation is Koi metadata, not public-PKI status.** `revoke-cert` updates the
+  certmesh roster and signed trust bundle. Koi-aware verification consumes that
+  metadata; ordinary TLS clients do not receive CRL/OCSP and may accept the leaf
+  until its own expiry.
 - **CA-admin ops stay off ACME.** ACME issues leaf certs; it never touches CA creation,
   unlock, enrollment policy, backup, or revoke-the-CA. Those remain `koi certmesh …`.
 
@@ -74,8 +79,8 @@ koi certmesh acme status
 The **one-time bootstrap** every client needs: distribute the CA root certificate
 (`<data-dir>/certmesh/ca/ca-cert.pem`) and configure the client to trust it for ACME. The
 ACME listener's leaf chains to that root, so once a client trusts the root, it trusts Koi's
-ACME endpoint. (You may already have installed the root via `koi`'s truststore integration;
-the same root is used here.)
+ACME endpoint. Installing the root in the OS store is not proof that a particular ACME
+client reads that store; prefer its explicit private-CA option where available.
 
 ---
 

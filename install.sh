@@ -179,7 +179,7 @@ main() {
     fi
 
     printf '\n'
-    say "koi ${version} installed → ${bin_dir}/${BIN_NAME}"
+    say "koi ${version} downloaded → ${bin_dir}/${BIN_NAME} (binary only; no service started)"
     printf '\n'
 
     # Never leave the user at a blank prompt: show it actually runs (fast, local,
@@ -195,8 +195,8 @@ main() {
         esac
     fi
 
-    say "see your network:   ${BIN_NAME} mdns discover     # instant, no daemon"
-    say "run as a service:   sudo ${BIN_NAME} install      # then just run: ${BIN_NAME}"
+    say "one-time discovery: '${bin_dir}/${BIN_NAME}' --standalone mdns discover"
+    say "install service:    sudo '${bin_dir}/${BIN_NAME}' install"
     say "verify this build:  gh attestation verify ${archive} --repo ${REPO}   (optional)"
 }
 

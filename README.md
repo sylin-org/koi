@@ -24,7 +24,7 @@ Koi's promise has three parts:
 | 🔐 | **Trust** | Give local names and peers shared identity through a private CA, guided enrollment, OS trust-store installation, mTLS, and diagnosis |
 | 🔗 | **Connect** | Let containers, host applications, devices, proxies, resolvers, monitors, and agents participate across their usual network boundaries |
 
-Label a container and Koi can announce, name, certify, and watch it without touching
+Label a container and Koi can announce, name, health-check, and watch it without touching
 the image. A container can also discover and watch LAN services through ordinary HTTP,
 or bridge UDP without giving up network isolation. Participation works both ways.
 
@@ -156,7 +156,7 @@ Foundation:
 | **mDNS** | Service discovery with lease lifecycle | `koi mdns …` | [mDNS guide](docs/guides/mdns.md) |
 | **DNS** | Local resolver; names from three sources | `koi dns …` | [DNS guide](docs/guides/dns.md) |
 | **Certmesh** | Private CA, guided enrollment, truststore install | `koi certmesh …` | [Certmesh guide](docs/guides/certmesh.md) |
-| **Runtime** | Container lifecycle → announce/name/cert/watch via labels | `--runtime` | [Runtime guide](docs/guides/runtime.md) |
+| **Runtime** | Container lifecycle → announce/name/health/watch via labels; `koi.certmesh` is currently request metadata only | `--runtime` | [Runtime guide](docs/guides/runtime.md) |
 
 Connectivity and operations:
 

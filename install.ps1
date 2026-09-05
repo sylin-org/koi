@@ -164,11 +164,12 @@ try {
 }
 
 Write-Host ""
-Say "koi $Version installed -> $InstallDir\$BinName.exe"
+$installedExe = Join-Path $InstallDir "$BinName.exe"
+Say "koi $Version downloaded -> $installedExe (binary only; no service started)"
 Write-Host ""
 # Never leave the user at a blank prompt: show it actually runs (fast, local).
 try { & (Join-Path $InstallDir "$BinName.exe") status } catch {}
 Write-Host ""
-Say "see your network:   $BinName mdns discover     # instant, no daemon"
-Say "run as a service:   $BinName install           # as Administrator, then just run: $BinName"
+Say "one-time discovery: & `"$installedExe`" --standalone mdns discover"
+Say "install service:    open an Administrator terminal, then run: & `"$installedExe`" install"
 Say "verify this build:  gh attestation verify $archive --repo $Repo   (optional)"

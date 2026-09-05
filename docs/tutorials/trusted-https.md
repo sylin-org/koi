@@ -77,7 +77,12 @@ If mDNS discovery can't find exactly one CA (different broadcast domains, multip
 koi certmesh join http://192.168.1.10:5641
 ```
 
-B now holds a certmesh-issued member certificate at `certs/host-b/`. **Its SANs are `host-b` and `host-b.local`** — that detail matters in Step 3 and Step 5. (Full join flow, including the `503 CA locked` case and `koi certmesh unlock`, is in the [certmesh guide](../guides/certmesh.md).)
+B now holds a certmesh-issued member certificate at `certs/host-b/`. Current Koi
+issues the hostname plus its configured-zone FQDN: with the default zone the SANs
+are **`host-b` and `host-b.internal`**. Confirm the exact `cert_sans` in
+`koi certmesh status --json`; persisted or older releases can differ (notably v0.9.0
+used `.local`). (Full join flow, including the `503 CA locked` case and
+`koi certmesh unlock`, is in the [certmesh guide](../guides/certmesh.md).)
 
 ---
 
@@ -113,7 +118,10 @@ app   :9443   127.0.0.1:3000   certmesh  running
 
 The `TLS: certmesh` column is the win — Certmesh supplied its healthy local identity through Koi's live domain boundary, and Proxy is terminating TLS with that **member certificate**, the one every mesh member already trusts. Proxy never reaches into Certmesh's private files. (How the proxy resolves its cert, including explicit overrides and the `self-signed` fallback, is in the [proxy guide](../guides/proxy.md).)
 
-> **The name has to match the cert.** A browser only stays green if the URL's hostname is a **SAN on the served certificate**. The member cert covers `host-b` and `host-b.local`. So in Step 5 the no-warning URL is **`https://host-b.local:9443`** (or `https://host-b:9443`), served by the member cert. If you want a *zone-named* vanity URL like `https://app.internal` with no warning, see [Want `app.internal` instead?](#want-applan-instead) below — that needs a cert that lists `app.internal`, which the member cert does not.
+> **The name has to match the cert.** Use a hostname listed in the live
+> `cert_sans`. For a current default-zone mesh that is
+> **`https://host-b.internal:9443`** (or `https://host-b:9443`). A vanity name such
+> as `app.internal` needs its own certificate; see below.
 
 ---
 
@@ -135,7 +143,11 @@ That prints the CA root certificate (PEM) to stdout. Copy `koi-root.pem` to lapt
 koi trust install ./koi-root.pem
 ```
 
-`install` validates that the file is a real X.509 **CA** certificate (a leaf/server cert is rejected with `not a CA certificate`), then adds it to the system store — browsers, `curl`, and language runtimes all pick it up. You can see and later undo what Koi installed:
+`install` validates that the file is a real X.509 **CA** certificate (a leaf/server
+cert is rejected with `not a CA certificate`), then adds it to the OS trust store.
+That does not prove every browser or language runtime uses that store; some clients
+have a separate root source. Verify the specific client you intend to use. You can
+see and later undo what Koi installed:
 
 ```
 koi trust list
@@ -150,19 +162,22 @@ koi trust remove koi-koi-root        # untrust later — every door has an exit
 
 ## Step 5 — Confirm green
 
-On laptop C, name resolution for `.local` is handled natively by the OS (Bonjour on macOS, the DNS Client on Windows, Avahi on Linux) over mDNS — so `host-b.local` already resolves without C using Koi's resolver at all.
+On laptop C, configure DNS so the current Koi zone resolves (the default is
+`.internal`; see the [DNS coexistence guide](../guides/dns-coexistence.md)). Use the
+exact name from B's `cert_sans`.
 
 Verify on the command line first — `curl` exits `0` and prints no TLS error:
 
 ```sh
-curl -v https://host-b.local:9443/
+curl -v https://host-b.internal:9443/
 #  * SSL certificate verify ok.
 ```
 
-If `curl` is green, the browser will be too. Open it:
+This proves the `curl` build you ran trusts the chain. Test the browser separately;
+it may use a different root store. Open:
 
 ```
-https://host-b.local:9443
+https://host-b.internal:9443
 ```
 
 No warning, a real padlock. The chain is: the proxy presented B's member cert → that cert chains to your CA root → C trusts that root (Step 4). End to end, trusted HTTPS between two machines with no public CA and no per-client PEM juggling.
@@ -174,7 +189,9 @@ If you instead pointed C at Koi's resolver for the `.internal` zone (see the [DN
 ## What this required (the honest version)
 
 - **C must trust the root.** There is no way around handing a non-member the CA root once (Step 4). That single trust step is what removes the warning — TLS validation is doing exactly its job.
-- **The URL name must be on the cert.** The proxy serves B's **member certificate**, whose SANs are `host-b` and `host-b.local`. That's why the working URL is host-named. A different name needs a different cert — see below.
+- **The URL name must be on the cert.** The proxy serves B's member certificate.
+  Current issuance includes the hostname and configured-zone FQDN; inspect
+  `cert_sans` instead of assuming a suffix. A different name needs a different cert.
 - **The proxy is a byte passthrough.** It terminates TLS and pipes bytes to the backend; it does no path routing or header rewriting. For that, run Caddy/Traefik and let them get certs from Koi over ACME (next section).
 
 ---
@@ -200,4 +217,8 @@ The full ACME walk-through — scope, wildcards, and the bootstrap recipe — is
 - [trust guide](../guides/trust.md) — `koi trust` across step-ca / mkcert / Caddy.
 - [security model](../reference/security-model.md) — the daemon access token (`x-koi-token`), bind addresses, what is and isn't protected.
 
-> **A note on the API.** Everything above used the CLI, which reads the daemon's access token for you. If you script these steps over HTTP instead, mutating calls (`POST`/`PUT`/`DELETE` — e.g. `/v1/dns/add`, `/v1/proxy/add`, `/v1/certmesh/join`) need the token in an `x-koi-token` header. `koi token show` prints it; `koi token write <path>` writes a `0600` file for containers. See the [security model](../reference/security-model.md) for the details.
+> **A note on the API.** Everything above used the CLI, which reads the daemon's
+> access token for you. Operator mutations such as DNS/proxy changes require it.
+> `POST /v1/certmesh/join` is the intentional exception: its handler authorizes an
+> invite or TOTP because a new member cannot know the remote daemon's DAT. See the
+> [route/auth matrix](../reference/http-route-auth-matrix.md) for the exact boundary.

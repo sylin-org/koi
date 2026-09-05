@@ -11,7 +11,7 @@
 | Listener | Bind | Purpose |
 | -------- | ---- | ------- |
 | HTTP API + dashboard | `127.0.0.1:5641` (default; see `--http-bind`) | All `/v1/*` endpoints, dashboard (`/`), mDNS browser (`/mdns-browser`), OpenAPI (`/docs`) |
-| mTLS plane | `0.0.0.0:5642` | Certmesh inter-node traffic only (enrollment sync, roster, promotion). Client certificates required; CN-based authorization |
+| mTLS plane | `0.0.0.0:5642` | Certmesh inter-node traffic and optional remote `/v1/mcp`. Client certificates required; CN-based authorization |
 | DNS resolver (if started) | `0.0.0.0:53` (configurable) | `koi dns serve` — rate-limited, private-client-only by default |
 
 **The HTTP API is loopback-only by default.** Processes on the same machine can
@@ -44,6 +44,9 @@ the **bare token** — the breadcrumb file stores it with a `dat:` line prefix, 
 prefix is not part of the header value.
 
 Carve-outs to that rule:
+
+The compact, tested cross-listener view is the
+[HTTP route/auth matrix](http-route-auth-matrix.md).
 
 - **`/v1/mcp`** (the in-process MCP transport) requires the token on every
   resource-bearing method — including its `GET` server→client SSE stream, which is a live
@@ -158,10 +161,10 @@ Be aware of the trade-offs in the current model:
   identity instead (ADR-026): an enrolled client-role certificate that names its holder,
   is individually revocable, and authorizes at coarse grain (any active principal ≈
   the token holder, minus human-only surfaces like invite minting).
-- **Certificate revocation is roster-level.** Revoking a member stops Koi-mediated
-  renewal and enrollment; it does not invalidate the already-issued certificate for
-  TLS verifiers until its short-lived expiry (7 days by default, ADR-027). There is
-  no CRL/OCSP distribution.
+- **Revocation has two audiences.** The CA and authenticated-principal boundaries
+  reject a revoked identity immediately. Koi-aware verification also consumes revoked
+  fingerprints from the signed trust bundle. Ordinary TLS clients do not consume that
+  metadata; without CRL/OCSP they can accept the issued leaf until its real `NotAfter`.
 
 ## DNS rate limiting
 

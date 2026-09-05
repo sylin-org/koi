@@ -1584,6 +1584,147 @@ mod tests {
         );
     }
 
+    /// Pin the documented operator-route matrix to the production middleware.
+    /// Handlers return `200`; any other status therefore comes from the real DAT
+    /// boundary, including the intentional enrollment exception and remote-read
+    /// distinction.
+    #[tokio::test]
+    async fn documented_route_auth_matrix_matches_production_middleware() {
+        struct Case {
+            name: &'static str,
+            method: &'static str,
+            path: &'static str,
+            peer: &'static str,
+            token: bool,
+            expected: StatusCode,
+        }
+
+        let cases = [
+            Case {
+                name: "public bootstrap",
+                method: "GET",
+                path: koi_certmesh::http::paths::BOOTSTRAP,
+                peer: "192.168.1.50:40000",
+                token: false,
+                expected: StatusCode::OK,
+            },
+            Case {
+                name: "public signed trust bundle",
+                method: "GET",
+                path: koi_certmesh::http::paths::TRUST_BUNDLE,
+                peer: "192.168.1.50:40000",
+                token: false,
+                expected: StatusCode::OK,
+            },
+            Case {
+                name: "local full status",
+                method: "GET",
+                path: koi_certmesh::http::paths::STATUS,
+                peer: "127.0.0.1:40000",
+                token: false,
+                expected: StatusCode::OK,
+            },
+            Case {
+                name: "remote full status without DAT",
+                method: "GET",
+                path: koi_certmesh::http::paths::STATUS,
+                peer: "192.168.1.50:40000",
+                token: false,
+                expected: StatusCode::UNAUTHORIZED,
+            },
+            Case {
+                name: "remote full status with DAT",
+                method: "GET",
+                path: koi_certmesh::http::paths::STATUS,
+                peer: "192.168.1.50:40000",
+                token: true,
+                expected: StatusCode::OK,
+            },
+            Case {
+                name: "enrollment uses invite or TOTP instead of DAT",
+                method: "POST",
+                path: koi_certmesh::http::paths::JOIN,
+                peer: "192.168.1.50:40000",
+                token: false,
+                expected: StatusCode::OK,
+            },
+            Case {
+                name: "operator mutation without DAT",
+                method: "POST",
+                path: koi_certmesh::http::paths::REVOKE,
+                peer: "127.0.0.1:40000",
+                token: false,
+                expected: StatusCode::UNAUTHORIZED,
+            },
+            Case {
+                name: "operator mutation with DAT",
+                method: "POST",
+                path: koi_certmesh::http::paths::REVOKE,
+                peer: "127.0.0.1:40000",
+                token: true,
+                expected: StatusCode::OK,
+            },
+            Case {
+                name: "remote HTTP MCP without DAT",
+                method: "GET",
+                path: paths::MCP,
+                peer: "192.168.1.50:40000",
+                token: false,
+                expected: StatusCode::UNAUTHORIZED,
+            },
+            Case {
+                name: "remote HTTP MCP with DAT",
+                method: "GET",
+                path: paths::MCP,
+                peer: "192.168.1.50:40000",
+                token: true,
+                expected: StatusCode::OK,
+            },
+            Case {
+                name: "Pond operator control",
+                method: "GET",
+                path: "/v1/pond",
+                peer: "127.0.0.1:40000",
+                token: false,
+                expected: StatusCode::UNAUTHORIZED,
+            },
+        ];
+
+        let expected = Arc::new("secret-token".to_string());
+        let mut router = Router::new();
+        for path in [
+            koi_certmesh::http::paths::BOOTSTRAP,
+            koi_certmesh::http::paths::TRUST_BUNDLE,
+            koi_certmesh::http::paths::STATUS,
+            koi_certmesh::http::paths::JOIN,
+            koi_certmesh::http::paths::REVOKE,
+            paths::MCP,
+            "/v1/pond",
+        ] {
+            router = router.route(path, axum::routing::any(|| async { "ok" }));
+        }
+        let app = router.layer(middleware::from_fn(move |req, next| {
+            let expected = expected.clone();
+            dat_auth_middleware(req, next, expected)
+        }));
+
+        for case in cases {
+            let mut builder = Request::builder().method(case.method).uri(case.path);
+            if case.token {
+                builder = builder.header(DAT_HEADER, "secret-token");
+            }
+            let mut req = builder.body(Body::empty()).unwrap();
+            req.extensions_mut()
+                .insert(ConnectInfo(case.peer.parse::<SocketAddr>().unwrap()));
+            assert_eq!(
+                app.clone().oneshot(req).await.unwrap().status(),
+                case.expected,
+                "{}",
+                case.name
+            );
+        }
+    }
+
     #[tokio::test]
     async fn mcp_http_disabled_fallback_is_503() {
         let app = disabled_fallback_router("mcp-http");
