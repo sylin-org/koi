@@ -114,7 +114,7 @@ identity and complete hosted/native evidence, even if infrastructure tasks passe
 | [R25](R25-developer-and-agent-experience.md) | R05, R17, R19, R21 | queued | pending | alpine-linux | - | See required subrows below |
 | [R26](R26-documentation-and-contributor-path.md) | R02, R09, R14, R15, R18, R22, R23, R24, R25 | queued | pending | bluefin-linux | - | Wait for dependencies |
 | [R27](R27-accessibility-and-interaction-proof.md) | R09, R10, R18, R22 | queued | pending | cachyos-linux | - | Wait for dependencies |
-| [R28](R28-ci-and-release-contracts.md) | R01 | queued | pending | alpine-linux | - | Eligible: claim CI and release contracts |
+| [R28](R28-ci-and-release-contracts.md) | R01 | in_progress | pending | alpine-linux | [reports/R28.md](reports/R28.md) | Implement claimed CI/candidate evidence boundary from `5557d5c` |
 | [R29](R29-candidate-fleet-acceptance.md) | R02, R03, R09, R10, R12, R13, R14, R15, R18, R23, R24, R25, R26, R27, R28 | queued | pending | cachyos-linux | - | See required subrows below |
 | [R30](R30-usability-and-release-review.md) | R29 | queued | pending | cachyos-linux | - | Wait for dependencies |
 
