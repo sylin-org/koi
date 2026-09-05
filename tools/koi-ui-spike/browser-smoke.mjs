@@ -1,7 +1,7 @@
 // Offline Chromium component smoke, not installed WebKit/native acceptance.
 // Only generated HTML in this experiment's target directory may be loaded.
 import { spawn } from 'node:child_process';
-import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -114,7 +114,42 @@ try {
     clip: { x: 0, y: 0, width: 320, height: Math.ceil(layout.cssContentSize.height), scale: 1 },
   });
   await writeFile(input.replace(/\.html$/, '.png'), Buffer.from(capture.data, 'base64'));
-  console.log(JSON.stringify({ ...metrics, keyboard: focus.result.value }, null, 2));
+  // Exercise the native fallback even when the engine's media preference fails
+  // to track the OS: motion must stop and resume without replacing the card.
+  await page('Emulation.setEmulatedMedia', {
+    features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }],
+  });
+  const motion = async () => {
+    const response = await page('Runtime.evaluate', {
+      expression: `new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve({
+        halo: getComputedStyle(document.querySelector('.mascot-halo')).animationName,
+        reduced: matchMedia('(prefers-reduced-motion: reduce)').matches,
+        card: document.querySelector('.tcg').textContent,
+        images: [...document.images].every(i => i.complete && i.naturalWidth === 100)
+      }))))`, awaitPromise: true, returnByValue: true,
+    });
+    assert.equal(response.exceptionDetails, undefined);
+    return response.result.value;
+  };
+  const animated = await motion();
+  assert.equal(animated.halo, 'card-halo');
+  assert.equal(animated.reduced, false);
+  const reduction = await readFile(path.join(root, 'assets/reduced-motion.css'), 'utf8');
+  await page('Runtime.evaluate', {expression: `(() => {
+    const style = document.createElement('style'); style.id = 'native-motion-test';
+    style.textContent = ${JSON.stringify(reduction)}; document.head.append(style);
+  })()`});
+  const reduced = await motion();
+  assert.equal(reduced.halo, 'none');
+  assert.equal(reduced.reduced, false);
+  assert.equal(reduced.card, animated.card);
+  assert.equal(reduced.images, true);
+  await page('Runtime.evaluate', {expression: `document.getElementById('native-motion-test').remove()`});
+  const resumed = await motion();
+  assert.equal(resumed.halo, 'card-halo');
+  assert.equal(resumed.card, animated.card);
+  console.log(JSON.stringify({ ...metrics, keyboard: focus.result.value,
+    nativeFallback: [animated.halo, reduced.halo, resumed.halo] }, null, 2));
 } finally {
   await call('Browser.close').catch(() => browser.kill('SIGTERM'));
   if (browser.exitCode === null) await new Promise(resolve => browser.once('exit', resolve));

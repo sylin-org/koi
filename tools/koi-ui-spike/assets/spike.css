@@ -17,7 +17,3 @@ p { color: var(--ink-2); overflow-wrap: anywhere; }
 .service-row span { color: var(--ink-2); }
 .tcg { cursor: default; max-width: 100%; }
 .tcg .card-title .role, .tcg .card-foot .flavor { color: var(--ink-3); }
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
-  .tcg:hover { transform: none; }
-}

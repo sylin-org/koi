@@ -615,3 +615,16 @@ after removal. Native proof must show nonzero/zero/nonzero image differences acr
 package; preserve the current package for guarded rollback. Keep the installed R05
 daemon untouched (R20 source is not an implicit deployment). Reissue exact peer
 requests only after the corrected artifact is published/proven on CachyOS.
+
+### Shared fallback checkpoint
+
+Extracted the existing reduction rules into `assets/reduced-motion.css` and
+exported `REDUCED_MOTION_CSS`; both renderers still wrap those exact rules in the
+browser media query. Seven shared tests, formatting and strict all-target Clippy
+with both renderer features pass. Offline Chromium checks pass for Maud and
+Dioxus: 320 px navigation, no clipped text, original images, keyboard focus,
+zero external assets, media reduction, and `card-halo → none → card-halo` when
+the native fallback is inserted/removed while media remains no-preference.
+This proves the shared declarations, not native GTK integration. Publishing this
+source first allows the desktop's two Git dependencies to pin the same immutable
+revision; installed native proof and peer retries are still pending.

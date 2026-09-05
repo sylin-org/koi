@@ -7,6 +7,9 @@ pub mod dioxus_view;
 #[cfg(feature = "maud-renderer")]
 pub mod maud_view;
 
+/// Shared rules for browser media queries and native preference fallbacks.
+pub const REDUCED_MOTION_CSS: &str = include_str!("../assets/reduced-motion.css");
+
 pub const NAVIGATION: [(&str, &str); 4] = [
     ("home", "Home"),
     ("devices", "Devices"),
@@ -51,7 +54,8 @@ pub fn document(rendered_body: String) -> String {
          <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
          <meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; \
          img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'\">\
-         <title>Koi renderer experiment</title><style>{}\n{}</style></head>\
+         <title>Koi renderer experiment</title><style>{}\n{}\n\
+         @media (prefers-reduced-motion: reduce) {{ {REDUCED_MOTION_CSS} }}</style></head>\
          <body>{rendered_body}</body></html>",
         include_str!("../assets/family-v1.css"),
         include_str!("../assets/spike.css"),
