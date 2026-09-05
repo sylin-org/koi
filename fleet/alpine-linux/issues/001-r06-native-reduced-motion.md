@@ -1,7 +1,7 @@
 # Issue 001 — Alpine packaged renderer does not visibly honor native reduced motion
 
 **Opened:** 2026-09-05 during `R06/alpine-packaged-renderer`
-**Status:** open — return to the CachyOS R06 renderer owner
+**Status:** resolved — corrected packaged peer run accepted
 **Machine:** test-03 (Alpine Linux, Plasma Wayland)
 **Run:** `r06-native-c497b3b-alpine-20260905`
 **Desktop source:** `c497b3bc6ca2f99799b2f5e268a841f5c4d36d77`
@@ -54,3 +54,35 @@ restored to SHA-256
 `52a303e711ece1fd940a7507f587acf276a30661c1d16edd640091f26145209b` and
 `2ef10e0c8bc32c47b5960d7be9bb4d4ef01eafc2733a668f39ac539cd1498662`;
 the final XSetting is `Gtk/EnableAnimations=1`, matching the baseline.
+
+## Resolution
+
+The corrected desktop source
+`ccee0fce1bb579e032a0aad2a8603f869b22a2b2` (shared renderer/client pin
+`72cb286f7c4b4c285893693a58fdebcf896a1538`) resolves the shared-boundary
+defect. Run `r06-native-ccee0fc-alpine-20260905` built and installed signed
+native APKs, then observed the package process through the actual toolkit path:
+
+- the display backend was `GdkWaylandDisplay`; both GTK
+  `gtk-enable-animations` and GDK `gtk-enable-animations` reported `1`, then
+  `0`, then `1` as the safely controllable GSettings value changed;
+- the same installed evaluation PID `1902` visibly animated, became static,
+  and resumed animation. The reduced pair was byte-identical (AE and RMSE
+  both zero), while the animated pairs had non-zero AE/RMSE;
+- a second installed process started while the setting was already disabled.
+  Its first pair differed only in the 5 by 613 px fading native scrollbar at
+  the right edge; after that native chrome settled, two uncropped full-window
+  captures were byte-identical and the original Koi card remained intact.
+
+This also corrects the diagnostic assumption in the original run: XSettings
+was controllable, but it was not the active preference path for WebKitGTK on
+this Plasma/Wayland session. The read-only GTK/GDK observer proved that the
+actual backend follows GSettings here. All controllable preferences were
+restored to explicit `true`; the GTK and XSettings files retain their exact
+baseline hashes above.
+
+The separate keyboard-focus limitation remains explicit and unchanged:
+`/dev/uinput` is root-owned mode 0600 and the compositor exposes no usable
+virtual-keyboard protocol. No permission was weakened and no privileged input
+was injected, so this host still makes no native keyboard-focus claim. That
+infrastructure limitation does not reopen this reduced-motion issue.
