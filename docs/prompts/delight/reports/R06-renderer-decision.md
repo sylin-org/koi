@@ -244,3 +244,84 @@ claim: reconcile peer compiler results, specify/claim the native packaged integr
 and interruption-safe restoration, then serially upgrade the one installed daemon
 and workbench for the live-row/offline/native acceptance cases. Do not deploy the
 prepared binary or mark linux-ready merely because the source gates pass.
+
+## Packaged integration claim expansion — 2026-09-05
+
+The owner instructed CachyOS to proceed with packaged integration and native proof.
+Starting revisions: Koi `a1c1ff8`, desktop `ba39faf`. Resume only
+R06/renderer-decision; shared-shell and final renderer selection remain pending.
+
+**Task:** Exercise the Maud candidate through the one installed Tauri workbench
+using the same shared Rust document and authenticated client as the headless probe.
+This is a native evaluation of candidate A, not a default-product renderer switch.
+
+**Files read:** Desktop Cargo manifest/build/config and capability files define
+the existing package/security boundaries; `main.rs` owns singleton/tray/window
+construction; `local_daemon.rs` and `koi-client` own authenticated local access;
+the spike library/CLI own the already-tested document and schema consumption;
+the native Arch PKGBUILD owns the durable installed artifact. Tauri 2.11.5's
+local source and official Builder docs confirm an asynchronous custom URI scheme
+can return owned HTML without binding another HTTP listener.
+
+**Reusing:** Seven passing shared renderer tests, original assets, existing
+`KoiClient::from_local`, typed catalog/schema, existing singleton and tray lifecycle,
+native Arch package recipe and ownership-aware daemon installer. Explicit constant/
+type searches found 80 binary constant lines, 157 common type lines, 2 mDNS
+`protocol.rs` enums, 9 client type lines and 394 domain type lines. No new catalog,
+credential, protocol/domain DTO or persistence owner is required.
+
+**Creating new:**
+
+| Exact write path | Change and placement |
+|---|---|
+| `koi-desktop/Cargo.toml`, `Cargo.lock` | Pin `koi-ui-spike` and `koi-client` to published Koi source `d2f6645`; only Maud feature compiled; no build/runtime sibling checkout dependency |
+| `koi-desktop/src/renderer_probe.rs` | Explicit `--renderer-probe` selection, restricted asynchronous internal protocol, Rust-only catalog read/render, safe unavailable response and focused route tests |
+| `koi-desktop/src/main.rs` | Register protocol; select evaluation URL in existing main window only when requested; preserve normal startup/singleton/tray/control paths |
+| `koi-desktop/README.md` | Reproducible locked native evaluation, provenance, normal-mode restoration and non-acceptance limits |
+| `tools/koi-ui-spike/native/` | Own-host baseline/rollback and verification helpers if needed; exact guarded targets, no peer mutation |
+| This report, ADR-045, CachyOS journal and selected ledger/peer rows | Claims and exact source/artifact/native evidence; no premature renderer selection |
+
+**Pattern:** Reuse `build_workbench` and its existing singleton; return the shared
+`maud_view::render` document through Tauri's asynchronous custom protocol. Use
+the already-typed Koi client to read inside Rust. Only GET of the evaluation root
+from the active main evaluation window may read the daemon. No arbitrary URL,
+filesystem path, JS-owned catalog, token output, extra listener or mutation route.
+The document's script-free CSP and embedded original assets stay self-contained;
+normal workbench CSP/capabilities remain unchanged.
+
+**Risks:** Custom-protocol origins differ on Windows; retain its native compile/
+physical obligations. Packaged WebKit may expose rendering or scheme issues that
+Chromium cannot prove. Git dependency resolution must work from published source,
+not an implicit local path. Evaluation mode must not bypass singleton, alter
+autostart intent, enter the published Pond bundle or become a permanent second UI.
+No `mdns-sd` imports, duplicate common types, centralized new constants or upward
+domain dependencies. New helper state is presentation/transport only; no wire
+schema additions. The existing protocol tests and seven rendering behavior tests
+remain authoritative and native routing gets its own negative tests.
+
+### Own-host mutation envelope (only after package/source checks pass)
+
+1. Recheck host `test-01`, the one service/workbench, installed binary/package hashes,
+   unit/enablement, real data root, operator socket ownership, autostart, provider,
+   firewall and disabled-Pond baseline. Prepare exact private backup/rollback
+   material and an interruption-safe restoration mechanism before any stop/upgrade.
+2. Use the prior fully-tested daemon product tree and verify prepared binary hash
+   `dc1ebd15b8d1bf2d725c212912d78a5dd9581aa897c505596e8b0a268d9b3975`.
+   Serially upgrade the existing system service through `koi install`; preserve
+   identity, state, configured ports and operator policy. Never start a test daemon.
+3. Build/test the published desktop revision with its locked dependencies; use the
+   existing Arch recipe and pacman to upgrade its one durable package. Preserve
+   the old package or an equivalent supported exact-byte recovery artifact first.
+4. Stop the old workbench, install, launch the package-owned executable with
+   `--renderer-probe` in the existing Plasma login. Verify live row/original card,
+   offline assets, visible narrow/focus behavior, tray close/reveal and singleton
+   rejection. Use existing poke/tray routes; no debug server or new network port.
+5. End with exactly one healthy daemon and one normal-mode packaged workbench;
+   evaluation mode must not persist into autostart. Restore every temporary native
+   change and remove run-owned helpers/credentials. If any required validation
+   fails, restore the exact prior deployment before reporting that failure.
+
+This reserves only the named desktop paths, optional native helper subtree and
+owned evidence, not root manifests/lockfiles, shared service types or CONTRACT.md.
+Existing peer requests still compile their immutable `d2f6645` probe; packaged
+desktop requests will name the later exact desktop revision separately.
