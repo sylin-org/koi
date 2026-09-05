@@ -91,8 +91,8 @@ or event bus is introduced.
 | DNS service name | `koi-dns` facade/scoped desired set | sharing and secure setup | existing owner, extended R17/R21 |
 | mDNS advertisement | `koi-mdns::MdnsCore` registration session | runtime/sharing/secure setup | existing |
 | URL diagnosis | `koi-compose::diagnosis::ServiceDiagnosis`, `crates/koi-compose/src/diagnosis.rs` | serve/client/CLI/UI | proposed, R19 |
-| Service-name certificate grant | `koi-certmesh::service_names`, `crates/koi-certmesh/src/service_names.rs` | secure setup | proposed, R20 |
-| Leaf issuance/renewal | `koi-certmesh` facade and repository | proxy TLS identity input | existing owner, extended R20 |
+| Service-name certificate grant | `koi-certmesh::service_names`, `crates/koi-certmesh/src/service_names.rs`; roster field `service_name_grants` | secure setup | implemented, R20 |
+| Leaf issuance/renewal | `koi-certmesh::{ensure_service_certificate, renew_service_certificate}` facade and atomic repository | proxy TLS identity input | implemented owner seam, R20; composed by R21 |
 | Secure setup intent/receipts | `koi-compose::secure_service::SecureServiceRuntime`, `crates/koi-compose/src/secure_service.rs`; `state/secure-services.json` | serve/client/UI | proposed, R21 |
 | OS trust roots | `koi-trust::TrustCore` | secure/client setup | existing |
 | HTTP/SSE adapters | focused `catalog.rs`, `preferences.rs`, `sharing.rs`, `diagnosis.rs`, `secure_service.rs` under `crates/koi-serve/src/` | all HTTP callers | catalog/preferences implemented by R05; remaining adapters proposed in owning tasks |
@@ -426,6 +426,15 @@ Unauthorized SANs/wildcards are rejected. Name/port conflicts settle as retained
 errors. Issuance/reload failure preserves the last accepted usable material. Stop
 removes only operation-owned name/publication/listener/firewall resources and does not
 destroy mesh membership, foreign roots, unrelated proxy entries, or the backend.
+
+R20 fixes the certificate boundary: a schema-1 `ServiceNameGrant` binds one stable
+`ServiceId`, one normalized non-wildcard configured-zone name, and either `HostProxy`
+or one existing ACME account thumbprint. Exact duplicate grants are idempotent;
+different owners/services conflict rather than transfer. Host material lives beneath
+`certs/services/<dns-name>/` and is atomically replaced with its public roster status.
+ACME new-order and finalization both require exactly one account-bound grant. Grant
+removal immediately prevents further issuance; without CRL/OCSP, copied ordinary TLS
+leaves can remain acceptable until `NotAfter`.
 
 Per-workload private-key delivery, arbitrary browser support, public certificates,
 identity-aware access enforcement, and automatic root rollout to phones/appliances are

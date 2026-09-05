@@ -50,6 +50,19 @@ pub enum KoiEvent {
     CertRenewed {
         expires_at: chrono::DateTime<chrono::Utc>,
     },
+    /// A host or ACME consumer received an exact service-name leaf. This event
+    /// deliberately carries no certificate or private-key bytes.
+    ServiceCertificateIssued {
+        service_id: koi_common::service::ServiceId,
+        dns_name: String,
+        expires_at: chrono::DateTime<chrono::Utc>,
+        renewed: bool,
+    },
+    /// One exact service-name authorization was removed.
+    ServiceNameRevoked {
+        service_id: koi_common::service::ServiceId,
+        dns_name: String,
+    },
     /// The leaf is past its renewal threshold but renewal is failing.
     CertExpiringSoon {
         days_left: i64,

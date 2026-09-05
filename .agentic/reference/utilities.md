@@ -414,6 +414,9 @@ storage as read-only status instead of replacing it.
 | --------------- | ------------------------------------------------------- |
 | `CertmeshCore`  | Main domain facade (enrollment, status, CA init/unlock) |
 | `CertmeshError` | Domain error enum (thiserror)                           |
+| `ServiceNameGrant` | Durable exact DNS-name authorization for one stable service and certificate owner |
+| `ServiceNameOwner` | Host Proxy or one persisted ACME account thumbprint |
+| `ServiceCertificate` | Non-serializable, redacted host-held leaf/key/chain returned to the TLS consumer |
 
 ### `koi_certmesh::protocol`
 

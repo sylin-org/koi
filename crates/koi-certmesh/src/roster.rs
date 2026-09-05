@@ -17,6 +17,10 @@ pub struct Roster {
     pub members: Vec<RosterMember>,
     #[serde(default)]
     pub revocation_list: Vec<RevokedMember>,
+    /// Exact service-name issuance grants. Older rosters load with none; service
+    /// names are never inferred from member SANs or discovery labels.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub service_name_grants: Vec<crate::service_names::ServiceNameGrant>,
 }
 
 /// Mesh-wide metadata set at creation time.
@@ -216,6 +220,7 @@ impl Roster {
             },
             members: Vec::new(),
             revocation_list: Vec::new(),
+            service_name_grants: Vec::new(),
         }
     }
 
@@ -232,6 +237,7 @@ impl Roster {
             },
             members: Vec::new(),
             revocation_list: Vec::new(),
+            service_name_grants: Vec::new(),
         }
     }
 
@@ -560,6 +566,7 @@ mod tests {
         assert!(r.members[0].reload_hook.is_none());
         assert!(r.members[0].last_seen.is_none());
         assert!(r.members[0].pinned_ca_fingerprint.is_none());
+        assert!(r.service_name_grants.is_empty());
     }
 
     #[test]

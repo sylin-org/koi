@@ -6,8 +6,9 @@ another machine on the LAN — DNS name and trusted certificate, no manual cert 
 This is a cross-cutting recipe: it leans on four capabilities at once (mDNS, DNS,
 certmesh, proxy) and the runtime adapter that ties them together. If you only want one of
 those, read its guide instead — [runtime.md](../runtime.md), [proxy.md](../proxy.md),
-[dns.md](../dns.md), [certmesh.md](../certmesh.md). This page is the assembled flow, and
-it is honest about the one part labels *cannot* do for you.
+[dns.md](../dns.md), [certmesh.md](../certmesh.md). This page shows the current
+substrate and is explicit about the coordinator work that still separates labels
+from a complete secure-service operation.
 
 ---
 
@@ -18,12 +19,12 @@ it is honest about the one part labels *cannot* do for you.
 - A certificate that chains to a CA your network trusts, so clients that trust the root
   don't see an "unknown issuer" warning.
 
-One catch, stated up front because it shapes the whole recipe: the labels get you a
-*trusted chain* and a *DNS name*, but they do **not** mint a certificate whose name is
-`app.internal`. The proxy serves the **host's** certmesh member certificate, whose SANs are the
-host's own name — not `app.internal`. So the genuinely warning-free address is the host's name;
-making `https://app.internal` itself warning-free is the last-mile step at the end. No magic
-per-container cert is injected — see [The honest reality](#the-honest-reality).
+One catch, stated up front because it shapes the whole recipe: labels create a DNS
+name and listener, but they do **not** invoke the service-name grant and certificate
+facade. The proxy therefore serves the host member certificate, whose SANs do not
+include `app.internal`. R20 provides an exact-name, host-custodied leaf lifecycle;
+R21 still has to compose it with labels and Proxy reload. No private key is injected
+into the container — see [The honest reality](#the-honest-reality).
 
 ---
 
@@ -150,24 +151,28 @@ So after you trust the root on the client:
   mismatch**, because `app.internal` is not in the certificate. The `koi.certmesh` label does
   not fix this — there is no per-container cert.
 
-To make `https://app.internal` itself warning-free, you need a certificate whose SAN includes
-`app.internal`. Koi gives you two first-class ways to get one — both produce a cert the same
-trusted CA signed:
+To make `https://app.internal` itself warning-free, you need a certificate whose only
+SAN is `app.internal`. Koi's Certmesh domain now models that as an exact grant bound to
+the stable service ID and either the host Proxy or one ACME account. Name conflicts,
+out-of-zone names, multi-name orders, and every wildcard fail closed. The two
+certificate-consumer paths are:
 
-1. **ACME, in-zone (recommended).** Koi runs an [RFC 8555 ACME server](../acme.md) in front
-   of the CA that issues for any name **inside your Koi DNS zone** (`app.internal` qualifies).
-   Point Caddy/Traefik/`lego` at Koi's directory, have it trust the root once, and it gets
-   (and auto-renews) a cert for `app.internal`. Front your service with that proxy instead of —
-   or behind — Koi's passthrough.
-2. **Per-entry cert on disk.** Place a `fullchain.pem` + `key.pem` at
-   `<data-dir>/certs/app/` (the proxy entry name). The proxy prefers a per-entry cert over
-   the host member cert, so it will serve that one. You issue it however you like, as long
-   as it's signed by the trusted CA and lists `app.internal`. See
-   [proxy.md → Certificates](../proxy.md#certificates).
+1. **Host Proxy termination (the supported secure-service strategy).** Certmesh keeps
+   the key on the host and atomically installs `cert.pem`, `key.pem`, `ca.pem`, and
+   `fullchain.pem` beneath `<data-dir>/certs/services/app.internal/`. Renewal rotates
+   the key and preserves the previous usable files if signing or persistence fails.
+   R21 owns the operation that grants the name and hands this material to Proxy's
+   existing hot-reload input; the label alone does not perform those steps yet.
+2. **Account-bound ACME.** Register the external proxy's P-256 account, have the secure
+   operator bind `app.internal` to that exact account, and use the
+   [RFC 8555 facade](../acme.md). Being merely in-zone is insufficient and wildcard
+   orders are rejected. R24 owns the finished maintained external-proxy workflow.
 
 This is the substrate doctrine: the labels assemble name + listener + trusted chain
-automatically; the SAN-matching cert is the deliberate step, and Koi hands you a standard
-ACME endpoint to automate it rather than inventing a private mechanism.
+automatically; the SAN-matching cert is a separately authorized step. Certmesh offers
+a standard ACME endpoint for external consumers and a typed host facade for Koi Proxy.
+The public composition remains deliberately deferred to R21/R24 rather than implied
+by labels.
 
 ---
 

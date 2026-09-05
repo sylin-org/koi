@@ -210,6 +210,23 @@ frozen cryptographic labels and established wire identities do not change in pla
 
 ## Consequences
 
+### R20 implementation note (2026-09-05)
+
+`koi-certmesh::service_names` now owns schema-1 `ServiceNameGrant` records in the
+atomic Certmesh roster. A grant binds one stable `ServiceId` and exact configured-zone
+DNS name to either the host Proxy or one persisted ACME account thumbprint. Names are
+unique, wildcards and multi-name ACME orders are rejected, and authorization is
+rechecked immediately before signing.
+
+Host-Proxy issuance keeps key material under
+`certs/services/<dns-name>/`, installs the key/leaf/chain and grant status in one
+recoverable transaction, and rotates without a broken interval. ACME records only
+the public leaf fingerprint and expiry on the grant; it does not create Certmesh
+membership. Revoking a grant immediately blocks Koi-aware issuance and removes
+host-owned active material. Ordinary TLS clients receive no CRL/OCSP signal and may
+accept a copied leaf until its actual `NotAfter`. R21 owns Proxy operation/reload
+composition, and R24 owns the finished external-proxy integration.
+
 ### Positive
 
 - Every presentation can answer from one coherent service snapshot without stealing

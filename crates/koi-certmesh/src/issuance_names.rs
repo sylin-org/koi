@@ -34,6 +34,28 @@ impl IssuanceNames {
         &self.zone
     }
 
+    /// Validate one exact service name in the configured zone.
+    ///
+    /// Service grants never accept the zone apex, IP addresses, wildcards, or
+    /// names from another zone. A trailing DNS root dot is normalized away.
+    pub(crate) fn service_name(&self, requested: &str) -> Result<String, CertmeshError> {
+        let name = requested.trim().trim_end_matches('.').to_ascii_lowercase();
+        if name.parse::<IpAddr>().is_ok() || name.contains('*') {
+            return Err(CertmeshError::InvalidPayload(
+                "service certificate names must be exact DNS names, not IPs or wildcards".into(),
+            ));
+        }
+        validate_hostname(&name)?;
+        let suffix = format!(".{}", self.zone);
+        if name == self.zone || !name.ends_with(&suffix) {
+            return Err(CertmeshError::InvalidPayload(format!(
+                "service name '{name}' is outside configured zone '{}'",
+                self.zone
+            )));
+        }
+        Ok(name)
+    }
+
     /// Authorize the standard member names plus bounded caller-provided extras.
     pub(crate) fn member_sans(
         &self,
@@ -111,6 +133,23 @@ impl IssuanceNames {
             })
         })
     }
+
+    /// Whether the leaf's complete DNS/IP SAN set exactly equals `required`.
+    pub(crate) fn certificate_has_exact_sans(cert_pem: &str, required: &[String]) -> bool {
+        let Ok(pem) = pem::parse(cert_pem) else {
+            return false;
+        };
+        let Ok((_, cert)) = X509Certificate::from_der(pem.contents()) else {
+            return false;
+        };
+        let Ok(Some(san)) = cert.subject_alternative_name() else {
+            return false;
+        };
+        if san.value.general_names.len() != required.len() {
+            return false;
+        }
+        Self::certificate_covers(cert_pem, required)
+    }
 }
 
 impl Default for IssuanceNames {
@@ -176,5 +215,22 @@ mod tests {
             sans,
             ["node-a", "node-a.internal", "localhost", "127.0.0.1"]
         );
+    }
+
+    #[test]
+    fn service_names_are_exact_and_inside_the_configured_zone() {
+        let names = IssuanceNames::new("Lab.Internal.").unwrap();
+        assert_eq!(
+            names.service_name(" Grafana.Lab.Internal. ").unwrap(),
+            "grafana.lab.internal"
+        );
+        for invalid in [
+            "lab.internal",
+            "grafana.internal",
+            "*.lab.internal",
+            "10.0.0.7",
+        ] {
+            assert!(names.service_name(invalid).is_err(), "accepted {invalid}");
+        }
     }
 }

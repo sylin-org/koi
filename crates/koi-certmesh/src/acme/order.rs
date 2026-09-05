@@ -5,14 +5,14 @@
 //! ```text
 //! Order ── authorizations ──> Authz ── challenges ──> Challenge (dns-01)
 //!   │
-//!   ├─ identifiers (the requested names; all in-zone, validated at new-order)
+//!   ├─ identifiers (exact account grants, validated at new-order)
 //!   ├─ status: pending → ready → valid (→ invalid on failure)
 //!   └─ certificate id (set at finalize)
 //! ```
 //!
 //! The **security boundary** lives here and in the router's `finalize` handler:
-//! - identifiers are validated to be in-zone at order creation (out-of-zone →
-//!   `rejectedIdentifier`); the wildcard `*.<zone>` is allowed;
+//! - identifiers are validated as exact, account-bound service-name grants at
+//!   order creation; wildcards and merely-in-zone names are rejected;
 //! - at finalize, every CSR SAN MUST be one of the order's authorized
 //!   identifiers, else the order is rejected and nothing is signed.
 

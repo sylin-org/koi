@@ -218,6 +218,27 @@ fn map_certmesh(event: koi_certmesh::CertmeshEvent) -> DashboardSseEvent {
             "certmesh.cert_renewed",
             serde_json::json!({ "expires_at": expires_at }),
         ),
+        koi_certmesh::CertmeshEvent::ServiceCertificateIssued {
+            service_id,
+            dns_name,
+            expires_at,
+            renewed,
+        } => ev(
+            "certmesh.service_certificate_issued",
+            serde_json::json!({
+                "service_id": service_id,
+                "dns_name": dns_name,
+                "expires_at": expires_at,
+                "renewed": renewed,
+            }),
+        ),
+        koi_certmesh::CertmeshEvent::ServiceNameRevoked {
+            service_id,
+            dns_name,
+        } => ev(
+            "certmesh.service_name_revoked",
+            serde_json::json!({ "service_id": service_id, "dns_name": dns_name }),
+        ),
         koi_certmesh::CertmeshEvent::CertExpiringSoon { days_left } => ev(
             "certmesh.cert_expiring_soon",
             serde_json::json!({ "days_left": days_left }),
@@ -441,6 +462,22 @@ mod tests {
     fn certmesh_destroyed_maps_without_payload() {
         let mapped = map_certmesh(koi_certmesh::CertmeshEvent::Destroyed);
         assert_eq!(mapped.event_type, "certmesh.destroyed");
+    }
+
+    #[test]
+    fn service_certificate_events_expose_only_public_identity_facts() {
+        let service_id = koi_common::service::ServiceId::new("svc_dashboard").unwrap();
+        let mapped = map_certmesh(koi_certmesh::CertmeshEvent::ServiceCertificateIssued {
+            service_id,
+            dns_name: "dashboard.internal".into(),
+            expires_at: chrono::DateTime::UNIX_EPOCH,
+            renewed: false,
+        });
+        assert_eq!(mapped.event_type, "certmesh.service_certificate_issued");
+        assert_eq!(mapped.data["service_id"], "svc_dashboard");
+        assert_eq!(mapped.data["dns_name"], "dashboard.internal");
+        assert!(mapped.data.get("key_pem").is_none());
+        assert!(mapped.data.get("cert_pem").is_none());
     }
 
     #[test]

@@ -1122,6 +1122,7 @@ mod tests {
             },
             members: vec![],
             revocation_list: vec![],
+            service_name_grants: vec![],
         };
         let (initial_status, initial_tls_material) = crate::status::build_with_tls(
             &paths,

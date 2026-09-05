@@ -45,7 +45,8 @@ fn normalize(name: &str) -> String {
 ///
 /// The zone is the Koi DNS zone (e.g. `lan`). An identifier is in-zone when it
 /// is the zone itself, a subdomain of the zone, or the wildcard `*.<zone>` (or a
-/// wildcard of any in-zone subdomain). This is the critical issuance boundary:
+/// wildcard of any in-zone subdomain). This is only the zone prefilter; the
+/// service-name grant bound to an exact ACME account is the issuance boundary:
 /// the CA NEVER issues for names outside its own zone (out-of-zone →
 /// `rejectedIdentifier`).
 pub fn is_in_zone(identifier: &str, zone: &str) -> bool {

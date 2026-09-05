@@ -7,8 +7,9 @@ a certificate through their existing ACME support, without replacing the proxy?
 
 That is exactly what the ACME facade does. Koi runs a small **RFC 8555 server** in front of
 its CA. Point an ACME client at Koi's directory URL, have it trust the CA root once, and
-connect its dns-01 provider to Koi's two-command TXT interface. It can then obtain and
-renew certificates for names inside your Koi DNS zone.
+connect its dns-01 provider to Koi's two-command TXT interface. An operator must also
+grant that exact service name to that ACME account. The client can then obtain and
+renew the one certificate authorized by that grant.
 
 You keep Caddy/Traefik, but this is not zero-configuration interoperability: the
 client must support P-256 ACME accounts, a private CA root, and a dns-01 provider
@@ -20,13 +21,15 @@ requirements instead of implying every stock client works unchanged.
 ## Scope (what this is, and isn't)
 
 - **dns-01 only.** The client's provider publishes through `koi dns txt set`; Koi validates
-  against its own DNS resolver. There is no public-DNS propagation wait, and **wildcards +
-  offline issuance work**. `http-01` and `tls-alpn-01` are out of scope.
+  against its own DNS resolver. There is no public-DNS propagation wait. `http-01` and
+  `tls-alpn-01` are out of scope.
 - **EC / ES256 only (v1).** Account keys must be P-256 ECDSA. `RS256` is rejected with
   `badSignatureAlgorithm`. (Most modern ACME clients default to or support EC keys.)
-- **In-zone names only.** Koi issues **only** for identifiers inside your Koi DNS zone
-  (default `internal`). An order for `evil.example.com` is rejected with `rejectedIdentifier`.
-  The wildcard `*.<zone>` is allowed.
+- **One exact granted name only.** Being inside the configured Koi DNS zone (default
+  `internal`) is only a prefilter. Every order must contain exactly one non-wildcard
+  service name already bound to that account. Out-of-zone names and wildcards are
+  rejected with `rejectedIdentifier`; an in-zone name owned by another account is
+  rejected with `unauthorized`.
 - **No OCSP, no CT, no pre-authorization.** This is a homelab/LAN CA facade, not a public CA.
 - **Revocation is Koi metadata, not public-PKI status.** `revoke-cert` updates the
   certmesh roster and signed trust bundle. Koi-aware verification consumes that
@@ -44,19 +47,26 @@ requirements instead of implying every stock client works unchanged.
    revoke-cert}`.
 2. The listener's own certificate is a daemon leaf issued by your certmesh CA. Because it
    chains to the CA root, a client that trusts the root trusts the listener.
-3. A client registers an account (its EC public key), creates an order for a name in your
-   zone, and is handed a `dns-01` challenge.
+3. A client registers an account (its EC public key). A trusted operator/coordinator
+   binds one stable Koi service and exact configured-zone name to that account's key
+   thumbprint. The client creates an order for exactly that name and receives a
+   `dns-01` challenge.
 4. The client's provider calls `koi dns txt set <name> <value>`. Koi serves that ephemeral
    value over DNS and the ACME validator reads it through the same DNS core.
 5. The client finalizes with a CSR. Koi signs **only** the order's authorized names — any
    extra SAN snuck into the CSR is rejected (`badCSR`). The issued leaf + CA chain is
    returned.
-6. The issued cert is recorded in the certmesh roster (`source: acme`), so it shows up in
-   `koi certmesh status` and renewal accounting alongside TOTP-enrolled members.
+6. The public fingerprint and expiry are recorded on the durable service-name grant.
+   ACME issuance does not create a mesh member or grant management-plane identity.
 
 The server starts automatically with the daemon when the CA is **initialized + unlocked**.
 Disable it with `--no-acme` / `KOI_NO_ACME=1`. It needs the DNS capability; with
 `--no-dns` it is skipped.
+
+R20 supplies the typed Certmesh grant/issuance facade. The public operator workflow
+that creates the grant and wires its certificate into a listener belongs to R21/R24;
+until that lands, the standalone recipes below describe the ACME client side but are
+not a complete end-user setup by themselves.
 
 ---
 
@@ -162,11 +172,13 @@ The `koi-dns-hook.sh` script maps `present` to `koi dns txt set` and `cleanup` t
 
 The ACME server mirrors the certmesh enrollment posture:
 
-- **Open** (`koi certmesh open-enrollment`): `new-account` is free — any client can register
-  and order in-zone names. This is the homelab default ("Just Me").
+- **Open** (`koi certmesh open-enrollment`): `new-account` is free, but registration
+  never grants a DNS name. An operator must still bind the exact service name to the
+  registered account.
 - **Closed**: the directory advertises `externalAccountRequired`, and `new-account` without
   an External Account Binding (EAB) is rejected with `externalAccountRequired`. EAB ties new
-  ACME accounts to a certmesh-minted credential. Use this for shared/team meshes.
+  ACME accounts to a certmesh-minted credential. It does not replace the separate,
+  exact service-name grant. Use this for shared/team meshes.
 
 ---
 
@@ -177,7 +189,9 @@ The ACME server mirrors the certmesh enrollment posture:
 - Every response carries a fresh `Replay-Nonce`; a reused nonce is rejected (`badNonce`)
   **with a fresh nonce** so the client recovers.
 - The protected-header `url` must equal the request URL.
-- Identifiers are constrained to the Koi DNS zone (`rejectedIdentifier` otherwise).
+- The configured zone is a prefilter. New-order requires one exact account-bound
+  service grant, rejects wildcards, and finalization repeats the grant check under
+  the signing transition so a revoked grant cannot race a ready order.
 - At finalize, **every CSR SAN must be an authorized identifier of the order** — the CA
   issues a cert bearing only the authorized names, never the CSR's embedded extras.
 - Errors are RFC 8555 `application/problem+json` (`urn:ietf:params:acme:error:*`), not the
@@ -209,7 +223,7 @@ the main HTTP adapter:
 | `GET  /acme/directory` | Directory (endpoint URLs + meta) |
 | `HEAD/GET /acme/new-nonce` | Fresh replay nonce |
 | `POST /acme/new-account` | Register an account (JWS + jwk; EAB in closed mode) |
-| `POST /acme/new-order` | Create an order (in-zone identifiers only) |
+| `POST /acme/new-order` | Create an order for one exact account-granted service name |
 | `POST /acme/authz/{id}` | Authorization (POST-as-GET) |
 | `POST /acme/chall/{id}` | Trigger dns-01 validation |
 | `POST /acme/order/{id}/finalize` | Submit CSR → issue |

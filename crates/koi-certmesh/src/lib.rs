@@ -41,6 +41,7 @@ mod repository;
 pub mod roster;
 pub mod sealed;
 pub mod serve;
+pub mod service_names;
 pub mod status;
 pub mod wordlist;
 
@@ -63,6 +64,9 @@ pub use error::CertmeshError;
 pub use issuance_names::IssuanceNames;
 pub use observation::CertmeshObservation;
 use roster::Roster;
+pub use service_names::{
+    ServiceCertificate, ServiceCertificateStatus, ServiceNameGrant, ServiceNameOwner,
+};
 pub use status::{
     CertmeshAuthorityStatus, CertmeshBootstrapStatus, CertmeshCaAnchor, CertmeshCaAnchorSnapshot,
     CertmeshCaAnchorState, CertmeshIdentityStatus, CertmeshMemberStatus, CertmeshReloadStatus,
@@ -129,6 +133,18 @@ pub enum CertmeshEvent {
     /// The active certificate remains authoritative, but its local consumer
     /// did not reload; the durable intent will be retried at startup.
     ReloadHookFailed { command: String, reason: String },
+    /// A host or account-bound service leaf was installed without exposing its key.
+    ServiceCertificateIssued {
+        service_id: koi_common::service::ServiceId,
+        dns_name: String,
+        expires_at: chrono::DateTime<chrono::Utc>,
+        renewed: bool,
+    },
+    /// An exact service-name grant was withdrawn.
+    ServiceNameRevoked {
+        service_id: koi_common::service::ServiceId,
+        dns_name: String,
+    },
 }
 
 // ── Internal shared state ───────────────────────────────────────────

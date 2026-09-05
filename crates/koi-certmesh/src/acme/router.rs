@@ -496,6 +496,17 @@ async fn new_order(State(state): State<Arc<AcmeState>>, body: Bytes) -> Response
         return problem(&state, AcmeErrorType::Malformed, "no identifiers in order");
     }
 
+    let names = match state.authorize_order_identifiers(&account.id, &names).await {
+        Ok(names) => names,
+        Err(crate::error::CertmeshError::Forbidden(message)) => {
+            return problem(&state, AcmeErrorType::Unauthorized, message)
+        }
+        Err(crate::error::CertmeshError::InvalidPayload(message)) => {
+            return problem(&state, AcmeErrorType::RejectedIdentifier, message)
+        }
+        Err(error) => return problem(&state, AcmeErrorType::ServerInternal, error.to_string()),
+    };
+
     let order = state.orders().create_order(&account.id, names.clone());
     let resp_body = order_to_response(&state, &order);
     let location = state.url(&format!("/acme/order/{}", order.id));
@@ -733,6 +744,7 @@ async fn finalize(
             // Unauthorized SANs / bad CSR → badCSR; CA problems → serverInternal.
             let etype = match &e {
                 crate::error::CertmeshError::InvalidPayload(_) => AcmeErrorType::BadCsr,
+                crate::error::CertmeshError::Forbidden(_) => AcmeErrorType::Unauthorized,
                 crate::error::CertmeshError::CaLocked
                 | crate::error::CertmeshError::CaNotInitialized => AcmeErrorType::ServerInternal,
                 _ => AcmeErrorType::ServerInternal,

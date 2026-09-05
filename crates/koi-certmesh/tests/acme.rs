@@ -7,8 +7,9 @@
 //! 1. **Handler-level security tests** (`raw_*`) drive raw flattened-JWS requests
 //!    against the axum router over plain HTTP on `127.0.0.1:0`. They prove the
 //!    zone boundary, the wrong-key rejection, the nonce-replay rejection, the
-//!    out-of-zone `rejectedIdentifier`, the wildcard-in-zone acceptance, and the
-//!    unauthorized-SAN finalize rejection — deterministically, no TLS.
+//!    out-of-zone `rejectedIdentifier`, exact account-bound service grants,
+//!    wildcard/multi-name rejection, and unauthorized-SAN finalize rejection —
+//!    deterministically, no TLS.
 //!
 //! 2. **The instant-acme conformance test** (`conformance_issues_cert_via_dns01`)
 //!    drives the full RFC 8555 flow end-to-end with a real ACME client over TLS,
@@ -22,8 +23,9 @@ use std::sync::{Arc, Mutex};
 
 use base64::Engine;
 use koi_certmesh::acme::{AcmeState, AcmeStateConfig};
-use koi_certmesh::{protocol, CertmeshCore, CertmeshPaths};
+use koi_certmesh::{protocol, CertmeshCore, CertmeshPaths, ServiceNameOwner};
 use koi_common::integration::AcmeDnsResolver;
+use koi_common::service::ServiceId;
 use p256::ecdsa::signature::Signer;
 use p256::ecdsa::{Signature, SigningKey};
 use serde_json::{json, Value};
@@ -87,6 +89,8 @@ async fn build_ca() -> CaFixture {
     std::mem::forget(tmp); // keep the data dir alive for the test
 
     let core = CertmeshCore::uninitialized_with_paths(paths)
+        .with_dns_zone("lan")
+        .expect("configure test DNS zone")
         .with_local_hostname("acme-test-host")
         .expect("configure test host identity");
     core.create(protocol::CreateCaRequest {
@@ -123,6 +127,19 @@ fn acme_state_for(
         dns,
     });
     (state, solver)
+}
+
+async fn grant_account_name(core: &CertmeshCore, account_id: &str, name: &str) {
+    let service_id = ServiceId::new(format!("svc_acme_{}", name.replace('.', "_"))).unwrap();
+    core.grant_service_name(
+        service_id,
+        name,
+        ServiceNameOwner::AcmeAccount {
+            account_id: account_id.to_string(),
+        },
+    )
+    .await
+    .expect("grant exact ACME service name");
 }
 
 // ── Plain-HTTP server (bind first → learn addr → build state → serve) ─
@@ -317,10 +334,10 @@ async fn raw_out_of_zone_identifier_is_rejected() {
     );
 }
 
-// ── SECURITY GATE TEST 2: wildcard in-zone order succeeds ────────────
+// ── SECURITY GATE TEST 2: wildcard in-zone order is still forbidden ─
 
 #[tokio::test]
-async fn raw_wildcard_in_zone_order_succeeds() {
+async fn raw_wildcard_in_zone_order_is_rejected_without_a_grant_shape() {
     let ca = build_ca().await;
     let (base, _solver) = spawn_http(&ca, "lan").await;
     let client = reqwest::Client::new();
@@ -333,14 +350,70 @@ async fn raw_wildcard_in_zone_order_succeeds() {
     let jws = key.sign_kid(&nonce, &url, &acct, &payload);
     let resp = post_jose(&client, &url, &jws).await;
 
-    assert_eq!(
-        resp.status,
-        201,
-        "wildcard in-zone order must be created, body={}",
-        String::from_utf8_lossy(&resp.body)
-    );
+    assert_eq!(resp.status, 400, "wildcard order must be rejected");
     let body = body_json(&resp);
-    assert_eq!(body["identifiers"][0]["value"].as_str(), Some("*.lan"));
+    assert_eq!(
+        body["type"].as_str(),
+        Some("urn:ietf:params:acme:error:rejectedIdentifier")
+    );
+}
+
+#[tokio::test]
+async fn raw_multi_name_order_is_rejected_even_when_each_name_is_granted() {
+    let ca = build_ca().await;
+    let (base, _solver) = spawn_http(&ca, "lan").await;
+    let client = reqwest::Client::new();
+    let key = ClientKey::new();
+    let (account, account_id) = register_account(&client, &base, &key).await;
+    grant_account_name(&ca.core, &account_id, "one.lan").await;
+    grant_account_name(&ca.core, &account_id, "two.lan").await;
+
+    let nonce = fresh_nonce(&client, &base).await;
+    let url = format!("{base}/acme/new-order");
+    let payload = json!({"identifiers": [
+        {"type": "dns", "value": "one.lan"},
+        {"type": "dns", "value": "two.lan"}
+    ]});
+    let response = post_jose(
+        &client,
+        &url,
+        &key.sign_kid(&nonce, &url, &account, &payload),
+    )
+    .await;
+
+    assert_eq!(response.status, 400);
+    assert_eq!(
+        body_json(&response)["type"].as_str(),
+        Some("urn:ietf:params:acme:error:rejectedIdentifier")
+    );
+}
+
+#[tokio::test]
+async fn raw_account_cannot_order_another_services_exact_name() {
+    let ca = build_ca().await;
+    let (base, _solver) = spawn_http(&ca, "lan").await;
+    let client = reqwest::Client::new();
+    let owner = ClientKey::new();
+    let (_owner_kid, owner_id) = register_account(&client, &base, &owner).await;
+    grant_account_name(&ca.core, &owner_id, "owned.lan").await;
+
+    let attacker = ClientKey::new();
+    let (attacker_kid, _attacker_id) = register_account(&client, &base, &attacker).await;
+    let nonce = fresh_nonce(&client, &base).await;
+    let url = format!("{base}/acme/new-order");
+    let payload = json!({"identifiers": [{"type": "dns", "value": "owned.lan"}]});
+    let response = post_jose(
+        &client,
+        &url,
+        &attacker.sign_kid(&nonce, &url, &attacker_kid, &payload),
+    )
+    .await;
+
+    assert_eq!(response.status, 403);
+    assert_eq!(
+        body_json(&response)["type"].as_str(),
+        Some("urn:ietf:params:acme:error:unauthorized")
+    );
 }
 
 // ── SECURITY GATE TEST 4: wrong-key JWS rejected ─────────────────────
@@ -351,7 +424,8 @@ async fn raw_wrong_key_jws_is_rejected() {
     let (base, _solver) = spawn_http(&ca, "lan").await;
     let client = reqwest::Client::new();
     let key = ClientKey::new();
-    let (acct, _tp) = register_account(&client, &base, &key).await;
+    let (acct, tp) = register_account(&client, &base, &key).await;
+    grant_account_name(&ca.core, &tp, "host.lan").await;
 
     // Sign with a DIFFERENT key than the account, but claim the account's kid.
     let attacker = ClientKey::new();
@@ -378,7 +452,8 @@ async fn raw_nonce_replay_is_bad_nonce() {
     let (base, _solver) = spawn_http(&ca, "lan").await;
     let client = reqwest::Client::new();
     let key = ClientKey::new();
-    let (acct, _tp) = register_account(&client, &base, &key).await;
+    let (acct, tp) = register_account(&client, &base, &key).await;
+    grant_account_name(&ca.core, &tp, "host.lan").await;
 
     let nonce = fresh_nonce(&client, &base).await;
     let url = format!("{base}/acme/new-order");
@@ -413,6 +488,7 @@ async fn raw_finalize_with_unauthorized_san_is_rejected() {
     let client = reqwest::Client::new();
     let key = ClientKey::new();
     let (acct, thumbprint) = register_account(&client, &base, &key).await;
+    grant_account_name(&ca.core, &thumbprint, "authorized.lan").await;
 
     // Order ONE name: authorized.lan.
     let nonce = fresh_nonce(&client, &base).await;
@@ -502,6 +578,7 @@ async fn raw_full_issuance_chains_to_ca() {
     let client = reqwest::Client::new();
     let key = ClientKey::new();
     let (acct, thumbprint) = register_account(&client, &base, &key).await;
+    grant_account_name(&ca.core, &thumbprint, "grafana.lan").await;
 
     // Order grafana.lan.
     let nonce = fresh_nonce(&client, &base).await;
@@ -660,6 +737,8 @@ async fn conformance_issues_cert_via_dns01() {
         )
         .await
         .expect("newAccount");
+
+    grant_account_name(&ca.core, account.key_thumbprint(), "grafana.lan").await;
 
     let identifiers = [Identifier::Dns("grafana.lan".to_string())];
     let mut order = account

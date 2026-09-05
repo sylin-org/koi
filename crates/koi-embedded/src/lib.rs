@@ -847,6 +847,24 @@ fn map_certmesh_event(event: koi_certmesh::CertmeshEvent) -> KoiEvent {
         koi_certmesh::CertmeshEvent::CertRenewed { expires_at } => {
             KoiEvent::CertRenewed { expires_at }
         }
+        koi_certmesh::CertmeshEvent::ServiceCertificateIssued {
+            service_id,
+            dns_name,
+            expires_at,
+            renewed,
+        } => KoiEvent::ServiceCertificateIssued {
+            service_id,
+            dns_name,
+            expires_at,
+            renewed,
+        },
+        koi_certmesh::CertmeshEvent::ServiceNameRevoked {
+            service_id,
+            dns_name,
+        } => KoiEvent::ServiceNameRevoked {
+            service_id,
+            dns_name,
+        },
         koi_certmesh::CertmeshEvent::CertExpiringSoon { days_left } => {
             KoiEvent::CertExpiringSoon { days_left }
         }
@@ -1293,6 +1311,25 @@ mod tests {
         let event = koi_certmesh::CertmeshEvent::Destroyed;
         let mapped = map_certmesh_event(event);
         assert!(matches!(mapped, KoiEvent::CertmeshDestroyed));
+    }
+
+    #[test]
+    fn map_service_certificate_event_keeps_only_public_facts() {
+        let mapped = map_certmesh_event(koi_certmesh::CertmeshEvent::ServiceCertificateIssued {
+            service_id: koi_common::service::ServiceId::new("svc_embedded").unwrap(),
+            dns_name: "embedded.internal".into(),
+            expires_at: chrono::DateTime::UNIX_EPOCH,
+            renewed: true,
+        });
+        assert!(matches!(
+            mapped,
+            KoiEvent::ServiceCertificateIssued {
+                service_id,
+                dns_name,
+                renewed: true,
+                ..
+            } if service_id.as_str() == "svc_embedded" && dns_name == "embedded.internal"
+        ));
     }
 
     #[test]

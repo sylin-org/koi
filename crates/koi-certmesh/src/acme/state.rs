@@ -9,19 +9,14 @@
 
 use std::sync::Arc;
 
-use chrono::Utc;
 use koi_common::integration::AcmeDnsResolver;
 
 use crate::acme::challenge;
 use crate::acme::nonce::NonceStore;
 use crate::acme::order::OrderStore;
 use crate::error::CertmeshError;
-use crate::roster::{MemberRole, MemberStatus, RosterMember};
+use crate::roster::MemberStatus;
 use crate::CertmeshState;
-
-/// Default leaf validity (days) for ACME-issued certificates. Matches the
-/// 30-day member-cert convention used elsewhere in certmesh.
-pub const ACME_CERT_VALIDITY_DAYS: u32 = 30;
 
 /// Construction parameters for [`AcmeState`].
 pub struct AcmeStateConfig {
@@ -29,7 +24,8 @@ pub struct AcmeStateConfig {
     /// `https://daemon.lan:5643`. Endpoint URLs in the directory and account/
     /// order objects are built relative to this.
     pub base_url: String,
-    /// The Koi DNS zone (e.g. `lan`). The CA issues ONLY for in-zone names.
+    /// The Koi DNS zone (e.g. `lan`). It must match the core's immutable
+    /// issuance policy; the core remains authoritative on a mismatch.
     pub zone: String,
     /// The in-process dns-01 solver (writes/reads `_acme-challenge.*` TXT).
     pub dns: Arc<dyn AcmeDnsResolver>,
@@ -54,10 +50,19 @@ pub struct AcmeState {
 impl AcmeState {
     /// Build the ACME state from certmesh's shared state and the ACME config.
     pub(crate) fn new(certmesh: Arc<CertmeshState>, cfg: AcmeStateConfig) -> Arc<Self> {
+        let zone = certmesh.issuance_names.zone().to_string();
+        let requested_zone = cfg.zone.trim().trim_end_matches('.');
+        if !requested_zone.eq_ignore_ascii_case(&zone) {
+            tracing::error!(
+                requested_zone,
+                authoritative_zone = %zone,
+                "ACME zone disagrees with Certmesh issuance policy; using the authoritative zone"
+            );
+        }
         Arc::new(Self {
             certmesh,
             base_url: cfg.base_url.trim_end_matches('/').to_string(),
-            zone: cfg.zone,
+            zone,
             dns: cfg.dns,
             nonces: NonceStore::new(),
             orders: Arc::new(OrderStore::new()),
@@ -153,6 +158,21 @@ impl AcmeState {
         challenge::is_in_zone(identifier, &self.zone)
     }
 
+    /// Require every requested identifier to be an exact grant owned by this
+    /// ACME account. The same check runs again under finalization's transition.
+    pub async fn authorize_order_identifiers(
+        &self,
+        account_id: &str,
+        identifiers: &[String],
+    ) -> Result<Vec<String>, CertmeshError> {
+        let _transition = self.certmesh.transition.lock().await;
+        crate::service_names::authorize_acme_names_under_transition(
+            &self.certmesh,
+            account_id,
+            identifiers,
+        )
+    }
+
     // ── Issuance ─────────────────────────────────────────────────────
 
     /// Finalize one order as a single admitted Certmesh operation: enforce the
@@ -207,6 +227,15 @@ impl AcmeState {
                     }
                 }
 
+                // A challenge proves DNS control at one moment; the durable
+                // service-name grant proves operator authorization. Recheck it
+                // here so revocation racing a ready order cannot still sign.
+                let authorized_names = crate::service_names::authorize_acme_names_under_transition(
+                    domain,
+                    &account_id,
+                    &authorized_names,
+                )?;
+                let validity_days = domain.roster.lock().metadata.policy.leaf_lifetime_days;
                 let ca_guard = domain.ca.lock();
                 let ca = ca_guard.as_ref().ok_or_else(|| {
                     if domain.paths.is_ca_initialized() {
@@ -215,34 +244,35 @@ impl AcmeState {
                         CertmeshError::CaNotInitialized
                     }
                 })?;
-                let leaf_pem =
-                    crate::sign_csr(ca, &csr_pem, &authorized_names, ACME_CERT_VALIDITY_DAYS)?;
+                let leaf_pem = crate::sign_csr(ca, &csr_pem, &authorized_names, validity_days)?;
                 let chain_pem = format!("{leaf_pem}{}", ca.cert_pem);
                 let fingerprint = pem::parse(&leaf_pem)
                     .map(|parsed| koi_crypto::pinning::fingerprint_sha256(parsed.contents()))
                     .map_err(|error| CertmeshError::Certificate(error.to_string()))?;
-                let expires =
-                    Utc::now() + chrono::Duration::days(i64::from(ACME_CERT_VALIDITY_DAYS));
+                let expires = crate::leaf_not_after_utc(&leaf_pem).ok_or_else(|| {
+                    CertmeshError::Certificate("issued ACME leaf has no usable expiry".into())
+                })?;
                 drop(ca_guard);
 
-                let (published, outcome) = record_acme_member_under_transition(
-                    domain,
-                    &account_id,
-                    &authorized_names,
-                    &fingerprint,
-                    expires,
-                )?;
+                let (published, renewing, outcome) =
+                    crate::service_names::record_acme_certificate_under_transition(
+                        domain,
+                        &account_id,
+                        &authorized_names,
+                        &fingerprint,
+                        expires,
+                    )?;
                 let cert_id = orders.record_certificate(&order_id, chain_pem);
                 domain.finish_commit_under_transition(outcome)?;
-                if published.renewing {
-                    let _ = domain.event_tx.send(crate::CertmeshEvent::CertRenewed {
-                        expires_at: expires,
-                    });
-                } else {
-                    let _ = domain.event_tx.send(crate::CertmeshEvent::MemberJoined {
-                        hostname: published.hostname,
-                        fingerprint,
-                    });
+                for grant in published {
+                    let _ = domain
+                        .event_tx
+                        .send(crate::CertmeshEvent::ServiceCertificateIssued {
+                            service_id: grant.service_id,
+                            dns_name: grant.dns_name,
+                            expires_at: expires,
+                            renewed: renewing,
+                        });
                 }
                 Ok(cert_id)
             })
@@ -258,6 +288,21 @@ impl AcmeState {
         let fingerprint = fingerprint.to_string();
         self.certmesh
             .run_blocking_transition(move |domain| {
+                if let Some((grant, commit)) =
+                    crate::service_names::revoke_service_name_by_fingerprint_under_transition(
+                        domain,
+                        &fingerprint,
+                    )?
+                {
+                    domain.finish_commit_under_transition(commit)?;
+                    let _ = domain
+                        .event_tx
+                        .send(crate::CertmeshEvent::ServiceNameRevoked {
+                            service_id: grant.service_id,
+                            dns_name: grant.dns_name,
+                        });
+                    return Ok(true);
+                }
                 let outcome = domain.commit_roster_under_transition(
                     true,
                     Some(crate::audit::render_entry(
@@ -323,80 +368,6 @@ impl AcmeState {
     }
 }
 
-/// Record (or update) a roster entry for an ACME-issued certificate. The caller
-/// owns the Certmesh transition and retained worker admission through the full
-/// persistence, model, projection, and semantic-event tail.
-struct AcmeMemberPublication {
-    hostname: String,
-    renewing: bool,
-}
-
-fn record_acme_member_under_transition(
-    certmesh: &crate::CertmeshDomain,
-    account_id: &str,
-    names: &[String],
-    fingerprint: &str,
-    expires: chrono::DateTime<Utc>,
-) -> Result<(AcmeMemberPublication, koi_common::persist::AtomicCommit), CertmeshError> {
-    let primary = names.first().ok_or_else(|| {
-        CertmeshError::InvalidPayload(
-            "ACME issuance requires at least one authorized identifier".into(),
-        )
-    })?;
-    let renewing = certmesh.roster.lock().find_member(primary).is_some();
-    let event_name = if renewing {
-        "cert_renewed"
-    } else {
-        "member_joined"
-    };
-    let expires_text = expires.to_rfc3339();
-    let ((), outcome) = certmesh.commit_roster_under_transition(
-        true,
-        Some(crate::audit::render_entry(
-            event_name,
-            &[
-                ("hostname", primary.as_str()),
-                ("fingerprint", fingerprint),
-                ("expires", expires_text.as_str()),
-                ("via", "acme"),
-            ],
-        )),
-        |roster| {
-            if let Some(existing) = roster.find_member_mut(primary) {
-                existing.cert_fingerprint = fingerprint.to_string();
-                existing.cert_expires = expires;
-                existing.cert_sans = names.to_vec();
-                existing.last_seen = Some(Utc::now());
-                existing.status = MemberStatus::Active;
-            } else {
-                roster.members.push(RosterMember {
-                    hostname: primary.clone(),
-                    role: MemberRole::Client,
-                    enrolled_at: Utc::now(),
-                    enrolled_by: Some(format!("acme:{account_id}")),
-                    cert_fingerprint: fingerprint.to_string(),
-                    cert_expires: expires,
-                    cert_sans: names.to_vec(),
-                    cert_path: String::new(),
-                    status: MemberStatus::Active,
-                    reload_hook: None,
-                    last_seen: Some(Utc::now()),
-                    pinned_ca_fingerprint: None,
-                    proxy_entries: Vec::new(),
-                });
-            }
-            Ok(())
-        },
-    )?;
-    Ok((
-        AcmeMemberPublication {
-            hostname: primary.clone(),
-            renewing,
-        },
-        outcome,
-    ))
-}
-
 /// Wrap raw DER CSR bytes as a PEM `CERTIFICATE REQUEST`.
 fn der_to_csr_pem(csr_der: &[u8]) -> String {
     pem::encode(&pem::Pem::new("CERTIFICATE REQUEST", csr_der.to_vec()))
@@ -405,6 +376,8 @@ fn der_to_csr_pem(csr_der: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::roster::MemberRole;
+    use chrono::Utc;
 
     #[derive(Default)]
     struct EmptyDns;
@@ -547,7 +520,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn cancelled_acme_finalize_converges_roster_status_and_event_without_retry() {
+    async fn cancelled_acme_finalize_converges_grant_order_and_event_without_retry() {
         let temp = tempfile::tempdir().unwrap();
         let paths = crate::CertmeshPaths::with_data_dir(temp.path().to_path_buf());
         let ca = crate::ca::create_ca("finalize-cancel-pass", &[77_u8; 32], &paths)
@@ -564,8 +537,30 @@ mod tests {
             zone: "internal".into(),
             dns: Arc::new(EmptyDns),
         });
+        let (account, _) = state
+            .register_account(
+                crate::acme::jws::Jwk {
+                    kty: "EC".into(),
+                    crv: "P-256".into(),
+                    x: "finalize-x".into(),
+                    y: "finalize-y".into(),
+                },
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        let account_id = account.id.clone();
         let names = vec!["new.internal".to_string()];
-        let order = state.orders().create_order("test-account", names.clone());
+        core.grant_service_name(
+            koi_common::service::ServiceId::new("svc_cancelled_finalize").unwrap(),
+            "new.internal",
+            crate::ServiceNameOwner::AcmeAccount {
+                account_id: account_id.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        let order = state.orders().create_order(&account_id, names.clone());
         for authorization_id in &order.authz_ids {
             state.orders().mark_challenge_valid(authorization_id);
         }
@@ -573,16 +568,17 @@ mod tests {
             crate::csr::generate_keypair_and_csr("new.internal", &names).expect("test CSR");
         let csr_der = pem::parse(csr_pem).unwrap().contents().to_vec();
         let retry_csr_der = csr_der.clone();
-        let initial_revision = core.status().revision;
+        let initial_status = core.status();
         let mut events = core.subscribe();
         core.state.repository.pause_next_commit_after_durable();
 
         let command = {
             let state = Arc::clone(&state);
             let order_id = order.id.clone();
+            let account_id = account_id.clone();
             tokio::spawn(async move {
                 state
-                    .finalize_order_certificate(&order_id, "test-account", &csr_der)
+                    .finalize_order_certificate(&order_id, &account_id, &csr_der)
                     .await
             })
         };
@@ -590,35 +586,37 @@ mod tests {
             tokio::task::yield_now().await;
         }
         let durable = crate::roster::load_roster(&paths.roster_path()).unwrap();
-        assert!(durable.find_member("new.internal").is_some());
+        assert!(durable
+            .service_name_grants
+            .iter()
+            .any(|grant| grant.dns_name == "new.internal" && grant.certificate.is_some()));
         command.abort();
         core.state.repository.release_commit();
         let _ = command.await;
 
-        let status = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                let status = core.status();
-                let published = status.authority.as_ref().is_some_and(|authority| {
-                    authority
-                        .members
-                        .iter()
-                        .any(|member| member.hostname == "new.internal")
-                });
-                if status.revision > initial_revision && published {
-                    break status;
+                let published = core
+                    .state
+                    .roster
+                    .lock()
+                    .service_name_grants
+                    .iter()
+                    .any(|grant| grant.dns_name == "new.internal" && grant.certificate.is_some());
+                if published
+                    && state
+                        .orders()
+                        .get_order(&order.id)
+                        .is_some_and(|order| order.certificate_id.is_some())
+                {
+                    break;
                 }
                 tokio::task::yield_now().await;
             }
         })
         .await
-        .expect("retained finalize must converge status without a retry");
-        assert!(status.revision > initial_revision);
-        assert!(core
-            .state
-            .roster
-            .lock()
-            .find_member("new.internal")
-            .is_some());
+        .expect("retained finalize must converge its grant and order without a retry");
+        assert!(Arc::ptr_eq(&initial_status, &core.status()));
         let finalized = state.orders().get_order(&order.id).unwrap();
         let certificate_id = finalized
             .certificate_id
@@ -630,13 +628,14 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap(),
-            crate::CertmeshEvent::MemberJoined { hostname, .. } if hostname == "new.internal"
+            crate::CertmeshEvent::ServiceCertificateIssued { dns_name, .. }
+                if dns_name == "new.internal"
         ));
 
         let status_after = core.status();
         let roster_seq = core.state.roster.lock().metadata.seq;
         let retried_certificate_id = state
-            .finalize_order_certificate(&order.id, "test-account", &retry_csr_der)
+            .finalize_order_certificate(&order.id, &account_id, &retry_csr_der)
             .await
             .unwrap();
         assert_eq!(retried_certificate_id, certificate_id);
@@ -646,6 +645,70 @@ mod tests {
             events.try_recv(),
             Err(tokio::sync::broadcast::error::TryRecvError::Empty)
         ));
+    }
+
+    #[tokio::test]
+    async fn finalize_rejects_an_order_after_its_exact_grant_is_revoked() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = crate::CertmeshPaths::with_data_dir(temp.path().to_path_buf());
+        let ca = crate::ca::create_ca("finalize-revoked-grant", &[75_u8; 32], &paths)
+            .unwrap()
+            .0;
+        let core = crate::CertmeshCore::new_with_paths(
+            ca,
+            crate::roster::Roster::new(true, false, None),
+            None,
+            paths,
+        );
+        let state = core.acme_state(AcmeStateConfig {
+            base_url: "https://localhost:5643".into(),
+            zone: "internal".into(),
+            dns: Arc::new(EmptyDns),
+        });
+        let (account, _) = state
+            .register_account(
+                crate::acme::jws::Jwk {
+                    kty: "EC".into(),
+                    crv: "P-256".into(),
+                    x: "revoked-x".into(),
+                    y: "revoked-y".into(),
+                },
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        let service_id = koi_common::service::ServiceId::new("svc_finalize_revoked").unwrap();
+        let names = vec!["revoked.internal".to_string()];
+        core.grant_service_name(
+            service_id.clone(),
+            &names[0],
+            crate::ServiceNameOwner::AcmeAccount {
+                account_id: account.id.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        let order = state.orders().create_order(&account.id, names.clone());
+        for authorization_id in &order.authz_ids {
+            state.orders().mark_challenge_valid(authorization_id);
+        }
+        core.revoke_service_name(&service_id, &names[0])
+            .await
+            .unwrap();
+        let (_key, csr_pem) = crate::csr::generate_keypair_and_csr(&names[0], &names).unwrap();
+        let csr_der = pem::parse(csr_pem).unwrap().contents().to_vec();
+
+        assert!(matches!(
+            state
+                .finalize_order_certificate(&order.id, &account.id, &csr_der)
+                .await,
+            Err(CertmeshError::Forbidden(_))
+        ));
+        assert!(state.orders().get_certificate(&order.id).is_none());
+        assert!(state
+            .orders()
+            .get_order(&order.id)
+            .is_some_and(|order| order.certificate_id.is_none()));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
