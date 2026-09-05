@@ -85,6 +85,7 @@ test("all publication channels check the centralized release decision", async ()
   for (const contract of [
     "packages/ts/test/client.test.js",
     "packages/npm/test/launcher.test.js",
+    "scripts/bootstrap-installers.test.mjs",
     "scripts/release-version.test.mjs",
     "scripts/release-manifest.test.mjs",
     "scripts/candidate-validation.test.mjs",

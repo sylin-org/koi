@@ -32,7 +32,8 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo fmt --all --check
 
 node --test packages/ts/test/client.test.js packages/npm/test/launcher.test.js \
-  scripts/release-version.test.mjs scripts/release-manifest.test.mjs \
+  scripts/bootstrap-installers.test.mjs scripts/release-version.test.mjs \
+  scripts/release-manifest.test.mjs \
   scripts/candidate-validation.test.mjs
 PYTHONPATH=packages/python/src python -m unittest discover -s packages/python/tests -v
 bash scripts/check-lean-embedded.sh
