@@ -1,5 +1,31 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-05 (32) — R06 motion-v2 negative-case scope expansion
+
+task: `R06/windows-packaged-motion-v2` | run
+`r06-native-ccee0fc-windows-20260905` | state: **reservation amended before
+the remaining mutation**
+
+The package/source gates and positive native WebView2 motion, startup-reduced,
+focus, singleton and tray-hide/reveal cases pass on the exact candidate. The
+bounded peer procedure also requires the exact candidate's unavailable page and
+recovery. The installed R05 service has no unprivileged shadow endpoint and its
+operator-bound named pipe is intentionally not configurable, so an artificial
+environment override cannot exercise this case truthfully.
+
+Expand only to one serial SCM `stop -> observe unavailable renderer -> start ->
+observe recovered renderer` transition using the unchanged accepted daemon.
+Before stop, arm an independent elevated bounded restore that can start only the
+existing `koi` service; do not replace/reconfigure/install it. Preserve its exact
+binary, descriptor, failure policy, config, operator policy and state. Firewall,
+credentials, trust, providers, network and ports remain observation-only. Remove
+the run-owned elevated tasks/helpers after verified health and one normal packaged
+workbench. If elevation cannot be armed, leave this case pending and do not stop
+the service.
+
+next: publish this bounded expansion, arm and prove the exact restart fallback,
+then execute the missing-service/recovery case or report the unavailable facility.
+
 ## 2026-09-05 (31) — R06 Windows packaged motion v2 acknowledged
 
 task: `R06/windows-packaged-motion-v2` | run
