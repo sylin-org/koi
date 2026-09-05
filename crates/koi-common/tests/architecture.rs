@@ -33,7 +33,7 @@ fn classify(pkg: &str) -> Option<Class> {
         "koi-config" | "koi-crypto" => Class::Foundation,
         // Domains + the lean blocking client (must not re-acquire a domain dependency).
         "koi-mdns" | "koi-dns" | "koi-health" | "koi-proxy" | "koi-udp" | "koi-runtime"
-        | "koi-certmesh" | "koi-trust" | "koi-client" => Class::Domain,
+        | "koi-certmesh" | "koi-trust" | "koi-preferences" | "koi-client" => Class::Domain,
         // Wiring layer. `koi-mcp` composes the koi-client surface into an MCP adapter,
         // so it is composition (it depends on koi-client, a domain-class crate).
         // `koi-serve` is the serving layer (transports + trust plane); it depends on

@@ -22,6 +22,7 @@ koi-certmesh.workspace = true
 koi-trust.workspace = true
 koi-crypto.workspace = true
 koi-config.workspace = true
+koi-preferences.workspace = true
 koi-dns.workspace = true
 koi-health.workspace = true
 koi-proxy.workspace = true

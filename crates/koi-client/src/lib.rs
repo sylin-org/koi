@@ -20,6 +20,10 @@ use koi_common::mdns_protocol::{
 };
 use koi_common::net::resolve_localhost;
 use koi_common::pond::PondStatus;
+use koi_common::service::{
+    CatalogSnapshot, PreferencesStatus, ServiceId, SetCandidatePreferenceRequest,
+    SetServicePreferenceRequest, CATALOG_SCHEMA, PREFERENCES_SCHEMA,
+};
 use koi_common::types::{ServiceCheckKind, ServiceRecord};
 
 /// TCP connection timeout for general API requests.
@@ -58,6 +62,20 @@ pub enum ClientError {
 
     #[error("Invalid response: {0}")]
     Decode(String),
+
+    #[error("{message} (current preference revision {current_revision})")]
+    StaleRevision {
+        message: String,
+        current_revision: u64,
+    },
+
+    #[error("{message}")]
+    UnsupportedSchema {
+        message: String,
+        found: u32,
+        minimum: u32,
+        maximum: u32,
+    },
 }
 
 impl ClientError {
@@ -109,6 +127,7 @@ impl<T> LocalDaemonObservation<T> {
 /// Header name for Daemon Access Token authentication.
 const DAT_HEADER: &str = "X-Koi-Token";
 
+#[derive(Clone)]
 pub struct KoiClient {
     endpoint: String,
     agent: ureq::Agent,
@@ -396,6 +415,70 @@ impl KoiClient {
     /// this cannot assemble a torn cross-domain view.
     pub fn inventory_snapshot(&self) -> Result<serde_json::Value> {
         self.get_json("/v1/inventory")
+    }
+
+    /// Read one coherent schema-checked service catalog snapshot.
+    pub fn catalog_snapshot(&self) -> Result<CatalogSnapshot> {
+        decode_versioned(self.get_json("/v1/catalog")?, "catalog", CATALOG_SCHEMA)
+    }
+
+    /// Subscribe before fetching the initial catalog, then recover gaps or stream
+    /// loss by rereading the authoritative snapshot.
+    pub fn catalog_subscription(&self) -> Result<CatalogSubscription> {
+        let url = format!("{}/v1/catalog/events", self.endpoint);
+        let mut request = self.stream_agent().get(&url);
+        if !self.token.is_empty() {
+            request = request.set(DAT_HEADER, &self.token);
+        }
+        let response = request.call().map_err(map_error)?;
+        let stream = SseStream::new(Box::new(response.into_reader()));
+        let current = self.catalog_snapshot()?;
+        Ok(CatalogSubscription {
+            client: self.clone(),
+            stream,
+            current,
+            initial_pending: true,
+            loss_refetched: false,
+        })
+    }
+
+    pub fn preferences_status(&self) -> Result<PreferencesStatus> {
+        decode_versioned(
+            self.get_json("/v1/preferences")?,
+            "preferences",
+            PREFERENCES_SCHEMA,
+        )
+    }
+
+    pub fn set_service_preference(
+        &self,
+        service_id: &ServiceId,
+        request: &SetServicePreferenceRequest,
+    ) -> Result<PreferencesStatus> {
+        let value = serde_json::to_value(request)
+            .map_err(|error| ClientError::Decode(error.to_string()))?;
+        decode_versioned(
+            self.put_json(&format!("/v1/preferences/services/{service_id}"), &value)?,
+            "preferences",
+            PREFERENCES_SCHEMA,
+        )
+    }
+
+    pub fn set_candidate_preference(
+        &self,
+        candidate_id: &ServiceId,
+        request: &SetCandidatePreferenceRequest,
+    ) -> Result<PreferencesStatus> {
+        let value = serde_json::to_value(request)
+            .map_err(|error| ClientError::Decode(error.to_string()))?;
+        decode_versioned(
+            self.put_json(
+                &format!("/v1/preferences/candidates/{candidate_id}"),
+                &value,
+            )?,
+            "preferences",
+            PREFERENCES_SCHEMA,
+        )
     }
 
     /// Fetch the authenticated, domain-owned Certmesh status projection.
@@ -1021,6 +1104,75 @@ fn map_breadcrumb_error(error: std::io::Error) -> ClientError {
 
 // ── SSE Stream ────────────────────────────────────────────────────
 
+/// A catalog follower that treats SSE as an invalidation-friendly delivery
+/// channel and rereads authoritative state whenever continuity is uncertain.
+pub struct CatalogSubscription {
+    client: KoiClient,
+    stream: SseStream,
+    current: CatalogSnapshot,
+    initial_pending: bool,
+    loss_refetched: bool,
+}
+
+impl CatalogSubscription {
+    pub fn cancellation(&self) -> SseCancellation {
+        self.stream.cancellation()
+    }
+
+    pub fn current(&self) -> &CatalogSnapshot {
+        &self.current
+    }
+
+    fn refetch(&mut self) -> Result<CatalogSnapshot> {
+        let snapshot = self.client.catalog_snapshot()?;
+        self.current = snapshot.clone();
+        Ok(snapshot)
+    }
+}
+
+impl Iterator for CatalogSubscription {
+    type Item = Result<CatalogSnapshot>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.initial_pending {
+            self.initial_pending = false;
+            return Some(Ok(self.current.clone()));
+        }
+        loop {
+            match self.stream.next() {
+                Some(Ok(value)) => {
+                    let snapshot: CatalogSnapshot =
+                        match decode_versioned(value, "catalog", CATALOG_SCHEMA) {
+                            Ok(snapshot) => snapshot,
+                            Err(error @ ClientError::UnsupportedSchema { .. }) => {
+                                return Some(Err(error))
+                            }
+                            Err(_) => return Some(self.refetch()),
+                        };
+                    let continuous = snapshot.epoch == self.current.epoch
+                        && snapshot.revision == self.current.revision.saturating_add(1);
+                    if snapshot.epoch == self.current.epoch
+                        && snapshot.revision <= self.current.revision
+                    {
+                        continue;
+                    }
+                    if !continuous {
+                        return Some(self.refetch());
+                    }
+                    self.current = snapshot.clone();
+                    return Some(Ok(snapshot));
+                }
+                Some(Err(_)) => return Some(self.refetch()),
+                None if !self.loss_refetched => {
+                    self.loss_refetched = true;
+                    return Some(self.refetch());
+                }
+                None => return None,
+            }
+        }
+    }
+}
+
 /// Iterator over Server-Sent Events from the Koi daemon.
 ///
 /// Parses `data: <json>` lines, skipping empty lines and event metadata.
@@ -1176,6 +1328,30 @@ fn decode_pond_status(response: ureq::Response, context: &str) -> Result<PondSta
         .map_err(|error| ClientError::Decode(format!("invalid {context}: {error}")))
 }
 
+fn decode_versioned<T: serde::de::DeserializeOwned>(
+    value: serde_json::Value,
+    context: &str,
+    supported: u32,
+) -> Result<T> {
+    let found = value
+        .get("schema")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|schema| u32::try_from(schema).ok())
+        .ok_or_else(|| ClientError::Decode(format!("{context} response has no u32 schema")))?;
+    if found != supported {
+        return Err(ClientError::UnsupportedSchema {
+            message: format!(
+                "unsupported {context} schema {found}; this client supports schema {supported}"
+            ),
+            found,
+            minimum: supported,
+            maximum: supported,
+        });
+    }
+    serde_json::from_value(value)
+        .map_err(|error| ClientError::Decode(format!("invalid {context} response: {error}")))
+}
+
 fn map_error(e: ureq::Error) -> ClientError {
     match e {
         ureq::Error::Status(401, _resp) => ClientError::Unauthorized,
@@ -1193,6 +1369,41 @@ fn map_error(e: ureq::Error) -> ClientError {
                     json.get("error").and_then(serde_json::Value::as_str),
                     json.get("message").and_then(serde_json::Value::as_str),
                 ) {
+                    (Some("stale_revision"), Some(message)) => json
+                        .get("current_revision")
+                        .and_then(serde_json::Value::as_u64)
+                        .map(|current_revision| ClientError::StaleRevision {
+                            message: message.to_string(),
+                            current_revision,
+                        })
+                        .unwrap_or_else(|| {
+                            ClientError::Decode(format!(
+                                "HTTP {status} stale_revision response has no current_revision; body: {body}"
+                            ))
+                        }),
+                    (Some("unsupported_schema"), Some(message)) => {
+                        let fields = (
+                            json.get("found_schema")
+                                .and_then(serde_json::Value::as_u64),
+                            json.get("minimum_schema")
+                                .and_then(serde_json::Value::as_u64),
+                            json.get("maximum_schema")
+                                .and_then(serde_json::Value::as_u64),
+                        );
+                        match fields {
+                            (Some(found), Some(minimum), Some(maximum)) => {
+                                ClientError::UnsupportedSchema {
+                                    message: message.to_string(),
+                                    found: found as u32,
+                                    minimum: minimum as u32,
+                                    maximum: maximum as u32,
+                                }
+                            }
+                            _ => ClientError::Decode(format!(
+                                "HTTP {status} unsupported_schema response lacks its version range; body: {body}"
+                            )),
+                        }
+                    }
                     (Some(error), Some(message)) => ClientError::Api {
                         error: error.to_string(),
                         message: message.to_string(),
@@ -1347,6 +1558,38 @@ mod tests {
         (format!("http://{address}"), handle)
     }
 
+    fn owned_json_server_once(body: String) -> (String, std::thread::JoinHandle<String>) {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind stub server");
+        let address = listener.local_addr().expect("stub address");
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            let mut bytes = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = stream.read(&mut buffer).expect("read request");
+                assert!(read > 0, "request closed before headers completed");
+                bytes.extend_from_slice(&buffer[..read]);
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write response");
+            String::from_utf8(bytes).expect("request is HTTP text")
+        });
+        (format!("http://{address}"), handle)
+    }
+
+    fn catalog_snapshot(epoch: &str, revision: u64) -> CatalogSnapshot {
+        CatalogSnapshot {
+            epoch: epoch.to_string(),
+            revision,
+            ..CatalogSnapshot::default()
+        }
+    }
+
     fn json_server_once(body: &'static str) -> (String, std::thread::JoinHandle<String>) {
         json_response_server_once(200, "OK", body)
     }
@@ -1452,6 +1695,123 @@ mod tests {
                 if error == "provider_unavailable" && message == "native provider stopped"
         ));
         server.join().expect("error server joins");
+    }
+
+    #[test]
+    fn preference_errors_preserve_conflict_and_schema_details() {
+        let (endpoint, server) = error_server_once(
+            409,
+            r#"{"error":"stale_revision","message":"retry","current_revision":7}"#,
+        );
+        assert!(matches!(
+            KoiClient::new(&endpoint).preferences_status(),
+            Err(ClientError::StaleRevision {
+                current_revision: 7,
+                ..
+            })
+        ));
+        server.join().expect("stale server joins");
+
+        let (endpoint, server) = error_server_once(
+            409,
+            r#"{"error":"unsupported_schema","message":"upgrade required","found_schema":2,"minimum_schema":1,"maximum_schema":1}"#,
+        );
+        assert!(matches!(
+            KoiClient::new(&endpoint).preferences_status(),
+            Err(ClientError::UnsupportedSchema {
+                found: 2,
+                minimum: 1,
+                maximum: 1,
+                ..
+            })
+        ));
+        server.join().expect("schema server joins");
+    }
+
+    #[test]
+    fn typed_catalog_and_preference_clients_pin_routes_auth_and_schema() {
+        let (endpoint, server) = json_server_once(
+            r#"{"schema":1,"epoch":"catalog-epoch","revision":4,"generated_at":"1970-01-01T00:00:00Z","devices":[],"services":[],"local_candidates":[]}"#,
+        );
+        assert_eq!(
+            KoiClient::with_token(&endpoint, "secret-token")
+                .catalog_snapshot()
+                .unwrap()
+                .revision,
+            4
+        );
+        let request = server.join().unwrap().to_lowercase();
+        assert!(request.starts_with("get /v1/catalog "));
+        assert!(request.contains("x-koi-token: secret-token\r\n"));
+
+        let (endpoint, server) = json_server_once(
+            r#"{"schema":1,"epoch":"preferences-epoch","revision":6,"mode":"writable","services":[],"candidates":[]}"#,
+        );
+        let request = SetServicePreferenceRequest {
+            schema: PREFERENCES_SCHEMA,
+            expected_revision: 5,
+            service_key: koi_common::service::ServicePreferenceKey::KoiService {
+                id: ServiceId::new("svc_one").unwrap(),
+            },
+            favorite: true,
+            friendly_alias: Some("Workshop".into()),
+        };
+        assert_eq!(
+            KoiClient::with_token(&endpoint, "secret-token")
+                .set_service_preference(&ServiceId::new("svc_one").unwrap(), &request)
+                .unwrap()
+                .revision,
+            6
+        );
+        let request = server.join().unwrap().to_lowercase();
+        assert!(request.starts_with("put /v1/preferences/services/svc_one "));
+        assert!(request.contains("x-koi-token: secret-token\r\n"));
+        assert!(request.contains("\"expected_revision\":5"));
+
+        let (endpoint, server) = json_server_once(
+            r#"{"schema":2,"epoch":"future","revision":0,"generated_at":"1970-01-01T00:00:00Z","devices":[],"services":[],"local_candidates":[]}"#,
+        );
+        assert!(matches!(
+            KoiClient::new(&endpoint).catalog_snapshot(),
+            Err(ClientError::UnsupportedSchema { found: 2, .. })
+        ));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn catalog_subscription_refetches_on_gap_and_stream_loss() {
+        let current = catalog_snapshot("epoch", 1);
+        let authoritative = catalog_snapshot("epoch", 3);
+        let (endpoint, server) = owned_json_server_once(
+            serde_json::to_string(&authoritative).expect("serialize catalog"),
+        );
+        let event = serde_json::to_string(&authoritative).expect("serialize event");
+        let mut subscription = CatalogSubscription {
+            client: KoiClient::new(&endpoint),
+            stream: cursor_stream(&format!("data: {event}\n\n")),
+            current,
+            initial_pending: true,
+            loss_refetched: false,
+        };
+        assert_eq!(subscription.next().unwrap().unwrap().revision, 1);
+        assert_eq!(subscription.next().unwrap().unwrap().revision, 3);
+        assert!(server.join().unwrap().starts_with("GET /v1/catalog "));
+
+        let current = catalog_snapshot("epoch", 3);
+        let authoritative = catalog_snapshot("epoch", 4);
+        let (endpoint, server) = owned_json_server_once(
+            serde_json::to_string(&authoritative).expect("serialize catalog"),
+        );
+        let mut subscription = CatalogSubscription {
+            client: KoiClient::new(&endpoint),
+            stream: cursor_stream(""),
+            current,
+            initial_pending: false,
+            loss_refetched: false,
+        };
+        assert_eq!(subscription.next().unwrap().unwrap().revision, 4);
+        assert!(subscription.next().is_none());
+        server.join().unwrap();
     }
 
     #[test]

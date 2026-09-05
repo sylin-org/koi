@@ -29,6 +29,7 @@
 //!   `_certmesh._tcp` discovery announce.
 
 pub mod acme;
+pub mod catalog;
 pub mod dashboard;
 pub mod dispatch;
 pub mod http;
@@ -40,6 +41,7 @@ pub mod network;
 pub mod pond;
 pub mod pond_public_status;
 pub mod pond_ui;
+pub mod preferences;
 pub mod prometheus_sd;
 pub mod serve;
 pub mod trust_plane;

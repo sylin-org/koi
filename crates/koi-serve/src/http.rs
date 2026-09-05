@@ -37,6 +37,9 @@ pub mod paths {
     pub const UNIFIED_STATUS: &str = "/v1/status";
     /// One coherent aggregate revision projected for automation inventory reads.
     pub const INVENTORY: &str = "/v1/inventory";
+    pub const CATALOG: &str = "/v1/catalog";
+    pub const CATALOG_EVENTS: &str = "/v1/catalog/events";
+    pub const PREFERENCES: &str = "/v1/preferences";
     pub const SHUTDOWN: &str = "/v1/admin/shutdown";
     pub const HOST: &str = "/v1/host";
     /// Aggregate dashboard snapshot. Loopback-readable; DAT required remotely.
@@ -157,6 +160,13 @@ pub async fn serve(
         .route(paths::HOST, get(host_handler))
         .route(paths::PROMETHEUS_SD, get(prometheus_sd_handler))
         .route(paths::MCP_SERVER_CARD, get(mcp_server_card_handler));
+    app = app.merge(crate::catalog::routes(Arc::clone(&cores.catalog)));
+    if let Some(preferences) = &cores.preferences {
+        app = app.merge(crate::preferences::routes(
+            Arc::clone(preferences),
+            Arc::clone(&cores.catalog),
+        ));
+    }
 
     // ── Admin shutdown (daemon / Windows service only; an embedded host owns its own
     // lifecycle via its handle, so it does not expose a remote shutdown endpoint) ──
@@ -463,7 +473,12 @@ struct NetworkInterface {
         inventory_handler,
         shutdown_handler,
         host_handler,
-        prometheus_sd_handler
+        prometheus_sd_handler,
+        crate::catalog::snapshot,
+        crate::catalog::events,
+        crate::preferences::status,
+        crate::preferences::set_service,
+        crate::preferences::set_candidate
     ),
     components(schemas(
         UnifiedStatusResponse,
@@ -474,6 +489,11 @@ struct NetworkInterface {
         koi_common::capability::CapabilityStatus,
         koi_common::error::ErrorCode,
         koi_common::api::ErrorBody,
+        koi_common::service::CatalogSnapshot,
+        koi_common::service::PreferencesStatus,
+        koi_common::service::SetServicePreferenceRequest,
+        koi_common::service::SetCandidatePreferenceRequest,
+        koi_common::service::PreferenceErrorBody,
     ))
 )]
 struct KoiSchemas;
@@ -694,6 +714,8 @@ pub(crate) async fn dat_auth_middleware(
     // `/v1/mcp` it is a GET that opens a persistent live channel rather than
     // returning a static document, so it must carry the token on every request.
     let is_events_stream = path == paths::EVENTS;
+    let is_catalog_events = path == paths::CATALOG_EVENTS;
+    let is_preferences = path == paths::PREFERENCES || path.starts_with("/v1/preferences/");
     // Pond desire is operator state. Even its GET is intentionally absent from
     // the broad read exemption; the public projection lives on Pond's own router.
     let is_pond_control = path == "/v1/pond";
@@ -726,6 +748,7 @@ pub(crate) async fn dat_auth_middleware(
         || path == "/v1/dns/zone"
         || path == "/v1/dns/entries"
         || path == paths::INVENTORY
+        || path == paths::CATALOG
         || path == paths::DASHBOARD_SNAPSHOT
         || path == paths::DASHBOARD_EVENTS;
     let peer_is_loopback = req
@@ -743,6 +766,8 @@ pub(crate) async fn dat_auth_middleware(
         && !is_audit_log
         && !is_posture
         && !is_events_stream
+        && !is_catalog_events
+        && !is_preferences
         && !is_pond_control
         && !is_udp
         && protected_ok;
@@ -1386,7 +1411,7 @@ mod tests {
     // peer, and fail-closed when the peer is unknown. Bootstrap and the signed
     // trust bundle remain part of the unauthenticated protocol.
 
-    const PROTECTED_READS: [&str; 9] = [
+    const PROTECTED_READS: [&str; 10] = [
         "/v1/dns/list",
         "/v1/dns/zone",
         "/v1/dns/entries",
@@ -1394,6 +1419,7 @@ mod tests {
         koi_certmesh::http::paths::DIAGNOSE,
         koi_trust::http::paths::STATUS,
         paths::INVENTORY,
+        paths::CATALOG,
         paths::DASHBOARD_SNAPSHOT,
         paths::DASHBOARD_EVENTS,
     ];

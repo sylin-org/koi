@@ -10,6 +10,7 @@ members = [
     "crates/koi-common",
     "crates/koi-mdns",
     "crates/koi-config",
+    "crates/koi-preferences",
     "crates/koi-certmesh",
     "crates/koi-trust",
     "crates/koi-crypto",
@@ -46,6 +47,7 @@ koi-serve = { path = "crates/koi-serve", version = "=1.0.0-dev.0" }
 koi-embedded = { path = "crates/koi-embedded", version = "=1.0.0-dev.0" }
 koi-mdns = { path = "crates/koi-mdns", version = "=1.0.0-dev.0" }
 koi-config = { path = "crates/koi-config", version = "=1.0.0-dev.0" }
+koi-preferences = { path = "crates/koi-preferences", version = "=1.0.0-dev.0" }
 koi-certmesh = { path = "crates/koi-certmesh", version = "=1.0.0-dev.0", default-features = false }
 koi-trust = { path = "crates/koi-trust", version = "=1.0.0-dev.0" }
 koi-crypto = { path = "crates/koi-crypto", version = "=1.0.0-dev.0", default-features = false }

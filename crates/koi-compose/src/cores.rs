@@ -35,6 +35,7 @@ const BUILD_ROLLBACK_TIMEOUT: Duration = Duration::from_secs(20);
 pub struct PersistencePaths {
     data_dir: PathBuf,
     installation_identity: PathBuf,
+    preferences: PathBuf,
     dns_state: PathBuf,
     health_state: PathBuf,
     health_log: PathBuf,
@@ -48,6 +49,7 @@ impl PersistencePaths {
         let state_dir = data_dir.join("state");
         Self {
             installation_identity: state_dir.join("installation.json"),
+            preferences: state_dir.join("preferences.json"),
             dns_state: state_dir.join("dns.json"),
             health_state: state_dir.join("health.json"),
             health_log: data_dir.join("logs/health.log"),
@@ -63,6 +65,10 @@ impl PersistencePaths {
 
     pub fn installation_identity(&self) -> &Path {
         &self.installation_identity
+    }
+
+    pub fn preferences(&self) -> &Path {
+        &self.preferences
     }
 
     pub fn dns_state(&self) -> &Path {
@@ -409,6 +415,10 @@ pub struct Cores {
     pub proxy: Option<Arc<koi_proxy::ProxyRuntime>>,
     pub udp: Option<Arc<koi_udp::UdpRuntime>>,
     pub runtime: Option<Arc<koi_runtime::RuntimeCore>>,
+    /// Domain owner for durable personal service intent.
+    pub preferences: Option<Arc<koi_preferences::PreferencesCore>>,
+    /// Composition-owned authoritative service catalog.
+    pub catalog: Arc<crate::catalog::ServiceCatalogRuntime>,
     /// The one composition-owned product status boundary. Presentations read
     /// this feed; they do not query and reassemble individual domains.
     pub system_status: Arc<crate::status::KoiStatusRuntime>,
@@ -677,6 +687,9 @@ pub async fn build_cores(
             Ok(installation) => installation,
             Err(error) => fail_build!(error.into()),
         };
+    let preferences = Arc::new(koi_preferences::PreferencesCore::open(
+        persistence.preferences().to_path_buf(),
+    ));
 
     let mut initial_statuses = Vec::new();
     // ── mDNS ──
@@ -1090,6 +1103,7 @@ pub async fn build_cores(
         health: health_runtime.clone(),
         proxy: proxy_runtime.clone(),
         runtime: runtime_core.clone(),
+        preferences: Some(Arc::clone(&preferences)),
     };
     let system_status = Arc::new(crate::status::KoiStatusRuntime::with_catalog(Arc::clone(
         &catalog,
@@ -1104,6 +1118,8 @@ pub async fn build_cores(
         proxy: proxy_runtime,
         udp: udp_runtime,
         runtime: runtime_core,
+        preferences: Some(preferences),
+        catalog: Arc::clone(&catalog),
         system_status,
         mdns_snapshot: mdns_bridge,
     };
@@ -1484,6 +1500,7 @@ mod tests {
             paths.installation_identity(),
             root.join("state/installation.json")
         );
+        assert_eq!(paths.preferences(), root.join("state/preferences.json"));
         assert_eq!(paths.health_state(), root.join("state/health.json"));
         assert_eq!(paths.health_log(), root.join("logs/health.log"));
         assert_eq!(paths.proxy_config(), root.join("config.toml"));

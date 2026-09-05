@@ -3,7 +3,7 @@ use utoipa::ToSchema;
 
 /// Machine-readable error codes for the wire protocol.
 /// Shared by all transports and domains.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
     InvalidType,
@@ -41,6 +41,11 @@ pub enum ErrorCode {
     ApprovalUnavailable,
     // Certmesh (Phase 5)
     Revoked,
+    // Service experience (Epic 003)
+    LocalOperatorRequired,
+    StaleRevision,
+    UnsupportedSchema,
+    RecoveryRequired,
 }
 
 impl ErrorCode {
@@ -55,20 +60,25 @@ impl ErrorCode {
             | Self::ParseError => 400,
             Self::SessionMismatch => 403,
             Self::NotFound => 404,
-            Self::Conflict | Self::AlreadyDraining | Self::NotDraining => 409,
+            Self::Conflict
+            | Self::AlreadyDraining
+            | Self::NotDraining
+            | Self::StaleRevision
+            | Self::UnsupportedSchema => 409,
             Self::ResolveTimeout => 504,
             Self::ShuttingDown
             | Self::ProviderUnavailable
             | Self::CaNotInitialized
             | Self::CaLocked
-            | Self::CapabilityDisabled => 503,
+            | Self::CapabilityDisabled
+            | Self::RecoveryRequired => 503,
             Self::InvalidAuth => 401,
             Self::RateLimited => 429,
             Self::EnrollmentClosed
             | Self::NotStandby
             | Self::ScopeViolation
             | Self::ApprovalDenied => 403,
-            Self::Revoked => 403,
+            Self::Revoked | Self::LocalOperatorRequired => 403,
             Self::DaemonError
             | Self::IoError
             | Self::Internal
@@ -118,12 +128,15 @@ mod tests {
             // 403 Forbidden
             (ErrorCode::SessionMismatch, 403),
             (ErrorCode::EnrollmentClosed, 403),
+            (ErrorCode::LocalOperatorRequired, 403),
             // 404 Not Found
             (ErrorCode::NotFound, 404),
             // 409 Conflict
             (ErrorCode::Conflict, 409),
             (ErrorCode::AlreadyDraining, 409),
             (ErrorCode::NotDraining, 409),
+            (ErrorCode::StaleRevision, 409),
+            (ErrorCode::UnsupportedSchema, 409),
             // 429 Rate Limited
             (ErrorCode::RateLimited, 429),
             // 400 Bad Request (Phase 3)
@@ -147,6 +160,7 @@ mod tests {
             (ErrorCode::CaLocked, 503),
             (ErrorCode::CapabilityDisabled, 503),
             (ErrorCode::ApprovalUnavailable, 503),
+            (ErrorCode::RecoveryRequired, 503),
             // 504 Gateway Timeout
             (ErrorCode::ResolveTimeout, 504),
             (ErrorCode::ApprovalTimeout, 504),
@@ -195,6 +209,10 @@ mod tests {
             (ErrorCode::ApprovalDenied, "approval_denied"),
             (ErrorCode::ApprovalTimeout, "approval_timeout"),
             (ErrorCode::ApprovalUnavailable, "approval_unavailable"),
+            (ErrorCode::LocalOperatorRequired, "local_operator_required"),
+            (ErrorCode::StaleRevision, "stale_revision"),
+            (ErrorCode::UnsupportedSchema, "unsupported_schema"),
+            (ErrorCode::RecoveryRequired, "recovery_required"),
         ];
         for (code, expected_str) in &variants {
             let serialized = serde_json::to_value(code).unwrap();

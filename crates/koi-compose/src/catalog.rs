@@ -18,11 +18,11 @@ use koi_common::integration::{
 use koi_common::service::{
     AddressEvidence, AddressFamily, Ambiguity, AvailableAction, CheckEvidence, CheckKind,
     CheckResult, Device, DeviceCondition, DeviceId, Endpoint, EndpointId, EndpointOwner,
-    IdentityConfidence, InstallationId, KoiPresence, LocalCandidate, MeshIdentity,
-    MeshIdentityState, NameEvidence, NetworkClassification, NetworkScope, NetworkScopeId,
-    Observation, ObservationId, ObservationKind, ObservationState, OperationSummary, Service,
-    ServiceCondition, ServiceId, ServiceKind, TransportEncryption, CATALOG_SCHEMA,
-    INSTALLATION_ID_TXT_KEY, SERVICE_ID_TXT_KEY,
+    IdentityConfidence, InstallationId, KoiPresence, LastKnownService, LocalCandidate,
+    MeshIdentity, MeshIdentityState, NameEvidence, NetworkClassification, NetworkScope,
+    NetworkScopeId, Observation, ObservationId, ObservationKind, ObservationState,
+    OperationSummary, PreferencesMode, PreferencesStatus, Service, ServiceCondition, ServiceId,
+    ServiceKind, TransportEncryption, CATALOG_SCHEMA, INSTALLATION_ID_TXT_KEY, SERVICE_ID_TXT_KEY,
 };
 use koi_common::status::StatusFeed;
 use tokio::sync::watch;
@@ -45,6 +45,7 @@ pub(crate) struct CatalogSources {
     pub health: Option<Arc<koi_health::HealthRuntime>>,
     pub proxy: Option<Arc<koi_proxy::ProxyRuntime>>,
     pub runtime: Option<Arc<koi_runtime::RuntimeCore>>,
+    pub preferences: Option<Arc<koi_preferences::PreferencesCore>>,
 }
 
 #[derive(Clone, Default)]
@@ -56,6 +57,7 @@ struct CatalogInputs {
     proxy: Option<Arc<koi_proxy::ProxyRuntimeStatus>>,
     proxy_entries: Option<Arc<ProxyEntriesSnapshot>>,
     runtime: Option<Arc<koi_runtime::RuntimeStatus>>,
+    preferences: Option<Arc<PreferencesStatus>>,
     availability: SourceAvailability,
 }
 
@@ -204,8 +206,9 @@ impl ServiceCatalogRuntime {
     }
 
     fn reconcile(&self, inputs: CatalogInputs, now: DateTime<Utc>) {
+        let preferences = inputs.preferences.clone();
         let mut model = self.model.lock().expect("catalog model lock");
-        let (devices, services) = model.project(
+        let (mut devices, mut services) = model.project(
             &self.installation_id,
             &self.hostname,
             &self.epoch,
@@ -213,8 +216,18 @@ impl ServiceCatalogRuntime {
             now,
         );
         drop(model);
+        let mut local_candidates = Vec::new();
+        join_preferences(
+            &mut devices,
+            &mut services,
+            &mut local_candidates,
+            preferences.as_deref(),
+        );
         self.feed.update(|current| {
-            if current.devices == devices && current.services == services {
+            if current.devices == devices
+                && current.services == services
+                && current.local_candidates == local_candidates
+            {
                 None
             } else {
                 Some(koi_common::service::CatalogSnapshot {
@@ -224,7 +237,7 @@ impl ServiceCatalogRuntime {
                     generated_at: now,
                     devices,
                     services,
-                    local_candidates: Vec::<LocalCandidate>::new(),
+                    local_candidates,
                 })
             }
         });
@@ -1705,6 +1718,99 @@ fn service_retention_rank(condition: ServiceCondition) -> u8 {
     }
 }
 
+fn join_preferences(
+    devices: &mut Vec<Device>,
+    services: &mut Vec<Service>,
+    local_candidates: &mut Vec<LocalCandidate>,
+    preferences: Option<&PreferencesStatus>,
+) {
+    let Some(preferences) = preferences else {
+        return;
+    };
+    if preferences.mode != PreferencesMode::Writable {
+        return;
+    }
+
+    let dismissed: BTreeSet<_> = preferences
+        .candidates
+        .iter()
+        .filter(|record| record.dismissed)
+        .map(|record| (record.candidate_id.clone(), record.candidate_key.clone()))
+        .collect();
+    local_candidates
+        .retain(|candidate| !dismissed.contains(&(candidate.id.clone(), candidate.key.clone())));
+
+    for preference in &preferences.services {
+        let service_id = preference.service_key.service_id();
+        if let Some(service) = services
+            .iter_mut()
+            .find(|service| &service.id == service_id)
+        {
+            service.favorite = preference.favorite;
+            service.alias.clone_from(&preference.friendly_alias);
+            continue;
+        }
+        let Some(context) = preference
+            .last_known
+            .as_ref()
+            .filter(|_| preference.favorite)
+        else {
+            continue;
+        };
+        if !devices.iter().any(|device| device.id == context.device_id) {
+            devices.push(Device {
+                schema: CATALOG_SCHEMA,
+                id: context.device_id.clone(),
+                names: context
+                    .device_name
+                    .iter()
+                    .map(|name| NameEvidence {
+                        value: name.clone(),
+                        observation_ids: Vec::new(),
+                    })
+                    .collect(),
+                addresses: Vec::new(),
+                koi_presence: KoiPresence::Absent,
+                mesh_identity: MeshIdentity {
+                    state: MeshIdentityState::Unknown,
+                    observation_ids: Vec::new(),
+                },
+                condition: DeviceCondition::Absent,
+            });
+        }
+        services.push(Service {
+            schema: CATALOG_SCHEMA,
+            id: service_id.clone(),
+            device_id: context.device_id.clone(),
+            display_name: context.display_name.clone(),
+            alias: preference.friendly_alias.clone(),
+            kind: context.kind.clone(),
+            condition: ServiceCondition::Absent,
+            endpoints: Vec::new(),
+            observations: Vec::new(),
+            checks: Vec::new(),
+            available_actions: vec![
+                AvailableAction::ViewDetails,
+                AvailableAction::Favorite,
+                AvailableAction::SetFriendlyAlias,
+            ],
+            favorite: true,
+            local_only: false,
+            managed: false,
+            active_operations: Vec::new(),
+            identity_confidence: IdentityConfidence::Observed,
+            ambiguity: None,
+            last_known: Some(LastKnownService {
+                device_name: context.device_name.clone(),
+                last_seen: context.last_seen,
+                kind: context.kind.clone(),
+            }),
+        });
+    }
+    devices.sort_by(|left, right| left.id.cmp(&right.id));
+    services.sort_by(|left, right| left.id.cmp(&right.id));
+}
+
 fn capture_inputs(sources: &CatalogSources, availability: SourceAvailability) -> CatalogInputs {
     CatalogInputs {
         mdns: sources.mdns.as_ref().map(|source| source.snapshot()),
@@ -1720,6 +1826,10 @@ fn capture_inputs(sources: &CatalogSources, availability: SourceAvailability) ->
             .as_ref()
             .map(|runtime| runtime.entries_snapshot()),
         runtime: sources.runtime.as_ref().map(|runtime| runtime.status()),
+        preferences: sources
+            .preferences
+            .as_ref()
+            .map(|preferences| preferences.status()),
         availability,
     }
 }
@@ -1753,6 +1863,10 @@ pub(crate) fn spawn_catalog_observer(
         .runtime
         .as_ref()
         .map(|runtime| runtime.watch_status());
+    let mut preferences = sources
+        .preferences
+        .as_ref()
+        .map(|preferences| preferences.watch_status());
 
     catalog.reconcile(capture_inputs(&sources, availability), Utc::now());
     tasks.push(tokio::spawn(async move {
@@ -1768,6 +1882,7 @@ pub(crate) fn spawn_catalog_observer(
                 closed = watch_changed(&mut proxy) => availability.proxy &= !closed,
                 closed = watch_changed(&mut proxy_entries) => availability.proxy &= !closed,
                 closed = watch_changed(&mut runtime) => availability.runtime &= !closed,
+                _ = watch_changed(&mut preferences) => {},
                 _ = expiry.tick() => {}
             }
             catalog.reconcile(capture_inputs(&sources, availability), Utc::now());
@@ -2182,5 +2297,125 @@ mod tests {
                 .expect("catalog observer did not join")
                 .expect("catalog observer panicked");
         }
+    }
+
+    fn service(id: &str, name: &str) -> Service {
+        Service {
+            schema: CATALOG_SCHEMA,
+            id: ServiceId::new(id).unwrap(),
+            device_id: DeviceId::new(format!("dev_{id}")).unwrap(),
+            display_name: name.into(),
+            alias: None,
+            kind: ServiceKind::Web,
+            condition: ServiceCondition::Found,
+            endpoints: Vec::new(),
+            observations: Vec::new(),
+            checks: Vec::new(),
+            available_actions: vec![AvailableAction::Favorite],
+            favorite: false,
+            local_only: false,
+            managed: false,
+            active_operations: Vec::new(),
+            identity_confidence: IdentityConfidence::Observed,
+            ambiguity: None,
+            last_known: None,
+        }
+    }
+
+    #[test]
+    fn preferences_join_by_stable_id_and_keep_absent_favorite_separate_from_stranger() {
+        let last_seen = Utc::now();
+        let preferences = PreferencesStatus {
+            schema: koi_common::service::PREFERENCES_SCHEMA,
+            epoch: "preferences-epoch".into(),
+            revision: 4,
+            mode: PreferencesMode::Writable,
+            services: vec![koi_common::service::ServicePreference {
+                service_key: koi_common::service::ServicePreferenceKey::KoiService {
+                    id: ServiceId::new("svc_original").unwrap(),
+                },
+                favorite: true,
+                friendly_alias: Some("Workshop dashboard".into()),
+                last_known: Some(koi_common::service::PreferredServiceContext {
+                    device_id: DeviceId::new("dev_original").unwrap(),
+                    display_name: "Grafana".into(),
+                    device_name: Some("workshop".into()),
+                    kind: ServiceKind::Web,
+                    last_condition: ServiceCondition::Found,
+                    last_seen,
+                }),
+            }],
+            candidates: Vec::new(),
+            problem: None,
+        };
+
+        let mut devices = Vec::new();
+        let mut services = vec![service("svc_stranger", "Grafana")];
+        let mut candidates = Vec::new();
+        join_preferences(
+            &mut devices,
+            &mut services,
+            &mut candidates,
+            Some(&preferences),
+        );
+
+        assert_eq!(services.len(), 2);
+        let stranger = services
+            .iter()
+            .find(|service| service.id.as_str() == "svc_stranger")
+            .unwrap();
+        assert!(!stranger.favorite, "same display name is not identity");
+        let absent = services
+            .iter()
+            .find(|service| service.id.as_str() == "svc_original")
+            .unwrap();
+        assert!(absent.favorite);
+        assert_eq!(absent.alias.as_deref(), Some("Workshop dashboard"));
+        assert_eq!(absent.condition, ServiceCondition::Absent);
+        assert_eq!(absent.last_known.as_ref().unwrap().last_seen, last_seen);
+        assert!(absent.endpoints.is_empty());
+        assert_eq!(devices[0].condition, DeviceCondition::Absent);
+    }
+
+    #[test]
+    fn candidate_dismissal_requires_the_same_recognizer_and_source_key() {
+        let key = koi_common::service::CandidatePreferenceKey {
+            recognizer: "process-executable-v1:ollama".into(),
+            source: "windows-process-table".into(),
+        };
+        let candidate_id = ServiceId::new("svc_candidate").unwrap();
+        let candidate = LocalCandidate {
+            schema: CATALOG_SCHEMA,
+            id: candidate_id.clone(),
+            key: key.clone(),
+            display_name: "Ollama".into(),
+            kind: ServiceKind::Api,
+            endpoints: Vec::new(),
+            observations: Vec::new(),
+            available_actions: vec![AvailableAction::DismissCandidate],
+        };
+        let preferences = PreferencesStatus {
+            schema: koi_common::service::PREFERENCES_SCHEMA,
+            epoch: "preferences-epoch".into(),
+            revision: 1,
+            mode: PreferencesMode::Writable,
+            services: Vec::new(),
+            candidates: vec![koi_common::service::CandidatePreference {
+                candidate_id,
+                candidate_key: key,
+                dismissed: true,
+            }],
+            problem: None,
+        };
+        let mut devices = Vec::new();
+        let mut services = Vec::new();
+        let mut candidates = vec![candidate];
+        join_preferences(
+            &mut devices,
+            &mut services,
+            &mut candidates,
+            Some(&preferences),
+        );
+        assert!(candidates.is_empty());
     }
 }

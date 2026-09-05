@@ -432,6 +432,8 @@ impl KoiEmbedded {
             proxy,
             udp,
             runtime,
+            preferences,
+            catalog,
             system_status,
             mdns_snapshot: mdns_bridge,
         } = running.cores().clone();
@@ -548,6 +550,8 @@ impl KoiEmbedded {
                 proxy: proxy.clone(),
                 udp: udp.clone(),
                 runtime: runtime.clone(),
+                preferences: preferences.clone(),
+                catalog: catalog.clone(),
                 system_status: Arc::clone(&system_status),
                 mdns_snapshot: mdns_bridge.clone(),
             };

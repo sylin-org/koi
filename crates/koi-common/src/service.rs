@@ -10,7 +10,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
 use utoipa::ToSchema;
 
+use crate::error::ErrorCode;
+
 pub const CATALOG_SCHEMA: u32 = 1;
+pub const PREFERENCES_SCHEMA: u32 = 1;
 pub const INSTALLATION_ID_TXT_KEY: &str = "koi.installation_id";
 pub const SERVICE_ID_TXT_KEY: &str = "koi.service_id";
 
@@ -461,10 +464,128 @@ pub struct LastKnownService {
     pub kind: ServiceKind,
 }
 
+/// Stable key for personal intent attached to a Koi service identity.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, ToSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ServicePreferenceKey {
+    KoiService { id: ServiceId },
+}
+
+impl ServicePreferenceKey {
+    pub fn service_id(&self) -> &ServiceId {
+        match self {
+            Self::KoiService { id } => id,
+        }
+    }
+}
+
+/// Safe context retained for a favorite that is no longer observed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct PreferredServiceContext {
+    pub device_id: DeviceId,
+    pub display_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
+    pub kind: ServiceKind,
+    pub last_condition: ServiceCondition,
+    pub last_seen: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ServicePreference {
+    pub service_key: ServicePreferenceKey,
+    pub favorite: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub friendly_alias: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_known: Option<PreferredServiceContext>,
+}
+
+/// A local candidate is recognized by its detector and source-owned stable key.
+/// A port or display label alone is deliberately insufficient.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, ToSchema)]
+pub struct CandidatePreferenceKey {
+    pub recognizer: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CandidatePreference {
+    pub candidate_id: ServiceId,
+    pub candidate_key: CandidatePreferenceKey,
+    pub dismissed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PreferencesMode {
+    Writable,
+    ReadOnly,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct PreferencesProblem {
+    pub error: ErrorCode,
+    pub message: String,
+    pub retryable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub found_schema: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub minimum_schema: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maximum_schema: Option<u32>,
+}
+
+/// Latest authoritative personal-preference state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct PreferencesStatus {
+    pub schema: u32,
+    pub epoch: String,
+    pub revision: u64,
+    pub mode: PreferencesMode,
+    pub services: Vec<ServicePreference>,
+    pub candidates: Vec<CandidatePreference>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub problem: Option<PreferencesProblem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SetServicePreferenceRequest {
+    pub schema: u32,
+    pub expected_revision: u64,
+    pub service_key: ServicePreferenceKey,
+    pub favorite: bool,
+    #[serde(default)]
+    pub friendly_alias: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SetCandidatePreferenceRequest {
+    pub schema: u32,
+    pub expected_revision: u64,
+    pub candidate_key: CandidatePreferenceKey,
+    pub dismissed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct PreferenceErrorBody {
+    pub error: ErrorCode,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_revision: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub found_schema: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub minimum_schema: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maximum_schema: Option<u32>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct LocalCandidate {
     pub schema: u32,
     pub id: ServiceId,
+    pub key: CandidatePreferenceKey,
     pub display_name: String,
     pub kind: ServiceKind,
     pub endpoints: Vec<Endpoint>,
@@ -504,5 +625,31 @@ mod tests {
         let mut future: serde_json::Value = serde_json::from_slice(&json).unwrap();
         future["schema"] = serde_json::json!(CATALOG_SCHEMA + 1);
         assert!(serde_json::from_value::<CatalogSnapshot>(future).is_err());
+    }
+
+    #[test]
+    fn preference_contract_round_trips_with_stable_tagged_keys() {
+        let status = PreferencesStatus {
+            schema: PREFERENCES_SCHEMA,
+            epoch: "epoch-1".into(),
+            revision: 7,
+            mode: PreferencesMode::Writable,
+            services: vec![ServicePreference {
+                service_key: ServicePreferenceKey::KoiService {
+                    id: ServiceId::new("svc_0199").unwrap(),
+                },
+                favorite: true,
+                friendly_alias: Some("Workshop dashboard".into()),
+                last_known: None,
+            }],
+            candidates: Vec::new(),
+            problem: None,
+        };
+        let value = serde_json::to_value(&status).unwrap();
+        assert_eq!(value["services"][0]["service_key"]["kind"], "koi_service");
+        assert_eq!(
+            serde_json::from_value::<PreferencesStatus>(value).unwrap(),
+            status
+        );
     }
 }

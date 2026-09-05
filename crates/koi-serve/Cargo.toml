@@ -25,6 +25,7 @@ koi-dashboard.workspace = true
 koi-mdns.workspace = true
 koi-certmesh.workspace = true
 koi-config.workspace = true
+koi-preferences.workspace = true
 koi-dns.workspace = true
 koi-health.workspace = true
 koi-trust.workspace = true
@@ -48,6 +49,8 @@ utoipa.workspace = true
 utoipa-scalar = { workspace = true }
 subtle.workspace = true
 chrono.workspace = true
+async-stream.workspace = true
+futures-util.workspace = true
 hickory-proto.workspace = true
 if-addrs.workspace = true
 rustls.workspace = true

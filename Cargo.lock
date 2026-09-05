@@ -2108,6 +2108,7 @@ dependencies = [
  "koi-dns",
  "koi-health",
  "koi-mdns",
+ "koi-preferences",
  "koi-proxy",
  "koi-runtime",
  "koi-trust",
@@ -2401,6 +2402,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "koi-preferences"
+version = "1.0.0-dev.0"
+dependencies = [
+ "chrono",
+ "koi-common",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "koi-proxy"
 version = "1.0.0-dev.0"
 dependencies = [
@@ -2449,10 +2464,12 @@ name = "koi-serve"
 version = "1.0.0-dev.0"
 dependencies = [
  "anyhow",
+ "async-stream",
  "async-trait",
  "axum",
  "base64",
  "chrono",
+ "futures-util",
  "hickory-proto",
  "hyper-util",
  "if-addrs",
@@ -2465,6 +2482,7 @@ dependencies = [
  "koi-health",
  "koi-mcp",
  "koi-mdns",
+ "koi-preferences",
  "koi-proxy",
  "koi-runtime",
  "koi-trust",
