@@ -49,11 +49,14 @@ created: bounded renderer probes and behavioral rendering tests.
 | Read-only local catalog executable | `tools/koi-ui-spike/src/main.rs` | Existing local client; HTML to stdout; no daemon or listener |
 | Versioned source assets | `tools/koi-ui-spike/assets/family-v1.css`, `spike.css`, `card.html`, `koi.png` | Exact source extraction/copy plus documented accessibility overrides; no runtime sibling/CDN |
 | Reproduction/asset provenance | `tools/koi-ui-spike/README.md` | Locked commands and limits; fixtures never masquerade as native proof |
+| Offline browser behavior | `tools/koi-ui-spike/browser-smoke.mjs` | Chromium pipe-based test of narrow layout, keyboard, images and reduced motion; no network listener |
+| Generated evidence exclusion | `tools/koi-ui-spike/.gitignore` | Keep builds, screenshots and local catalog output out of Git |
 | Comparison/next production component map | `docs/adr/045-shared-rust-renderer.md` | Proposed until measured platform and live packaged cases pass |
 
 **Pattern:** Following `koi-client::KoiClient::from_local` / `catalog_snapshot`
 for live data; desktop's source card/CSS for appearance; pure rendering above
-`koi-common` for downward dependencies. Maud 0.27.0 versus stable Dioxus 0.7.3,
+`koi-common` for downward dependencies. Maud 0.27.0 versus stable Dioxus 0.7.10
+(Cargo resolution corrected the initial 0.7.3 probe to the current stable patch),
 not the 0.8 alpha. No `mdns-sd` import, duplicate shared type, global constants,
 new wire schema or business rule. Existing serde schema tests remain authoritative;
 new tests cover hostile names, schema refusal, states, empty versus unavailable,
@@ -87,5 +90,77 @@ operator `/v1/catalog` returns HTTP 404; WebKitGTK 4.1 version 2.52.6; Rust 1.97
 No installation, provider, firewall, state or peer mutation. Native acceptance,
 Windows, musl, live packaged/offline route and renderer selection remain pending.
 
-Next: publish/recheck this claim, implement both bounded views and measure their
-locked source builds. No acceptance case has been marked passed by this plan.
+## First experiment checkpoint — 2026-09-05
+
+Before -> after: no experiment -> two working Rust render functions and one
+authenticated local snapshot reader, source-vendored card/assets, locked isolated
+builds, seven behavioral tests and a reusable offline browser smoke. Neither
+candidate is installed, selected, exposed on Pond or included in product dependencies.
+
+| Measured item | Maud 0.27.0 | Dioxus 0.7.10 |
+|---|---:|---:|
+| Stripped glibc SSR reader, bytes | 3,176,424 | 3,513,064 |
+| Normal dependency package/version lines, deduped, including probe | 147 | 191 |
+| Initial release build elapsed (Cargo reported) | 1m 24s | 1m 19s |
+| Unavailable-page offline Chromium smoke | pass | pass |
+| Windows GNU typed reader/render cross-check | pass | pass |
+
+These are **SSR reader** sizes, not whole desktop sizes. Both readers include the
+same existing Koi client and original embedded assets; `ldd` reports libc,
+libgcc_s and the ELF loader (plus virtual vdso). Builds shared cached dependencies
+and ran alongside other compilation; elapsed times are observations, not a speed
+comparison. Both final single-feature artifacts have the byte sizes above after
+the narrow-screen correction. Dioxus desktop-feature compilation separately passed
+on CachyOS in 41.99s, with 374 normal dependency lines; no desktop runtime was
+launched or measured. Windows GNU cross-check passed in 2m 06s; it is not Windows
+physical proof and did not compile the desktop shell there.
+
+Commands/results:
+
+- `cargo test --manifest-path tools/koi-ui-spike/Cargo.toml --locked --features
+  dioxus-renderer`: **7 passed**, each applicable behavior runs against both renderers.
+- Matching strict `cargo clippy --all-targets ... -- -D warnings` and `cargo fmt
+  --manifest-path ... --check`: pass.
+- Locked single-feature release builds and glibc `dioxus-desktop-check`: pass.
+- `cargo check --manifest-path tools/koi-ui-spike/Cargo.toml --locked --target
+  x86_64-pc-windows-gnu --features dioxus-renderer`: pass.
+- Existing desktop `node --test ../koi-desktop/ui/app.test.mjs`: **40 passed**;
+  no desktop source changed.
+- Both live readers against this installed daemon emit unavailable HTML and
+  **exit 1**, correctly preserving the HTTP 404/schema gap. No fixture fallback.
+- `node tools/koi-ui-spike/browser-smoke.mjs <target/renderer.html>`: pass for
+  both. Chromium 152 at 320 px, 305 px document content, zero clipped critical text
+  lines, four 44 px navigation targets with real destinations, both original
+  100 px images decoded offline, zero network assets/active reduced-motion
+  animations, keyboard Tab exposes the skip link and solid focus outline.
+  Both pages have **zero rows and unavailable=true**; this is negative-path
+  component evidence, not the live-row acceptance case.
+- Source PNG hashes match exactly. Family prefix SHA-256
+  `dec71fe77c3c1a6447a10af1e6c514375873cdff20d94987a3863701a1c67372`;
+  original card markup `82e2216befff4f2b9289c4fc235338d661a9b9284ca1ab9d6204da0291fe8c8c`.
+- Documentation leak/surface guards, script syntax and diff checks pass. Generated
+  HTML/screenshots/builds are ignored, not committed.
+
+The first escaping test assumed identical entity spelling; both renderers escaped
+the input safely. Replaced that assertion with parsed-DOM text/attribute equality
+and absence of injected elements/event handlers. Added hostile raw-name fallback
+coverage. A visual capture also exposed narrow-screen clipping risk: removed the
+inherited nested body overflow and added per-line bounds assertions. Full-page
+capture now pins the 320 px width to avoid Chromium gutter/capture relayout cropping.
+
+The full existing workspace test/check/Clippy/release chain is running separately
+as preparation for a later own-host serial upgrade; it is **not yet a passing gate**
+in this checkpoint. Its product tree equals R05 `e673af6`; the probe is not a
+workspace member. No native upgrade begins on a pending or failing gate.
+
+Current state: in_progress/pending. ADR-045 is proposed, not accepted; CONTRACT.md
+and all production paths remain unchanged. The installed `/usr/local/bin/koi`
+still hashes `b2079cd3bb2e35a46f0344b8181b92e302b33681c12104124dadf4026d54cdc3`.
+No peer or system mutation, second daemon, workbench or remaining temporary browser
+profile is part of this checkpoint. The test browser uses a pipe, not a listener.
+
+Next concrete action: finish/reconcile the preparation gates; publish exact-source
+Windows/musl compile requests; expand the native claim with precise restoration
+before upgrading the one local daemon and integrating a packaged renderer. Live
+catalog, installed/offline WebKit route, tray/session behavior, musl and Windows
+native cases remain pending. Do not consume this row as linux-ready.

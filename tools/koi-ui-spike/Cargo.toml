@@ -1,0 +1,33 @@
+[package]
+name = "koi-ui-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+
+# Deliberately isolated: neither candidate changes product dependency resolution.
+[workspace]
+resolver = "2"
+
+[features]
+default = ["maud-renderer"]
+maud-renderer = ["dep:maud"]
+dioxus-renderer = ["dep:dioxus", "dep:dioxus-ssr"]
+# Compile feasibility only; this experiment does not launch a second workbench.
+dioxus-desktop-check = ["dioxus-renderer", "dioxus/desktop"]
+
+[dependencies]
+koi-common = { path = "../../crates/koi-common" }
+koi-client = { path = "../../crates/koi-client" }
+base64 = "=0.22.1"
+maud = { version = "=0.27.0", optional = true }
+dioxus = { version = "=0.7.10", default-features = false, features = ["macro", "html", "signals", "hooks", "launch"], optional = true }
+dioxus-ssr = { version = "=0.7.10", optional = true }
+
+[dev-dependencies]
+serde_json = "1"
+scraper = "=0.24.0"
+
+[profile.release]
+strip = true
+lto = "thin"
