@@ -63,9 +63,10 @@ test("rejects ambiguous or noncanonical public versions", () => {
 });
 
 test("all publication channels check the centralized release decision", async () => {
-  const [bump, release, releaseWorkflow, publishWorkflow] = await Promise.all([
+  const [bump, release, ciWorkflow, releaseWorkflow, publishWorkflow] = await Promise.all([
     readFile(path.join(root, "scripts/bump-version.ps1"), "utf8"),
     readFile(path.join(root, "scripts/release.ps1"), "utf8"),
+    readFile(path.join(root, ".github/workflows/ci.yml"), "utf8"),
     readFile(path.join(root, ".github/workflows/release.yml"), "utf8"),
     readFile(path.join(root, ".github/workflows/publish.yml"), "utf8"),
   ]);
@@ -80,7 +81,28 @@ test("all publication channels check the centralized release decision", async ()
   assert.match(publishWorkflow, /release-version\.mjs --cargo Cargo\.toml/);
   assert.match(publishWorkflow, /crates\/\$\{pkg_name\}\/\$\{VERSION\}/);
 
-  for (const surface of [bump, release, releaseWorkflow, publishWorkflow]) {
+  assert.match(ciWorkflow, /branches: \[main, dev\]/);
+  for (const contract of [
+    "packages/ts/test/client.test.js",
+    "packages/npm/test/launcher.test.js",
+    "scripts/release-version.test.mjs",
+    "scripts/release-manifest.test.mjs",
+    "scripts/candidate-validation.test.mjs",
+  ]) {
+    assert.match(ciWorkflow, new RegExp(contract.replaceAll(".", "\\.")));
+    assert.match(releaseWorkflow, new RegExp(contract.replaceAll(".", "\\.")));
+  }
+  assert.doesNotMatch(publishWorkflow, /workflow_dispatch/);
+  assert.match(releaseWorkflow, /permissions:\s+contents: read/);
+  assert.match(releaseWorkflow, /candidate-summary:[\s\S]*github\.event_name == 'workflow_dispatch'/);
+  for (const job of ["release", "docker", "publish-crates", "publish-npm"]) {
+    assert.match(
+      releaseWorkflow,
+      new RegExp(`${job}:[\\s\\S]*?if: github\\.event_name == 'push' && startsWith`),
+    );
+  }
+
+  for (const surface of [bump, release, ciWorkflow, releaseWorkflow, publishWorkflow]) {
     assert.doesNotMatch(surface, /\(\d\+\\\.\d\+\\\.\d\+\)/);
   }
 });

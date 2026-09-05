@@ -9,8 +9,10 @@ on:
   # job is gated on a tag push, so a manual dispatch runs prepare+test+build only.
   workflow_dispatch:
 
+# Validation jobs inherit only read access. Tag-only publication jobs declare their
+# narrowly scoped writes below; a manual candidate dispatch cannot publish anything.
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -71,9 +73,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
       - uses: Swatinem/rust-cache@v2
-      - name: Test
-        run: cargo test --locked
+      - name: Rust workspace
+        run: cargo test --workspace --locked
+      - name: Release, launcher, and TypeScript client contracts
+        run: >-
+          node --test
+          packages/ts/test/client.test.js
+          packages/npm/test/launcher.test.js
+          scripts/release-version.test.mjs
+          scripts/release-manifest.test.mjs
+          scripts/candidate-validation.test.mjs
+      - name: Python client contracts
+        env:
+          PYTHONPATH: packages/python/src
+        run: python -m unittest discover -s packages/python/tests -v
+      - name: Current embedded frontend contracts
+        run: cargo test --locked -p koi-dashboard
 
   # ── Build ─────────────────────────────────────────────────────────
   # Runs in parallel with `test` (not gated on it) so the 6 cross builds and the
@@ -270,12 +292,104 @@ jobs:
             (cd "$carrier" && npm pack --dry-run)
           done
 
+      - name: Upload validated candidate manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-release-manifest
+          path: artifacts/koi-${{ needs.prepare.outputs.tag }}-manifest.json
+          if-no-files-found: error
+          retention-days: 14
+
+  # A manual build produces one durable, machine-readable record for its exact
+  # source and artifact manifest. It runs even when a dependency failed so that
+  # the report names the missing/skipped/failing job, then fails the workflow.
+  # Native links remain pending until R29 reconciles the built artifacts on each hat.
+  candidate-summary:
+    if: always() && github.event_name == 'workflow_dispatch'
+    needs: [prepare, test, build, finalize-windows, channels]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download validated candidate manifest
+        id: manifest
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate-release-manifest
+          path: candidate-artifacts
+
+      - name: Record required hosted results
+        shell: bash
+        env:
+          HOSTED_RESULTS: >-
+            [{"name":"prepare","status":"${{ needs.prepare.result }}"},
+             {"name":"test","status":"${{ needs.test.result }}"},
+             {"name":"build","status":"${{ needs.build.result }}"},
+             {"name":"finalize-windows","status":"${{ needs['finalize-windows'].result }}"},
+             {"name":"channels","status":"${{ needs.channels.result }}"}]
+        run: printf '%s\n' "$HOSTED_RESULTS" > candidate-hosted-results.json
+
+      - name: Build candidate validation summary
+        id: validation
+        continue-on-error: true
+        shell: bash
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          MANIFEST=$(find candidate-artifacts -maxdepth 1 -name 'koi-*-manifest.json' -print -quit)
+          if [ -z "$MANIFEST" ]; then
+            mkdir -p candidate-artifacts
+            MANIFEST=candidate-artifacts/unavailable-manifest.json
+            printf '{}\n' > "$MANIFEST"
+          fi
+          node scripts/candidate-validation.mjs \
+            --source-sha "$GITHUB_SHA" \
+            --manifest "$MANIFEST" \
+            --hosted-results candidate-hosted-results.json \
+            --run-url "$RUN_URL" \
+            --output candidate-validation.json
+
+      - name: Upload candidate validation summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-validation-${{ github.sha }}
+          path: candidate-validation.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Add summary to the workflow run
+        if: always()
+        shell: bash
+        run: |
+          test -f candidate-validation.json
+          {
+            echo '## Candidate validation'
+            echo
+            echo "Source: \`$GITHUB_SHA\`"
+            echo
+            echo '```json'
+            cat candidate-validation.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Enforce candidate infrastructure result
+        if: always()
+        shell: bash
+        env:
+          MANIFEST_OUTCOME: ${{ steps.manifest.outcome }}
+          VALIDATION_OUTCOME: ${{ steps.validation.outcome }}
+        run: |
+          test "$MANIFEST_OUTCOME" = success
+          test "$VALIDATION_OUTCOME" = success
+
   # ── Release ───────────────────────────────────────────────────────
   release:
     needs: [prepare, test, channels, finalize-windows]
     # Only create a GitHub Release on a real tag push; workflow_dispatch runs
     # the build matrix as a dry run and stops here.
-    if: startsWith(github.ref, 'refs/tags/')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
       contents: write # create the release + upload assets
@@ -365,7 +479,7 @@ jobs:
   # not publish. Needs only the built-in GITHUB_TOKEN (packages: write).
   docker:
     needs: [prepare, test, build]
-    if: startsWith(github.ref, 'refs/tags/')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -450,7 +564,7 @@ jobs:
   # never publishes. Reuses publish.yml (rate-limit bucketing + index verify).
   publish-crates:
     needs: [release]
-    if: startsWith(github.ref, 'refs/tags/')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     uses: ./.github/workflows/publish.yml
     secrets: inherit
 
@@ -459,7 +573,7 @@ jobs:
   # its trusted publisher points at release.yml, and NPM_PUBLISH_ENABLED=true.
   publish-npm:
     needs: [prepare, release]
-    if: startsWith(github.ref, 'refs/tags/') && vars.NPM_PUBLISH_ENABLED == 'true'
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && vars.NPM_PUBLISH_ENABLED == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read

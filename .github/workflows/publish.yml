@@ -1,8 +1,6 @@
 name: Publish
 
 on:
-  # Manual run (decoupled from a release).
-  workflow_dispatch:
   # Called by release.yml after a v* tag's GitHub Release succeeds, so a tag
   # both creates the release and publishes to crates.io.
   workflow_call:
@@ -12,6 +10,9 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
 
 jobs:
   publish:
@@ -27,11 +28,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # No pre-publish `cargo test` here: on the tag path release.yml's `test` job has
-      # already built+tested this exact commit (release is gated on it), and each
-      # `cargo publish` below runs `--verify` (builds the crate from its packaged
-      # tarball — the check that actually catches packaging bugs). For a manual
-      # `workflow_dispatch`, run CI first; `--verify` still gates build-correctness.
+      # No pre-publish `cargo test` here: release.yml's tag-only caller has already
+      # built+tested this exact commit (release is gated on it), and each `cargo
+      # publish` below runs `--verify` (builds the crate from its packaged tarball —
+      # the check that actually catches packaging bugs). This workflow has no manual
+      # trigger: validation cannot accidentally enter an irreversible registry path.
 
       - name: Publish to crates.io
         shell: bash

@@ -26,13 +26,29 @@ cargo test
 ## Verify before submitting
 
 ```bash
-cargo check
-cargo test
-cargo clippy -- -D warnings
-cargo fmt --check
+cargo check --workspace --all-targets --locked
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo fmt --all --check
+
+node --test packages/ts/test/client.test.js packages/npm/test/launcher.test.js \
+  scripts/release-version.test.mjs scripts/release-manifest.test.mjs \
+  scripts/candidate-validation.test.mjs
+PYTHONPATH=packages/python/src python -m unittest discover -s packages/python/tests -v
+bash scripts/check-lean-embedded.sh
+bash scripts/check-publish-list.sh
 ```
 
-All four must pass; CI enforces them.
+CI runs these contracts for pushes and pull requests targeting `main` or `dev`, plus
+the architecture, documentation-surface, audit and cross-host guards in
+`.github/workflows/ci.yml`. Tests use loopback servers on ephemeral ports; keep that
+isolation when adding client fixtures rather than reserving a repository-wide port.
+
+A candidate dry run is the manual `Release` workflow on the exact intended commit.
+It builds all six archives and emits `candidate-validation-<source-sha>`, but it cannot
+publish: registry, release, attestation and container jobs remain tag-only. See
+[ADR-025](docs/adr/025-release-channels-and-bootstrap-contract.md#8-candidate-validation-is-an-evidence-contract)
+for the report contract and the checks that must still be supplied by native R29 runs.
 
 ---
 

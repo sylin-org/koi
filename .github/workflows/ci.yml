@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
 
 env:
   CARGO_TERM_COLOR: always
@@ -32,10 +32,66 @@ jobs:
           key: ${{ matrix.os }}
 
       - name: Build
-        run: cargo build --locked
+        run: cargo build --workspace --locked
 
       - name: Test
-        run: cargo test --locked
+        run: cargo test --workspace --locked
+
+  contracts:
+    name: Client, release, and frontend contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: contracts
+
+      - name: Confirm the exact checked source
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Release, launcher, and TypeScript client contracts
+        run: >-
+          node --test
+          packages/ts/test/client.test.js
+          packages/npm/test/launcher.test.js
+          scripts/release-version.test.mjs
+          scripts/release-manifest.test.mjs
+          scripts/candidate-validation.test.mjs
+
+      - name: Python client contracts
+        env:
+          PYTHONPATH: packages/python/src
+        run: python -m unittest discover -s packages/python/tests -v
+
+      - name: Current embedded frontend contracts
+        run: cargo test --locked -p koi-dashboard
+
+  architecture:
+    name: Architecture boundaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: architecture
+
+      - name: Architecture contract
+        run: cargo test --locked -p koi-common --test architecture
 
   windows-gnu-check:
     name: Windows GNU locked cross-check
@@ -71,7 +127,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Clippy
-        run: cargo clippy --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   lean:
     name: lean-embedded (optional backends off)
@@ -112,7 +168,7 @@ jobs:
           components: rustfmt
 
       - name: Format check
-        run: cargo fmt --check
+        run: cargo fmt --all --check
 
   msrv:
     runs-on: ubuntu-latest
@@ -121,7 +177,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.92
       - uses: Swatinem/rust-cache@v2
       - name: Check (MSRV)
-        run: cargo check --locked
+        run: cargo check --workspace --all-targets --locked
 
   audit:
     runs-on: ubuntu-latest

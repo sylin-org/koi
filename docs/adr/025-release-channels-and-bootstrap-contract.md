@@ -161,6 +161,43 @@ prerelease identifiers. Build metadata is excluded because every channel and art
 must share one unambiguous public identity. An automatic bump from a prerelease is also
 refused: the operator must explicitly choose the next candidate or stable version.
 
+### 8. Candidate validation is an evidence contract
+
+The manual `Release` workflow is validation, never publication. Its default token has
+read-only repository access; release creation, attestations, GHCR and npm writes are
+declared only on tag-gated jobs. Crates publication is callable only from that tag
+path and has no independent manual trigger.
+
+Every successful manual build uploads `candidate-validation-<source-sha>`, containing
+one JSON document with this schema-1 shape:
+
+```json
+{
+  "schemaVersion": 1,
+  "sources": [{"repository": "https://github.com/sylin-org/koi", "sha": "<40-hex>"}],
+  "artifactManifest": {
+    "file": "koi-v<version>-manifest.json",
+    "sha256": "<64-hex>",
+    "schemaVersion": 1,
+    "version": "<semver>",
+    "tag": "v<semver>",
+    "targets": [{"target": "<supported-triple>", "sha256": "<64-hex>"}]
+  },
+  "hostedEvidence": [{"name": "<required-job>", "status": "success", "url": "<run-url>"}],
+  "nativeEvidence": [{"platform": "<fleet-hat>", "status": "pending", "sourceSha": null, "artifactSha256": null, "url": null}],
+  "previewTargets": [{"targets": ["<triple>"], "qualification": "<bounded-claim>"}],
+  "verdict": {"infrastructure": "passed", "candidate": "pending", "blockers": ["<reason>"]}
+}
+```
+
+The required hosted job set is `prepare`, `test`, `build`, `finalize-windows`, and
+`channels`. A missing, skipped or failed member makes infrastructure fail. The report
+hashes the validated six-target artifact manifest and binds every later native entry
+to the same source SHA and an exact artifact SHA-256. Windows, CachyOS, Bluefin,
+Alpine and Debian native evidence remains pending until R29 supplies links; macOS is
+explicitly build-only and unverified. Therefore an early green manual workflow proves
+candidate infrastructure, not release acceptance.
+
 ## Consequences
 
 - Adding a publication channel does not add a Koi build or duplicate archive identity.
@@ -168,6 +205,8 @@ refused: the operator must explicitly choose the next candidate or stable versio
   implementation surface.
 - Rust users gain a no-compilation route without trusting unofficial binary mirrors.
 - A tag dry run catches packaging drift before an irreversible registry publication.
+- A candidate report joins exact source, hosted results and artifact identity without
+  turning missing native evidence into a release claim.
 - Release operation becomes safer in a shared, intentionally dirty development tree.
 - WinGet and Homebrew can be added as manifest consumers once their external homes and
   lifecycle expectations are ready.

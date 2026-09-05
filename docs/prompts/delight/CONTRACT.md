@@ -622,7 +622,7 @@ acceptance requirements.
 | D02 certificate names/client trust | secure path binds exact authorized SAN and separate client TLS evidence | Debian, R20-R22 after R02 |
 | D03 route/auth documentation | full routes protected; local mutations loopback+DAT; Pond separate DTO | Bluefin R02, R05/R09/R28 |
 | D04 discovery type pollution | mDNS source classification/provenance feeds catalog; UI filtering forbidden | Debian R03/R04/R14 |
-| D05 candidate/hosted CI gap | no source-only result closes native/hosted acceptance | Alpine R28, CachyOS/native hats R29 |
+| D05 candidate/hosted CI gap | R28 binds exact source, required hosted results and the six-target manifest in ADR-025's schema-1 report; source-only results keep native fields pending | Alpine R28 infrastructure, CachyOS/native hats R29 acceptance |
 | D06 installer next-action mismatch | recommended install must end at started catalog/open result | Alpine/Bluefin R11-R14 |
 | D07 no-match vs no-discovery | snapshot carries source availability, empty, absent favorite, and search state separately | CachyOS R07/R27 |
 | D08 accessibility | shared UI contract reserves focus/keyboard/narrow/reduced-motion evidence | CachyOS R06-R09/R27 |
