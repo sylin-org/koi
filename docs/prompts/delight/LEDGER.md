@@ -88,7 +88,7 @@ identity and complete hosted/native evidence, even if infrastructure tasks passe
 | ID | Dependencies | Status | Readiness | Owner | Evidence/report | Next action |
 |---|---|---|---|---|---|---|
 | [R01](R01-contract-and-handover.md) | - | accepted | ready | cachyos-linux | [reports/R01.md](reports/R01.md) | Complete; contract and inherited-run restoration verified |
-| [R02](R02-critical-documentation-truth.md) | R01 | queued | pending | bluefin-linux | - | Eligible: claim critical documentation truth |
+| [R02](R02-critical-documentation-truth.md) | R01 | in_progress | pending | bluefin-linux | [reports/R02.md](reports/R02.md) | Claimed at `5557d5c`; execute the documented truth, route/auth, and bootstrap checks |
 | [R03](R03-discovery-record-correctness.md) | R01 | queued | pending | debian-linux | - | Eligible: claim discovery correctness, including Windows issue 004 and its required regression/native evidence |
 | [R04](R04-service-catalog.md) | R01, R03 | queued | pending | debian-linux | - | Wait for dependencies |
 | [R05](R05-catalog-api-and-preferences.md) | R04 | queued | pending | debian-linux | - | Wait for dependencies |
