@@ -444,7 +444,10 @@ impl PondUiRepository {
             // A preceding attempt may have made the immutable file visible but
             // reported uncertain directory durability. Reflush it before ever
             // allowing the current pointer to advance on retry.
-            std::fs::File::open(&path)?.sync_all()?;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&path)?
+                .sync_all()?;
             return sync_directory(&self.generations_dir());
         }
         let outcome = write_bytes_atomic(&path, &canonical_json(&prepared.canonical)?)?;
