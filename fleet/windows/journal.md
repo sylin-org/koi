@@ -1,5 +1,51 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-05 (29) — R06 native Windows renderer compiler probe
+
+task: `R06/windows-renderer-compile` | exact source
+`d2f6645ad699fa511348dd0e9f4ec312fe65e6f7` | run
+`r06-probe-d2f6645-windows-20260905` | verdict: **PASS — native compiler,
+behavioral test, strict Clippy, desktop dependency and independent stripped-reader
+build evidence; no renderer or UI acceptance inferred**
+
+koi state now: unchanged exactly one AutoStart LocalSystem SCM service, PID `3888`,
+descriptor `"C:\Program Files\Koi\koi.exe" --daemon`, installed SHA-256
+`ca6386df292cfd40c019d30ea36bcab33eea80ea7f50a1c78e375bac8d19cb21`,
+health 200 on 5641. The unchanged installed workbench remains sole PID `29424`,
+SHA-256 `d6f61627d31820f520876476f2fc5149dd804a78d5dcd3da9636a4847a47e042`,
+on loopback 5640. Pond remains disabled with no 5644 listener.
+
+evidence and findings:
+
+1. A clean detached worktree at the request's exact source ran natively on Windows
+   11 build 26200, `x86_64-pc-windows-msvc`, Rust 1.95.0/LLVM 22.1.2. Visual Studio
+   2022 Build Tools supplied MSVC 14.44.35207. `RUSTFLAGS` and
+   `CARGO_BUILD_TARGET` were unset and no Cargo config override existed.
+2. With `KOI_NO_CREDENTIAL_STORE=1`, the locked dual-renderer test passed 7/7 in
+   34.53s and matching strict all-target Clippy passed in 13.76s. Isolated format
+   checking passed. The locked `dioxus-desktop-check` compiled natively in 29.95s,
+   including Dioxus Desktop 0.7.10, Wry 0.53.5, Tao 0.34.8 and WebView2 bindings;
+   its normal dependency closure contained 326 deduplicated package/version lines.
+3. Independent stripped release SSR-reader builds passed. Maud 0.27.0 built in
+   30.37s at 2,963,968 bytes, 145 normal dependency lines, SHA-256
+   `c79cb673265d4315e5e39ce8c9e8ababc12374142f11a42acb815cc03819f7b5`.
+   Dioxus 0.7.10 built in 29.05s at 3,325,952 bytes, 190 lines, SHA-256
+   `8549f2159a587d08a343c906598798f235df056fb0354de998763641115bb357`.
+   Both are x64 Windows CUI images and import the same kernel/network/crypto APIs
+   plus Universal CRT and `VCRUNTIME140.dll` (installed version 14.51.36247.0);
+   neither SSR reader imports WebView2.
+4. Per the compile-only request, neither reader nor a desktop window was launched.
+   No Koi service/workbench restart, port, provider, firewall, trust, configuration,
+   credential or peer mutation occurred. Config and operator-policy hashes remain
+   `17fe9a664f76bb748da8beeb5c18fabf64da55d1901384772d1e7aecfab2c3ed`
+   and `14d3432b0efd0a52a697bb80adaa16bcd264c2ff79f57ac1156ac513decc9873`.
+   The run created zero ActiveStore firewall filters, no process/listener residue,
+   and its detached source/build worktree was removed. No restoration was required.
+
+next: CachyOS owns renderer selection and R06 reconciliation. This compiler result
+does not accept R06 or unblock shared-shell; Windows next services another ready peer
+request, otherwise it may claim dependency-ready R20.
+
 ## 2026-09-05 (28) — R05 catalog API/preferences Windows acceptance
 
 task: `R05` | Koi source `e673af61b624a7603946b02af57d12cf20bc6aba` |
