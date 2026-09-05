@@ -1,5 +1,60 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-04 (25) — OD-3 failed-candidate process restoration complete
+
+task: Epic 002 OD-3 cleanup tail / Epic 003 R01 handover dependency | frozen
+source `b3eb47e08817045f9371703d780ada9aab00995d` | synchronized
+instruction head `7788812` | run
+`v1-20260904-od3-b3eb47e-win-final-restoration` | verdict: **PASS —
+unchanged-artifact SCM reset and two bounded one-minute observations**
+
+koi state now: exactly one AutoStart LocalSystem SCM service `koi`, command
+`"C:\Program Files\Koi\koi.exe" --daemon`, PID `24100`, installed SHA-256
+`d47138c58cb2117ca597ae6bb335079d160d42608816e63ea0785273768d7610`,
+version `1.0.0-dev.0`, health 200, and authenticated local control. Provider
+generation 6 is Ready with `publish=native explicit_publish=native
+browse=windows-dns-sd resolve=windows-dns-sd` and publications `1/1/0/0`.
+The unchanged installed workbench remains sole PID `26760`, SHA-256
+`bb07bb2c232f1ea7398348b1cb4a215dc7d2de04c9c21461bc6fe092de05e245`.
+Pond desire is disabled with no port-5644 listener, Bonjour is absent, and no
+installer transaction or OD-3 scheduled/recovery task remains.
+
+evidence and findings:
+
+1. The pre-mutation snapshot at `2026-09-05T00:24:06Z` matched the frozen
+   artifact, SCM descriptor, config, operator policy, workbench, provider routes,
+   converged publication, disabled-Pond, Bonjour-absent and one-process baseline.
+   The still-responsive old PID `22564` had reached 2,151 handles, 421 threads and
+   107,372,544 bytes RSS, preserving issue 004's failed-candidate finding rather
+   than erasing or reclassifying it.
+2. One bounded elevated helper armed a SYSTEM recovery start for interruption
+   safety, then issued the only `Restart-Service koi` at
+   `2026-09-05T00:24:07Z`. The unchanged service reached health 200 at PID `24100`
+   by `00:24:42Z`, with 317 handles, 59 threads, 41,459,712 bytes RSS, aggregate
+   revision 87, generation 6, the same concrete routes and publications `1/1/0/0`.
+3. The required observations at `00:25:45Z` and `00:26:49Z` kept the same PID and
+   recorded respectively 340 handles / 62 threads / 43,622,400 bytes RSS and 342
+   handles / 63 threads / 44,281,856 bytes RSS. Both are below the fixed envelope
+   of 364 handles and 75 threads. Aggregate revisions advanced `226 -> 318`, all
+   authenticated status/health reads passed, routes remained concrete, and
+   publication remained converged.
+4. Binary, config SHA-256
+   `17fe9a664f76bb748da8beeb5c18fabf64da55d1901384772d1e7aecfab2c3ed`,
+   operator-policy SHA-256
+   `14d3432b0efd0a52a697bb80adaa16bcd264c2ff79f57ac1156ac513decc9873`,
+   SCM descriptor, workbench PID/hash, provider selection, Pond state and Bonjour
+   absence remained exact. No build, install, source, provider, firewall,
+   configuration, workbench or peer mutation occurred.
+5. The fail-safe task had not needed to run and was unregistered before its trigger;
+   a final enumeration returned zero `Koi OD3 b3eb47e Windows*` tasks. The temporary
+   helper was removed. The structured receipt remains at
+   `.tmp/od3-soak-windows/final-restoration-result.json`, SHA-256
+   `703cd730e542da8078eea471acd669113a66d6d7b13cb1ffca9a210f97baffa9`.
+6. This closes only the host-restoration tail. The OD-3 collector remains a truthful
+   12/14 failure and the candidate remains rejected. Issue 004 remains open for R03;
+   no replacement candidate or second soak was created. CachyOS can now close Epic
+   002 as unsuccessful and accept/activate R01.
+
 ## 2026-09-04 (24) — OD-3 frozen Windows soak failed on native resource growth
 
 commit: frozen source `b3eb47e08817045f9371703d780ada9aab00995d`;
