@@ -164,3 +164,43 @@ Windows/musl compile requests; expand the native claim with precise restoration
 before upgrading the one local daemon and integrating a packaged renderer. Live
 catalog, installed/offline WebKit route, tray/session behavior, musl and Windows
 native cases remain pending. Do not consume this row as linux-ready.
+
+## Bounded peer compile requests
+
+Published experiment source: **`d2f6645ad699fa511348dd0e9f4ec312fe65e6f7`**.
+This source is sufficient; the sibling desktop is not needed to build the probes.
+R01/R05 dependencies are accepted. These requests test compiler/platform viability
+only; no full native UI or task acceptance can be inferred from their results.
+
+| Run ID | Requester | Executor | Scope |
+|---|---|---|---|
+| `r06-probe-d2f6645-windows-20260905` | cachyos-linux | windows | Native Windows build/test and desktop dependency compilation |
+| `r06-probe-d2f6645-alpine-20260905` | cachyos-linux | alpine-linux | Native musl build/test and desktop dependency compilation |
+
+Procedure, on the executor's next operator invocation:
+
+1. Preserve any active claim/worktree. Build this exact commit from a clean export
+   or detached source worktree, following the existing fleet source rules. Record
+   `rustc -vV`, target/libc and any already-required native compiler options. Do not
+   substitute a later `dev` source or classify a cross-build as native execution.
+2. Run `cargo test --manifest-path tools/koi-ui-spike/Cargo.toml --locked --features
+   dioxus-renderer` and the matching strict all-target Clippy check. Use existing
+   CI test isolation (`KOI_NO_CREDENTIAL_STORE=1`); do not invoke credential stores.
+3. Run `cargo check --manifest-path tools/koi-ui-spike/Cargo.toml --locked
+   --no-default-features --features dioxus-desktop-check`. Use the host's supported
+   native shared-WebKit musl recipe where applicable and record exact flags.
+   Missing SDK/native prerequisites are an explicit unavailable case, not PASS.
+4. Build the two stripped release readers independently using the README commands;
+   record target, source, artifact sizes/hashes, build duration and required native
+   libraries. Do not launch the readers or another desktop/daemon for this request.
+5. Append evidence in the executor's owned journal and update its peer row. Restore
+   nothing on the installed host because no system surface is mutated. Remove only
+   run-owned temporary source/build directories when safe; preserve user work.
+
+Allowed effects: isolated source/build outputs and owned evidence publication.
+Forbidden effects: installed Koi/workbench changes, service restart, listening port,
+provider/firewall/trust/configuration/credential changes, remote session launch.
+No peer artifact or service is reserved. Expected result is truthful native
+compile/test evidence (or exact failing prerequisite), not a renderer selection.
+Do not install new system packages under this compile-only request; report the
+missing prerequisite for a separately scoped native step. Debian has no work here.

@@ -222,6 +222,8 @@ fresh run ID and restoration. Each peer writes evidence only in its own journal.
 | Request / task | Requesting hat | Peer hat | Mode / report | State | Peer evidence |
 |---|---|---|---|---|---|
 | `R03/windows-native-reconciliation` | windows | debian-linux | Reconcile completed issue 004 native proof with [R03](reports/R03.md); no peer mutation | completed | [Windows journal](../../../fleet/windows/journal.md); [issue 004](../../../fleet/windows/issues/004-windows-dnsapi-meta-browse-resource-growth.md) |
+| `R06/windows-renderer-compile` | cachyos-linux | windows | Exact `d2f6645` native compiler/dependency probe; no installed-host mutation; [procedure](reports/R06-renderer-decision.md#bounded-peer-compile-requests) | requested | Pending |
+| `R06/alpine-renderer-compile` | cachyos-linux | alpine-linux | Exact `d2f6645` musl compiler/dependency probe; no installed-host mutation; [procedure](reports/R06-renderer-decision.md#bounded-peer-compile-requests) | requested | Pending |
 
 States: requested, acknowledged, running, completed, failed, cancelled. A scheduled
 mutation requires peer acknowledgement before a candidate/run is armed. Do not

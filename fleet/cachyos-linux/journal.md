@@ -326,3 +326,33 @@ with R06 through ordinary claims. No remote agent was launched or host mutated.
 
 Checks: documentation leak, surface and diff guards. Next local action: complete
 R06 exploration and publish its renderer-decision claim before implementation.
+
+## 2026-09-05 — R06 renderer experiment published
+
+task: `R06/renderer-decision` | claim `2593c7e` | experiment source
+`d2f6645ad699fa511348dd0e9f4ec312fe65e6f7` | desktop unchanged `ba39faf` |
+verdict: **in_progress/pending, no selected renderer or native acceptance**.
+
+Published an isolated Maud 0.27.0 versus Dioxus 0.7.10 workspace with the same
+typed catalog input, original source card/PNG, family CSS, seven behavioral tests
+and offline Chromium smoke. Both renderers pass tests, strict Clippy/formatting,
+Windows GNU reader cross-check and 320 px keyboard/reduced-motion/asset checks.
+Dioxus's desktop dependency graph compiles on native glibc. Existing desktop
+JavaScript tests pass 40/40. The proposed ADR and report distinguish the measured
+SSR reader sizes (3,176,424 / 3,513,064 bytes) from unmeasured full desktop size.
+
+The one installed systemd service remains on the old candidate: PID `1249009`,
+`/usr/local/bin/koi` SHA-256
+`b2079cd3bb2e35a46f0344b8181b92e302b33681c12104124dadf4026d54cdc3`.
+Its catalog returns 404, so both real readers render unavailable and exit 1;
+no fixture or screenshot is claimed as a live row. No installed service,
+workbench, provider, firewall, trust, credentials or peer was changed. Generated
+browser profiles were removed; no second daemon or listener was started.
+
+The source renderer comparison has no product workspace dependency or contract
+change. Published bounded compile-only requests for native Windows and Alpine
+musl on exact `d2f6645`; these reserve no peer service and require their next
+operator invocation. Debian receives no build work. CachyOS's separate existing
+workspace gates are still preparation, not native acceptance. Next: reconcile
+those gates, then claim the exact own-host installation/packaged UI transition
+and restoration before live acceptance. CONTRACT.md remains unreserved for R20.
