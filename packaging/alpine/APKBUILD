@@ -1,8 +1,8 @@
 # Maintainer: Sylin <hello@sylin.org>
 
 pkgname=koi
-pkgver=1.0.0_pre0_git20260904
-pkgrel=2
+pkgver=1.0.0_pre0_git20260905
+pkgrel=0
 pkgdesc="Local connectivity substrate for discovering, trusting, and connecting a LAN"
 url="https://github.com/sylin-org/koi"
 arch="x86_64 aarch64"
@@ -17,7 +17,7 @@ subpackages="$pkgname-openrc::noarch $pkgname-doc"
 install="$pkgname-openrc.post-install $pkgname-openrc.pre-deinstall"
 # Cargo fetches the locked dependency graph during local package builds.
 options="net"
-_commit=e64b50e7146d2aff4fe0546763833098432faae8
+_commit=e673af61b624a7603946b02af57d12cf20bc6aba
 source="$pkgname-$_commit.tar.gz::$url/archive/$_commit.tar.gz"
 builddir="$srcdir/$pkgname-$_commit"
 
@@ -57,5 +57,5 @@ openrc() {
 }
 
 sha512sums="
-9f299084d9a63114aaeac48617cccbc81771cea55ed31f4181b322973c7e117e1e00dc305e54334ff7cf50566e2e2b1f7f733a96733fa14221b18493cad03ace  koi-e64b50e7146d2aff4fe0546763833098432faae8.tar.gz
+0b7dd8a4f1f4cf3514aa013b29c6fd952166adb5949cd8fcdfab4053e02a17921545b0f35f61bd4aa723b7cf49a8d1d3e2dfd47a840d82261a9095b0f975b138  koi-e673af61b624a7603946b02af57d12cf20bc6aba.tar.gz
 "
