@@ -585,3 +585,33 @@ prove what this process consumed. Native preference changes must be restored exa
 and must not restart the daemon or alter authentication. No new mdns-sd import,
 duplicate shared type, upward dependency or wire protocol is proposed. The original
 failed Alpine request remains failed until its own corrected physical run passes.
+
+### Reproduction and production claim expansion
+
+The read-only observer confirms X11/Wayland use different sources: changing
+GSettings to false produced GTK/GDK Wayland=0 while XSettings and GTK X11 stayed 1.
+More importantly, a read-only GTK module inside installed evaluation PID `1370357`
+logged actual `gtk-enable-animations` transitions 1→0→1, while captures still
+changed in the reduced phase. Runs `motion-cachyos-20260905` and
+`motion-cachyos-observed-20260905` failed and restored the preference and normal
+workbench automatically; the daemon/package/GTK files were unchanged. This is a
+real native mapping/repaint failure, not merely an XSettings harness mistake.
+
+Extend the claim only to `tools/koi-ui-spike/src/lib.rs`,
+`assets/spike.css`, new `assets/reduced-motion.css`, and sibling desktop
+`Cargo.toml`, `Cargo.lock`, `src/main.rs`, new `src/native_motion.rs`, `README.md`.
+Extract the existing motion-safe declarations once and expose them as a Rust
+constant; keep browser media-query behavior. On Linux only, the existing evaluation
+webview gets an owned WebKit user stylesheet when its actual GtkSettings disables
+animations. Apply at attachment and on notification, remove only that stylesheet
+on re-enable, and disconnect on widget destruction. No JS, config imitation,
+polling, domain state, new library family, or normal-mode behavior change. Reuse
+the GTK 0.18/WebKitGTK 2.0 bindings already in Tauri's native dependency closure.
+
+Behavioral browser tests must show ordinary halo motion, reduced-media suppression,
+native-fallback suppression even when media says no-preference, then restored motion
+after removal. Native proof must show nonzero/zero/nonzero image differences across
+1→0→1 without changing the evaluation PID. Re-run locked desktop gates and native
+package; preserve the current package for guarded rollback. Keep the installed R05
+daemon untouched (R20 source is not an implicit deployment). Reissue exact peer
+requests only after the corrected artifact is published/proven on CachyOS.
