@@ -25,3 +25,14 @@ and create `accepted` to disarm the guard. Retain the root-private recovery arch
 remove the root-private executable helper and transient units. On rejection, run
 the helper rather than disarming it. A nonzero recovery exit is a failed run that
 requires immediate investigation, never a passing checkpoint.
+
+`kwin-narrow.js` and `kwin-close.js` target exactly one explicitly titled
+evaluation window using the [KWin API](https://develop.kde.org/docs/plasma/kwin/api/).
+Load each by name only for its check, then unload it; they set no persistent rule.
+`tab-once.c` uses installed libevdev to send one real Tab event to the active
+window, with automatic device removal when it exits (including interruption).
+Build with `cc -Wall -Wextra -Werror -O2 tab-once.c $(pkg-config --cflags --libs
+libevdev) -o ../target/tab-once` using the appropriate working-directory paths.
+Run as the existing desktop user, never grant new input permissions, and activate
+the evaluation first. The device has no Enter/text/pointer capabilities. Visible
+captures, not successful event injection alone, establish keyboard focus.

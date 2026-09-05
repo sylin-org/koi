@@ -325,3 +325,51 @@ This reserves only the named desktop paths, optional native helper subtree and
 owned evidence, not root manifests/lockfiles, shared service types or CONTRACT.md.
 Existing peer requests still compile their immutable `d2f6645` probe; packaged
 desktop requests will name the later exact desktop revision separately.
+
+### Native compiler requests reconciled
+
+Windows published `51ea071`: exact `d2f6645`, native MSVC, both renderer tests
+7/7, strict Clippy/format and Dioxus desktop dependency check passed. Independent
+Maud/Dioxus stripped SSR readers are 2,963,968 / 3,325,952 bytes; normal dependency
+closures are 145 / 190 lines (desktop alternative 326). See its
+[owned journal](../../../fleet/windows/journal.md#2026-09-05-29--r06-native-windows-renderer-compiler-probe)
+for hashes, native runtime prerequisites and unchanged deployment attestation.
+
+Alpine published `b8f3062`: exact `d2f6645`, native musl 1.2.6, Rust 1.98.0,
+both renderer tests 7/7, strict Clippy/format and desktop dependency check passed
+with its established shared-musl CRT flag. Independent SSR readers are 3,277,728 /
+3,618,112 bytes, both static PIE without DT_NEEDED. See its
+[owned journal](../../../fleet/alpine-linux/journal.md#2026-09-05-1806-utc--r06-native-musl-renderer-compiler-probe)
+for hashes and unchanged OpenRC/package/provider deployment attestation.
+
+Both requests are completed compiler evidence only. No peer launched a reader or
+window; these results do not close packaged/native/live-row acceptance.
+
+### Packaged candidate source
+
+Desktop `c497b3bc6ca2f99799b2f5e268a841f5c4d36d77` is published on `main`.
+Only explicit `--renderer-probe` registers the asynchronous `koi-renderer` scheme
+and selects it in the existing singleton main window. Normal UI, tray, autostart,
+capabilities and original default CSP are unchanged. The shared renderer/client
+are Git-pinned to `d2f6645`; Cargo resolves the nested spike workspace from the
+published repository without a sibling checkout. Non-root routes, foreign
+authorities, queries, bodies, methods and window labels fail before catalog I/O.
+Errors use the shared safe unavailable page and no-store/script-free headers.
+
+`cargo check --all-targets`, locked Rust tests (25 pass, 1 existing ignored),
+strict locked all-target Clippy, format and all 40 existing JavaScript tests pass.
+One initial new assertion incorrectly expected the word "unavailable" instead of
+the actual safe copy "Cannot read the local catalog."; corrected before these
+passing gates. Locked release build passed in 1m57s: checkout executable 19,793,672
+bytes, SHA-256 `b426735f4a3622afba6b7fa0dd1f4b4700c566c93a828ff7afab83dcaa442ec3`.
+This is not the final package hash: Arch applies its native build/strip flags.
+
+Native packaging uses the unchanged Arch PKGBUILD in a fresh directory with
+detached published source `c497b3b`, `makepkg --noextract --holdver --noconfirm`,
+and ordinary locked build/test recipe. Source HEAD is checked before and after.
+The old package's embedded executable matches the installed workbench exactly:
+package SHA-256 `23cc3e04bec520421738b2d7f55673cf0b29899647fe34bfc50737310179b45c`,
+embedded/installed executable `cf6f256aef2254cc3ef8f19fcf8892c60d8b32463748ed6de6149f0fbac70f74`.
+The prepared root-private checkpoint is `/var/tmp/koi-r06-native.5AgVQlFu`, mode
+0700. Its archive contains identity material and is deliberately not published.
+No installed transition has happened at this source/preparation checkpoint.
