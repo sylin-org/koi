@@ -519,3 +519,45 @@ and physical/lifecycle proof on each owning host's next invocation. No agent was
 launched; Debian receives no heavy work. Await those results before selecting the
 renderer/releasing shared-shell, R07 or R11. Previous c497b3b offline/tray/singleton/
 unavailable checks remain historical evidence, not relabeled as this artifact.
+
+## 2026-09-05 18:59 EDT — R06 peer reconciliation and bounded final checks
+
+task: `R06/renderer-decision` | Koi `1c3d1c95d67ec9ead360e91c61f7c22d900ed5ec`,
+sibling `ee5333f1d735b7dd7d267afdde5c68991e490979` | verdict: **motion correction
+confirmed across three desktop targets; renderer decision blocked/pending on two
+named native facilities**.
+
+Reconciled Windows `11ed53f` and Alpine `1c3d1c9` with R06 and the ledger rule.
+Alpine's ccee0fc packaged retry resolves issue 001 and proves real GTK/GDK motion,
+startup reduction, live/card/narrow/offline/tray/singleton and unavailable/recovery.
+Its completed request explicitly leaves keyboard focus unverified. Windows proves
+WebView2 motion/startup/focus/offline/lifecycle; missing elevated restart authority
+prevented only its service-loss/recovery case, without stopping the daemon.
+
+The completed Alpine peer row is not a waiver of Linux keyboard acceptance.
+Missing Linux proof prevents linux-ready, even though both remaining issues are
+test-facility gaps rather than a reported rendering defect. Updated ADR/report and
+only the selected row to blocked/pending; did not select a renderer or start
+shared-shell/R07/R11. Preserved peer-owned journals, historical failed rows and
+Alpine's resolved issue. Its unrelated OpenEXR restoration is described exactly as
+reported (prior versions, including one historical-recipe rebuild), not relabeled
+as byte-exact original-library restoration.
+
+Published `R06/alpine-keyboard-tail` (ordinary operator/native Tab and visible
+focus, no permission or daemon change) and `R06/windows-recovery-tail` (elevated
+independent guard then unchanged-service stop/unavailable/start/recovered).
+Both reuse exact installed ccee0fc bytes; no full build/reinstall or positive-case
+rerun is requested. Each owning host acknowledges only when its required facility
+is available, captures a fresh baseline, restores one normal workbench and publishes
+its own result. No remote agent was launched; Debian receives no workload.
+
+Checks: documentation leak/surface guards, relative evidence-link and diff checks;
+no source changed, so no ceremonial Rust build or native mutation. Read-only local
+check observed unchanged daemon PID **1366166**, NRestarts 0, hash
+`dc1ebd15b8d1bf2d725c212912d78a5dd9581aa897c505596e8b0a268d9b3975`, and normal
+workbench PID **1380276**, hash
+`29de5306d31362a766498678803edc769595116bc19b08f52ed69fbb2317438e`.
+Both loopback health checks pass; no cleanup or credential residue was created.
+Completed motion-source write reservations are released; the next production
+slice needs a fresh claim. Next: owner-assisted Alpine input and elevated Windows
+recovery, then exact-evidence ADR/CONTRACT reconciliation.

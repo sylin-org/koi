@@ -101,7 +101,7 @@ name this exact source; their earlier compiler passes do not replace them.
 ## Native motion follow-up
 
 Alpine's first packaged c497b3b run failed the native motion lane and restored its
-exact prior deployment; its original issue remains open. CachyOS reproduced a
+exact prior deployment; issue 001 was later resolved by its ccee0fc retry. CachyOS reproduced a
 real gap with the actual in-process GTK preference, not only an XSettings file:
 GTK Wayland received animations 1→0→1 while the visible halo continued moving.
 The [R06 correction](../prompts/delight/reports/R06-renderer-decision.md#native-motion-correction--2026-09-05-17131716-edt)
@@ -116,8 +116,28 @@ original card, real row and native narrow keyboard focus. Reduced capture pairs
 are byte-identical; enabled/resumed pairs differ. The exact normal deployment and
 native preferences are restored with the daemon unchanged. Both renderer browser
 regression checks pass even when media says no-preference. Fresh Windows and
-Alpine packaged requests name ccee0fc; their physical evidence remains pending.
-This resolves the own-host motion gap, not the renderer decision or Alpine issue.
+Alpine packaged requests name ccee0fc. Their later physical results are reconciled
+below; the original diagnostic failure is preserved as history.
+
+## Peer reconciliation
+
+Alpine `1c3d1c9` proves the installed ccee0fc native motion correction, including
+startup-reduced, real row/card, offline assets, tray/singleton and service-loss/
+recovery. Issue 001 is resolved. Its native keyboard focus remains explicitly
+unverified because neither permitted virtual input nor an operator keypress was
+available. Windows `11ed53f` proves the same source's WebView2 motion, narrow focus,
+offline and window/tray behavior; its service-unavailable/recovery case did not run
+because the elevated restart guard was denied. Neither gap is a reported renderer
+defect, but neither is a passing acceptance case.
+
+The [coordinator reconciliation](../prompts/delight/reports/R06-renderer-decision.md#coordinator-reconciliation--2026-09-05)
+preserves the exact artifacts, host-owned verdicts and restoration qualifications.
+Two bounded tails request only Alpine native keyboard focus and Windows guarded
+service recovery on their installed packages. No repeated full build, reinstall,
+new input privilege or peer launch is requested. R06/renderer-decision is
+blocked/pending; the ledger permits missing Windows physical evidence for Linux
+readiness, not missing Linux focus proof. Reporting an unavailable input facility
+does not waive accessibility. The ADR remains proposed and shared-shell stays gated.
 
 ## Production component map (proposal, not implemented)
 
@@ -143,9 +163,9 @@ No parallel serving path or permanent experiment mode is authorized by this ADR.
 
 ## Decision gate / next work
 
-Before selecting: reconcile the requested exact-source musl and Windows packaged
-proof and the remaining native reduced-motion journey. CachyOS's build, guarded
-serial upgrade, live row and installed/offline integration are now proven.
+Before selecting: reconcile the two remaining native tails above. Native reduced
+motion is now proven on all three desktop targets. CachyOS's build, guarded serial
+upgrade, live row and installed/offline integration are recorded above.
 Headless/browser output alone cannot claim WebKit or desktop lifecycle parity.
 Windows-only physical gaps may later use the ledger's narrow readiness exception;
 missing Linux proof cannot. No readiness is granted by this proposed ADR.

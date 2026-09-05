@@ -776,3 +776,134 @@ acknowledgement expires at session end or 24 hours, whichever comes first. A lat
 session re-acknowledges its exact baseline before mutation. No remote agent launch
 is authorized; Debian receives no build. Renderer selection remains pending the
 required peer reconciliation; shared-shell, R07 and R11 are not released yet.
+
+## Coordinator reconciliation — 2026-09-05
+
+Starting Koi `1c3d1c95d67ec9ead360e91c61f7c22d900ed5ec`, sibling desktop
+`ee5333f1d735b7dd7d267afdde5c68991e490979`.
+This is documentation/evidence reconciliation only: exact write paths are this
+report, ADR-045, the selected ledger row/new peer rows and the CachyOS journal.
+No implementation, dependency, contract or installed-artifact change is proposed.
+The completed motion-source claim is released; any future production change needs
+its own exact-path claim. The fixed R06 owner is unchanged.
+
+Reconciled Windows result `11ed53f` and Alpine result `1c3d1c9` against the R06
+acceptance cases and the ledger's Linux-readiness rule. Both name exact desktop
+`ccee0fc` and shared renderer `72cb286`; `ee5333f` changes only the Alpine recipe
+pin/checksum/release, not those desktop source bytes.
+
+| Required native evidence | CachyOS | Windows | Alpine |
+|---|---|---|---|
+| Packaged live row, original card, narrow layout | Passed | Passed | Passed |
+| Native motion on/off/on and reduced-at-start | Passed at ccee0fc | Passed at ccee0fc | Passed at ccee0fc; issue 001 resolved |
+| Visible native keyboard focus | Passed at ccee0fc | Passed at ccee0fc | **Unverified: no permitted input path** |
+| Offline assets and singleton/tray | Passed at c497b3b; not rerun in motion-only delta | Passed at ccee0fc | Passed at ccee0fc |
+| Service unavailable/recovery | Passed at c497b3b; not rerun in motion-only delta | **Unverified: elevated recovery guard denied** | Passed at ccee0fc |
+
+The older CachyOS cells remain explicitly tied to their measured artifact. They
+are not presented as a fresh whole-candidate pass. Source/browser gates and all
+three native compiler lanes remain as previously recorded.
+
+Alpine's [accepted motion run](../../../../fleet/alpine-linux/journal.md#2026-09-05-2234-utc--r06-corrected-packaged-motion-accepted)
+closes the shared motion defect and its packaged-motion request with the explicit
+keyboard limitation. Its same-PID AE was 59.4245 → 0 → 341.907; startup-reduced also
+settled to identical full-window frames. The host reports its ordinary daemon and
+normal workbench restored. Its unrelated OpenEXR transaction deviation is not
+hidden: four libraries returned to prior versions, three from retained vendor APKs
+and one rebuilt from the historical Alpine recipe with 138 upstream tests. Do not
+turn that version/source restoration into an unreported byte-exact binary claim.
+
+Windows's [result 33](../../../../fleet/windows/journal.md#2026-09-05-33--r06-windows-packaged-motion-v2-result)
+supplies real WebView2 motion, focus, offline and lifecycle evidence, not a compiler
+substitute. The unavailable/recovery case did not run because the independent
+elevated service-start fallback could not be armed. The daemon was never stopped;
+its failure row remains historical and no product failure is inferred from access
+denial. Only this negative-case tail needs a later elevated host session.
+
+**Readiness verdict:** `R06/renderer-decision` is **blocked / pending** on these
+specific external native facilities, not on another source implementation task.
+Permission to *report* Alpine focus as unverified is not a waiver of R06's keyboard
+acceptance. The completed peer row therefore does not establish every required
+Linux case. `linux-ready` permits outstanding Windows physical evidence only;
+the Alpine gap prevents applying it now. Do not select the renderer in CONTRACT,
+start shared-shell, or promote R06/R07/R11 on the strength of the peer row labels.
+The proposed Maud/Tauri route has positive evidence, but ADR-045 remains proposed.
+
+## Remaining native checks
+
+These two fresh requests preserve all positive evidence and avoid rebuilding or
+reinstalling unchanged packages. Each belongs to its named hat's next operator
+invocation; no remote launch or mutation is authorized. Acknowledge **after** the
+required facility is available, before the serial workbench/service transition.
+Reservations cover only that host's exact artifact during this check, expire at
+session end or 24 hours (whichever first), and release on verified restoration.
+If the facility is still absent, report it without retrying the full campaign.
+
+### R06/alpine-keyboard-tail
+
+Run ID: `r06-keyboard-ccee0fc-alpine-<date>`. Use the already installed
+`koi-desktop-0.1.3_git20260905-r1`, source `ccee0fce1bb579e032a0aad2a8603f869b22a2b2`,
+shared `72cb286f7c4b4c285893693a58fdebcf896a1538`, installed executable SHA-256
+`ee85161cebc0c4f6bd0d8872f8fd5baa6663e49246964106e1d7d7efc8ddaf5b`.
+Verify package ownership and exact bytes; a mismatch returns for reconciliation,
+not an implicit reinstall. The daemon remains observation-only.
+
+Prerequisite: an operator able to send an ordinary native Tab key in the existing
+Plasma session, or an already permitted native input route established by the host.
+No chmod/ACL/group change, privileged input injection, JS focus call, browser test
+emulation or unsupported compositor route is requested. Confirm availability
+before interrupting the normal workbench; do not repeat known denied input calls.
+
+1. Capture the current sole daemon/workbench, package/hash, normal launch arguments
+   and session baseline. Arm a bounded user-session restoration of the normal
+   workbench before quitting it; never launch a second concurrent workbench.
+2. Launch the package-owned evaluation from `/`, set the existing window to 320
+   logical px using the already proven temporary compositor mechanism and activate
+   it. Have the operator press Tab to expose the skip-link and navigation focus.
+   Capture the visible outline, unclipped text and native window/PID. Successful
+   input delivery alone is not evidence; record the actually visible result.
+3. Quit evaluation, restore the exact normal launch mode and temporary geometry/
+   scripts, and verify one unchanged healthy daemon and one normal workbench.
+   No preference, package, service, network or security mutation is needed.
+4. Publish the capture hash, installed provenance, input method and restoration
+   in Alpine's journal and mark only this new row completed/failed. Keep the old
+   motion row and resolved issue intact. Retain any remaining limitation explicitly.
+
+### R06/windows-recovery-tail
+
+Run ID: `r06-recovery-ccee0fc-windows-<date>`. Use the installed normal-user
+0.1.3 NSIS workbench from source `ccee0fc` / shared `72cb286`, executable SHA-256
+`f1d7a7a750130dac48241cfc5235951d9baeff18d100dedc8217ca8b5135b487`, and unchanged
+accepted R05 SCM daemon SHA-256
+`ca6386df292cfd40c019d30ea36bcab33eea80ea7f50a1c78e375bac8d19cb21`.
+Verify the existing owned paths, bytes, service configuration and current PIDs;
+do not treat the old journal PIDs as current. No rebuild, install or update needed.
+
+Prerequisite: an operator-dispatched session with sufficient elevation to arm and
+verify independent timed recovery for the **existing `koi` service only**. Preserve
+the existing desktop user's authenticated identity/session: elevation for the
+service guard is not permission to run the UI as another principal or alter policy.
+
+1. Capture service enablement/descriptor/failure policy, exact binary, config/local
+   authority, identity, firewall, startup and normal workbench baselines. Arm and
+   verify the bounded independent elevated service-start fallback and normal-window
+   recovery **before** stopping anything. If this fails, leave the service running.
+2. Serially quit normal workbench, stop the existing service, and launch the same
+   installed evaluation as the existing desktop user from a neutral directory.
+   Verify the daemon is stopped and its listener absent; capture the real safe
+   unavailable message and intact card. No fixture, shadow endpoint, second daemon,
+   different user or artificial auth denial substitutes for service unavailability.
+3. Quit evaluation, start the same SCM service, verify health, and launch a fresh
+   evaluation to capture a recovered real row (the spike is a static snapshot).
+   Then quit it and restore one normal `--minimized` workbench. Keep original
+   identity, configuration, ports, startup, firewall and trust unchanged.
+4. Disarm/remove only run-owned recovery tasks/helpers after final health and
+   exact restoration; record commands, capture hashes, package/daemon identity,
+   process counts and results in the Windows journal. Complete/fail only this new
+   row; the first failed request is not rewritten as though the case ran then.
+
+Next coordinator action: fetch these two tail results, verify artifact continuity
+and the remaining cases, then finish the measured ADR/CONTRACT decision. If Alpine
+focus passes first, re-evaluate the narrow Linux readiness exception with the
+Windows recovery case explicitly inherited. No current readiness is granted by
+this future action; Debian receives no build work.
