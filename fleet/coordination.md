@@ -43,10 +43,14 @@ documentation, review, and small focused changes. Do not assign it heavy feature
 implementation, full-workspace build/test/clippy runs, cross-target matrices,
 release builds, or sustained load/stress work.
 
-CachyOS coordinates heavy source and validation work on stronger machines such as
-CachyOS or Bluefin, or on hosted CI, with explicit ownership and published source
-identity. Debian retains its own physical headless evidence; remote builds do not
-substitute for that evidence. Required checks still run on an appropriate executor.
+The owner identifies Windows (`stone-leaded-sparkle`) as the most powerful fleet
+machine. Prefer it for future heavy source/build/test assignments when the workload
+is compatible and its Windows session is dispatched. CachyOS coordinates explicit
+ownership and published source identity; use CachyOS, Bluefin or hosted CI for
+Linux-specific work or additional capacity. Hardware preference does not launch a
+Windows session or transfer an active claim. Debian retains its own physical headless
+evidence; remote builds do not substitute for that evidence. Required checks still
+run on an appropriate executor.
 
 Apply this constraint before the next iteration is assigned. Existing published
 claims and in-flight edits remain with their owner until a coherent checkpoint and

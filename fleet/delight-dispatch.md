@@ -26,8 +26,10 @@ Capacity override: Debian is a very weak thin client. Follow the
 before assigning the next iteration. CachyOS must split or reassign heavy queued
 Debian rows to stronger executors before they are claimed; keep Debian's work
 lightweight and its native checks bounded. Preserve active claims through an
-explicit checkpoint/handoff. Required heavy validation belongs on a stronger host
-or hosted CI, with the exact source and evidence recorded.
+explicit checkpoint/handoff. Windows is the most powerful fleet machine and the
+preferred executor for compatible heavy work when dispatched. Keep Linux-specific
+validation on appropriate Linux hosts or hosted CI, with exact source and evidence
+recorded. This capacity preference does not itself activate the Windows session.
 
 Each executable ledger row has exactly one owner. A parent with subrows names its
 integration owner; it is not an additional implementation assignment. Native rows

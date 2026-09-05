@@ -19,6 +19,9 @@ All rows are queued at creation. No implementation or native validation is impli
   next iteration, CachyOS must split or reassign heavy queued work (starting with
   R04/R05) to stronger executors. Do not assign full builds, test matrices or stress
   workloads to Debian. See [fleet capacity guidance](../../../fleet/coordination.md#debian-capacity-constraint--owner-instruction-2026-09-04).
+- Capacity preference: Windows is the most powerful fleet machine; prefer it for
+  compatible heavy assignments when dispatched. Linux-specific evidence remains
+  with appropriate Linux executors. Current claims are preserved until handoff.
 
 ## Status and selection rules
 
