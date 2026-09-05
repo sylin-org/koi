@@ -2258,6 +2258,51 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use tokio::sync::{watch, Notify};
 
+    type JsonDaemon = (String, std::thread::JoinHandle<()>);
+
+    fn json_daemon_once(status: u16, body: &'static str, expected: &'static str) -> JsonDaemon {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind daemon stub");
+        let address = listener.local_addr().expect("daemon stub address");
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept daemon request");
+            socket
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .expect("set daemon request timeout");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            loop {
+                let read = socket.read(&mut buffer).expect("read daemon request");
+                assert!(read > 0, "request closed before its body completed");
+                request.extend_from_slice(&buffer[..read]);
+                let Some(header_len) = request
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .map(|position| position + 4)
+                else {
+                    continue;
+                };
+                let headers = String::from_utf8_lossy(&request[..header_len]).to_ascii_lowercase();
+                let body_len = headers
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length:"))
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                if request.len() >= header_len + body_len {
+                    break;
+                }
+            }
+            write!(
+                socket,
+                "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .expect("write daemon response");
+            let request = String::from_utf8(request).expect("daemon request is UTF-8");
+            assert!(request.starts_with(expected), "unexpected daemon request");
+        });
+        (format!("http://{address}"), server)
+    }
+
     fn rec(name: &str, txt: &[(&str, &str)]) -> ServiceRecord {
         ServiceRecord {
             name: name.to_string(),
@@ -2298,27 +2343,13 @@ mod tests {
 
     #[test]
     fn remote_dns_remove_preserves_the_domains_not_found_result() {
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind daemon stub");
-        let address = listener.local_addr().expect("daemon stub address");
-        let server = std::thread::spawn(move || {
-            let (mut socket, _) = listener.accept().expect("accept DNS remove request");
-            let mut request = [0_u8; 2048];
-            let count = socket.read(&mut request).expect("read DNS remove request");
-            let request = String::from_utf8_lossy(&request[..count]);
-            assert!(request.starts_with("DELETE /v1/dns/remove/missing.internal HTTP/1.1\r\n"));
-            let body = br#"{"error":"not_found","message":"entry_not_found"}"#;
-            write!(
-                socket,
-                "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-            )
-            .expect("write DNS remove response head");
-            socket
-                .write_all(body)
-                .expect("write DNS remove response body");
-        });
+        let (endpoint, server) = json_daemon_once(
+            404,
+            r#"{"error":"not_found","message":"entry_not_found"}"#,
+            "DELETE /v1/dns/remove/missing.internal",
+        );
 
-        let dns = DnsHandle::new_remote(Arc::new(KoiClient::new(&format!("http://{address}"))));
+        let dns = DnsHandle::new_remote(Arc::new(KoiClient::new(&endpoint)));
         assert_eq!(
             dns.remove_entry("missing.internal")
                 .expect("not-found is a typed domain result"),
@@ -2404,28 +2435,13 @@ mod tests {
 
     #[tokio::test]
     async fn remote_dns_stop_preserves_the_daemons_typed_execution_error() {
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind daemon stub");
-        let address = listener.local_addr().expect("daemon stub address");
-        let server = std::thread::spawn(move || {
-            let (mut socket, _) = listener.accept().expect("accept DNS stop request");
-            let mut request = [0_u8; 2048];
-            let count = socket.read(&mut request).expect("read DNS stop request");
-            let request = String::from_utf8_lossy(&request[..count]);
-            assert!(request.starts_with("POST /v1/dns/stop HTTP/1.1\r\n"));
-            let body =
-                br#"{"error":"shutting_down","message":"DNS runtime has already shut down"}"#;
-            write!(
-                socket,
-                "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-            )
-            .expect("write DNS stop response head");
-            socket
-                .write_all(body)
-                .expect("write DNS stop response body");
-        });
+        let (endpoint, server) = json_daemon_once(
+            503,
+            r#"{"error":"shutting_down","message":"DNS runtime has already shut down"}"#,
+            "POST /v1/dns/stop",
+        );
 
-        let dns = DnsHandle::new_remote(Arc::new(KoiClient::new(&format!("http://{address}"))));
+        let dns = DnsHandle::new_remote(Arc::new(KoiClient::new(&endpoint)));
         assert!(matches!(
             dns.stop().await,
             Err(KoiError::Client(koi_client::ClientError::Api { error, .. }))
@@ -2436,29 +2452,9 @@ mod tests {
 
     #[tokio::test]
     async fn remote_proxy_mutation_returns_acceptance_without_a_torn_reread() {
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind daemon stub");
-        let address = listener.local_addr().expect("daemon stub address");
-        let server = std::thread::spawn(move || {
-            let (mut socket, _) = listener.accept().expect("accept Proxy upsert request");
-            let mut request = [0_u8; 4096];
-            let count = socket
-                .read(&mut request)
-                .expect("read Proxy upsert request");
-            let request = String::from_utf8_lossy(&request[..count]);
-            assert!(request.starts_with("POST /v1/proxy/add HTTP/1.1\r\n"));
-            let body = br#"{"status":"ok"}"#;
-            write!(
-                socket,
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-            )
-            .expect("write Proxy upsert response head");
-            socket
-                .write_all(body)
-                .expect("write Proxy upsert response body");
-        });
+        let (endpoint, server) = json_daemon_once(200, r#"{"status":"ok"}"#, "POST /v1/proxy/add");
 
-        let proxy = ProxyHandle::new_remote(Arc::new(KoiClient::new(&format!("http://{address}"))));
+        let proxy = ProxyHandle::new_remote(Arc::new(KoiClient::new(&endpoint)));
         proxy
             .upsert(ProxyEntry {
                 name: "api".into(),
