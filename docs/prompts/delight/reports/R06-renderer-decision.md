@@ -536,3 +536,52 @@ make the measured ADR selection, reserve the selected production `koi-ui`/adapte
 paths and retire both spike variants in the required follow-on slice. Until then,
 R06, shared-shell, R07 and R11 remain pending; this successful CachyOS lane is not
 permission to install an experimental default UI or publish Pond's operator view.
+
+## Motion-boundary follow-up claim — 2026-09-05
+
+Starting Koi `f1315c9`, desktop `2f91002` (only Alpine packaging changed after
+`c497b3b`). R20 is accepted at `3eb1147`; its changes do not alter the pinned
+renderer or this host's installed R05 daemon. Resume only R06/renderer-decision.
+Alpine's `5f422ba` records a failed physical motion/focus lane and exact rollback;
+do not erase that failure or change its owning journal/issue.
+
+**Task:** Determine which native animation preference the actual GTK3 Wayland
+workbench consumes, reproduce the reported halo failure at that boundary, and
+correct the shared implementation or validation procedure according to evidence.
+
+**Files read:** Shared `lib.rs` owns script-free embedded documents and seven
+behavioral tests; `family-v1.css`/`spike.css` own the original animation and existing
+reduced-motion overrides; desktop `renderer_probe.rs`/`main.rs` own the authenticated
+route and singleton; native helpers own compositor/input evidence; Alpine issue
+001 and its journal identify the observed XSettings failure and exact restoration.
+GTK 3.24.52 Wayland source and WebKitGTK 2.48.7 settings source establish the
+toolkit/native preference boundary independently of our CSS.
+
+**Reusing:** Existing original assets/media rules, installed `c497b3b` package,
+authenticated R05 daemon, GTK/GDK APIs and native screenshot/keyboard helpers.
+Explicit searches found 80 binary constant lines, 157 common type lines, 2 mDNS
+protocol enum lines, 9 client type lines and 399 domain type lines. No new domain,
+wire, catalog or credential type is needed. Existing GTK settings already expose
+the boolean consumed by WebKit; a read-only backend-aware observer is missing.
+
+**Creating new:**
+
+| Exact path | Ownership/reason |
+|---|---|
+| `tools/koi-ui-spike/native/gtk-motion-observer.c` | Read-only actual GTK/GDK motion values and backend, not a second UI/backend |
+| `tools/koi-ui-spike/native/motion-cachyos.sh`, native README/helpers as needed | Bounded own-host preference/window verification with interruption-safe restoration |
+| `tools/koi-ui-spike/browser-smoke.mjs` | Behavioral animation on/off transition checks rather than a CSS-string assertion |
+| R06 report, ADR-045, owned journal, selected ledger rows | Exact findings, native evidence and corrected peer procedure |
+
+**Pattern:** Follow the existing native C helper's bounded lifetime and existing
+installed-workbench/compositor evidence; read GTK's actual property before blaming
+the shared stylesheet. Production Rust/CSS or desktop manifest changes need a
+follow-up exact-path claim after reproduction; none is assumed here.
+
+**Risks:** XSettings describes X11 and may not be the GTK3 Wayland source. GTK's
+backend can instead use GSettings or the settings portal; WebKit observes
+`GtkSettings:gtk-enable-animations`. A file value or XSettings dump alone cannot
+prove what this process consumed. Native preference changes must be restored exactly
+and must not restart the daemon or alter authentication. No new mdns-sd import,
+duplicate shared type, upward dependency or wire protocol is proposed. The original
+failed Alpine request remains failed until its own corrected physical run passes.
