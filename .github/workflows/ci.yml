@@ -35,7 +35,12 @@ jobs:
         run: cargo build --workspace --locked
 
       - name: Test
+        if: runner.os != 'Windows'
         run: cargo test --workspace --locked
+
+      - name: Test (Windows filesystem isolation)
+        if: runner.os == 'Windows'
+        run: cargo test --workspace --locked -- --test-threads=1
 
   contracts:
     name: Client, release, and frontend contracts

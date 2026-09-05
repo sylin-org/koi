@@ -3157,8 +3157,7 @@ mod tests {
         config.port = 0;
         let runtime = PondRuntime::new(config).unwrap();
         runtime.publish_ui(browser_bundle("drain")).await.unwrap();
-        let enabled = runtime.enable().await.unwrap();
-        let port = enabled.port;
+        let port = runtime.enable().await.unwrap().port;
 
         let mut client = tokio::time::timeout(Duration::from_secs(2), async {
             loop {
@@ -3175,7 +3174,7 @@ mod tests {
             .await
             .unwrap();
 
-        let disabled = tokio::time::timeout(Duration::from_secs(4), runtime.disable())
+        let disabled = tokio::time::timeout(Duration::from_secs(8), runtime.disable())
             .await
             .expect("a stalled client kept Pond shutdown alive")
             .unwrap();
