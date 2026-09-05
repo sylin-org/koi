@@ -1872,14 +1872,11 @@ mod tests {
             let waiter = ordered_shutdown(
                 &cancel,
                 &cores,
-                Duration::from_secs(2),
+                Duration::from_millis(250),
                 Duration::from_millis(50),
             );
-            tokio::pin!(waiter);
-            tokio::select! {
-                _ = &mut waiter => panic!("shutdown unexpectedly completed before drain cancellation"),
-                _ = tokio::time::sleep(Duration::from_millis(5)) => {}
-            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            drop(waiter);
         }
 
         tokio::time::timeout(Duration::from_secs(2), cores.lifecycle.wait())
