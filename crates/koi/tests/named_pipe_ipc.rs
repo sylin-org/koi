@@ -12,6 +12,7 @@
 
 #![cfg(windows)]
 
+use std::io::Read as _;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -41,6 +42,22 @@ fn pipe_name(data_dir: &std::path::Path) -> String {
 
 struct Daemon(Child);
 
+impl Daemon {
+    fn assert_running(&mut self) {
+        let Some(status) = self.0.try_wait().expect("query daemon status") else {
+            return;
+        };
+        let mut stderr = String::new();
+        self.0
+            .stderr
+            .take()
+            .expect("captured daemon stderr")
+            .read_to_string(&mut stderr)
+            .expect("read daemon stderr");
+        panic!("daemon exited with {status}:\n{stderr}");
+    }
+}
+
 impl Drop for Daemon {
     fn drop(&mut self) {
         let _ = self.0.kill();
@@ -49,20 +66,17 @@ impl Drop for Daemon {
 }
 
 fn spawn_daemon(data_dir: &PathBuf) -> Daemon {
-    let http_port = free_port();
     let mut command = Command::new(env!("CARGO_BIN_EXE_koi"));
     command
         .arg("--daemon")
-        .args(["--port", &http_port.to_string()])
-        .args(["--mtls-port", &free_port().to_string()])
-        .args(["--acme-port", &free_port().to_string()])
-        // Keep the DNS listener off privileged/well-known ports.
-        .args(["--dns-port", "19353"])
         // A per-run pipe: the standing system daemon owns the default name.
         .args(["--pipe", &pipe_name(data_dir)])
         // IPC stays ON (the system under test); mdns stays ON (the pipe
         // adapter bridges the mDNS core); everything else off.
         .args([
+            "--no-http",
+            "--no-certmesh",
+            "--no-dns",
             "--no-health",
             "--no-proxy",
             "--no-udp",
@@ -76,25 +90,21 @@ fn spawn_daemon(data_dir: &PathBuf) -> Daemon {
         .env("KOI_LOG", "warn")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
     Daemon(command.spawn().expect("spawn koi daemon"))
 }
 
-fn free_port() -> u16 {
-    std::net::TcpListener::bind(("127.0.0.1", 0))
-        .expect("bind ephemeral")
-        .local_addr()
-        .expect("local_addr")
-        .port()
-}
-
-async fn connect_pipe(name: &str) -> BufReader<tokio::net::windows::named_pipe::NamedPipeClient> {
+async fn connect_pipe(
+    name: &str,
+    daemon: &mut Daemon,
+) -> BufReader<tokio::net::windows::named_pipe::NamedPipeClient> {
     let mut last_err = None;
-    for _ in 0..50 {
+    for _ in 0..100 {
         match ClientOptions::new().open(name) {
             Ok(client) => return BufReader::new(client),
             Err(e) => last_err = Some(e),
         }
+        daemon.assert_running();
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     panic!("pipe never appeared: {:?}", last_err);
@@ -120,9 +130,9 @@ async fn exchange(
 async fn named_pipe_ipc_speaks_the_mdns_protocol() {
     let data = temp_data_dir();
     // Held for the whole test: dropping early would kill the daemon mid-run.
-    let _daemon = spawn_daemon(&data);
+    let mut daemon = spawn_daemon(&data);
 
-    let mut pipe = connect_pipe(&pipe_name(&data)).await;
+    let mut pipe = connect_pipe(&pipe_name(&data), &mut daemon).await;
 
     // Resolve miss: a single structured error envelope — proves the pipe
     // transport, the mDNS core bridge, and the response framing.
