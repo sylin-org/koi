@@ -1,5 +1,38 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-05 (31) — R06 Windows packaged motion v2 acknowledged
+
+task: `R06/windows-packaged-motion-v2` | run
+`r06-native-ccee0fc-windows-20260905` | desktop source
+`ccee0fce1bb579e032a0aad2a8603f869b22a2b2` | shared renderer source
+`72cb286f7c4b4c285893693a58fdebcf896a1538` | state: **ACKNOWLEDGED —
+own-host artifact reservation active for this session or 24 hours, whichever ends
+first; no native mutation performed yet**
+
+baseline: the accepted R05 SCM daemon remains exactly one AutoStart LocalSystem
+service at PID `3888`, installed SHA-256
+`ca6386df292cfd40c019d30ea36bcab33eea80ea7f50a1c78e375bac8d19cb21`,
+health 200 on 5641. The installed 0.1.3 NSIS workbench is exactly one normal
+`--minimized` process at PID `29424`, path
+`C:\Users\onose\AppData\Local\Koi\koi-desktop.exe`, SHA-256
+`d6f61627d31820f520876476f2fc5149dd804a78d5dcd3da9636a4847a47e042`
+(12,323,328 bytes), with the matching HKCU Run entry and uninstall registration.
+Only loopback 5640 and HTTP 5641 listen; Pond 5644 is closed. The real Windows
+client-area animation setting is enabled and `UserPreferencesMask` is byte value
+`9E1E078012000000`.
+
+scope: build/test exact desktop source through its locked native Windows/NSIS path,
+capture a fresh recoverable installed-workbench baseline and arm bounded rollback,
+then serially exercise `--renderer-probe` in one WebView2 PID. Prove OS animation
+enabled→disabled→enabled plus disabled-at-start, complete original card and live row,
+320 px layout/focus, offline assets, singleton/tray and unavailable/recovery. Restore
+the exact OS setting and one normal installed workbench. The daemon, firewall,
+credentials, trust, providers, configuration and network are observation-only.
+
+next: publish this acknowledgement, verify the exact package/source gates, arm the
+rollback, and execute the corrected native procedure. A pass/fail entry will replace
+this reservation with measured evidence and exact restoration.
+
 ## 2026-09-05 (30) — R20 authorized service certificates accepted
 
 task: `R20` | implementation source
