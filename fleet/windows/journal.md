@@ -1,5 +1,84 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-05 (33) — R06 Windows packaged motion v2 result
+
+task: `R06/windows-packaged-motion-v2` | run
+`r06-native-ccee0fc-windows-20260905` | desktop source
+`ccee0fce1bb579e032a0aad2a8603f869b22a2b2` | shared renderer source
+`72cb286f7c4b4c285893693a58fdebcf896a1538` | verdict: **FAILED —
+the corrected Windows motion/focus/offline/lifecycle cases pass, but the required
+service-unavailable/recovery case remains unverified because this medium-integrity
+session could not arm its elevated SCM restart guard**
+
+koi state now: the accepted R05 daemon was never stopped or altered and remains
+the sole AutoStart LocalSystem SCM process, PID `3888`, installed SHA-256
+`ca6386df292cfd40c019d30ea36bcab33eea80ea7f50a1c78e375bac8d19cb21`,
+health 200 on 5641. The newly installed exact-source 0.1.3 NSIS workbench is the
+sole normal `--minimized` process, PID `22992`, path
+`C:\Users\onose\AppData\Local\Koi\koi-desktop.exe`, SHA-256
+`f1d7a7a750130dac48241cfc5235951d9baeff18d100dedc8217ca8b5135b487`
+(13,006,848 bytes), on loopback 5640. Pond remains disabled and 5644 is closed.
+
+evidence and findings:
+
+1. Exact native gates passed with `KOI_NO_CREDENTIAL_STORE=1`: format; locked tests
+   22 passed / one existing ignored cross-host case; locked strict all-target Clippy;
+   all 40 JavaScript tests; and `cargo tauri build --bundles nsis --ci -- --locked`.
+   The NSIS artifact is 3,117,673 bytes, SHA-256
+   `48a4a1e28c6fdd2fe51bea29f0d236afba1017c79fd15da24cd8567db0395b63`.
+   Silent supported installation exited 0. The installed PE imports only its normal
+   Win32/UCRT family; the exercised system WebView2 runtime is 152.0.4191.62.
+2. Evaluation PID `24004`, launched from `C:\Windows`, retained one WebView2 window
+   through the real Windows client-area animation preference transition. Enabled
+   captures differed (average PSNR 41.366529 dB); disabled captures were byte-exact
+   at SHA-256
+   `ddb220a18a9981686500abce9737bd009e7990077f3bbfa39a3dc23d298def8e`;
+   re-enabled captures differed again (41.352960 dB). Microsoft documents
+   `SPI_GETCLIENTAREAANIMATION`/`SPI_SETCLIENTAREAANIMATION` as the system preference
+   for disabling moving client-area content. The setting and exact
+   `UserPreferencesMask` `9E1E078012000000` were restored.
+3. A fresh evaluation launched while reduction was already disabled. At an exact
+   320 by 650 client area it visibly rendered the real
+   `stone-obsidian-summit` catalog row, all four navigation destinations and the
+   complete original Koi card. The complete-card reduced pair was byte-exact at
+   `2be92957cad54ee898802b2700ecf22717785ae4296f4eb4d853765d8bb7f9f7`;
+   after re-enable the pair differed (42.189338 dB). A real injected Windows Tab
+   input visibly exposed the 44 px skip-link focus outline; capture SHA-256 is
+   `40f3dc3e25a1d6135118f337f9d91bfeefaab33abbed61c693a0df9fe6dfd8ec6`.
+4. The startup-reduced run used process-scoped WebView2 background-network denial
+   and a fail-closed host resolver while preserving localhost for the authenticated
+   catalog read. The complete document and data-embedded card rendered with no
+   external TCP connection; the workbench held only its existing loopback 5640
+   listener. No browser/media emulation, injected application setting, fixture or
+   second daemon was used.
+5. A second `--renderer-probe` invocation exited 0 and left the original evaluation
+   PID unchanged. A native close request hid that window while retaining its tray
+   process; `--poke` revealed the same PID. The final package-owned normal workbench
+   repeated poke/reveal and native close-to-tray behavior. There was always at most
+   one desktop process and exactly one daemon.
+6. Before the negative case, an independent 25-minute desktop rollback process was
+   armed against a byte-exact installed-directory backup. Registering three exact
+   highest-privilege interactive tasks for stop, start and timed restoration returned
+   `Access is denied`; a final query found zero such tasks. Per the pre-published
+   guard, the service was not stopped. Restricted-token attempts also exited before
+   creating a window and left no process or policy state. Therefore the exact
+   candidate's physical unavailable page and recovery are not claimed.
+7. Final config and local-access policy hashes remain
+   `17fe9a664f76bb748da8beeb5c18fabf64da55d1901384772d1e7aecfab2c3ed`
+   and `14d3432b0efd0a52a697bb80adaa16bcd264c2ff79f57ac1156ac513decc9873`.
+   The 15-rule effective Koi firewall baseline, startup entry, package registration,
+   ports, credentials, trust, providers and network stayed unchanged. The rollback
+   was disarmed only after final health; its copied private state, helper scripts,
+   restricted profiles, screenshots and candidate workspace were removed. The
+   `cargo clean` step removed 10,627 run-owned build files (4.7 GiB). No recovery fired and no
+   run-owned task, process, file or credential remains.
+
+next: CachyOS may reconcile the positive Windows motion/focus/offline/lifecycle
+evidence, but this peer request is not complete. Its exact remaining Windows action
+is an operator-dispatched elevated session that first arms a durable service-start
+fallback, then runs only stop -> unavailable renderer -> start -> recovered renderer
+and verifies the unchanged final daemon/workbench state.
+
 ## 2026-09-05 (32) — R06 motion-v2 negative-case scope expansion
 
 task: `R06/windows-packaged-motion-v2` | run
