@@ -81,7 +81,7 @@ or event bus is introduced.
 | Installation identity | `koi-config::installation`, `crates/koi-config/src/installation.rs`; `state/installation.json` | self-announcement and catalog | implemented by R04; retained by R11 |
 | Source-scoped mDNS evidence | `koi-common::integration::{MdnsDiscoverySnapshot, MdnsDiscoverySource, MdnsDiscoveryObservation}`, `crates/koi-common/src/integration.rs`; snapshot fields `sources` and `observations` | catalog, DNS, Health | existing; R03 complete, additive compatibility fields retained |
 | Authoritative service catalog | `koi-compose::catalog::ServiceCatalogRuntime`, `crates/koi-compose/src/catalog.rs` | `KoiStatus.catalog`, serve, embedded | implemented, R04 |
-| Durable personal preferences | `koi-preferences::PreferencesCore`, `crates/koi-preferences/src/lib.rs`; repository in `repository.rs`; `state/preferences.json` | catalog joins its status | proposed, R05 |
+| Durable personal preferences | `koi-preferences::PreferencesCore`, `crates/koi-preferences/src/lib.rs`; repository in `repository.rs`; `state/preferences.json` | catalog joins its status | implemented, R05 |
 | Local service candidates | `koi-runtime::local_candidates`, `crates/koi-runtime/src/local_candidates.rs`; `LocalServiceSource` port | catalog and sharing | proposed, R16 |
 | Linux candidate adapter | `crates/koi/src/platform/local_services/linux.rs` | injected into runtime | proposed, R16/linux |
 | Windows candidate adapter | `crates/koi/src/platform/local_services/windows.rs` | injected into runtime | proposed, R16/windows |
@@ -95,7 +95,7 @@ or event bus is introduced.
 | Leaf issuance/renewal | `koi-certmesh` facade and repository | proxy TLS identity input | existing owner, extended R20 |
 | Secure setup intent/receipts | `koi-compose::secure_service::SecureServiceRuntime`, `crates/koi-compose/src/secure_service.rs`; `state/secure-services.json` | serve/client/UI | proposed, R21 |
 | OS trust roots | `koi-trust::TrustCore` | secure/client setup | existing |
-| HTTP/SSE adapters | focused `catalog.rs`, `preferences.rs`, `sharing.rs`, `diagnosis.rs`, `secure_service.rs` under `crates/koi-serve/src/` | all HTTP callers | proposed, owning feature tasks |
+| HTTP/SSE adapters | focused `catalog.rs`, `preferences.rs`, `sharing.rs`, `diagnosis.rs`, `secure_service.rs` under `crates/koi-serve/src/` | all HTTP callers | catalog/preferences implemented by R05; remaining adapters proposed in owning tasks |
 | Typed client adapters | `crates/koi-client/src/lib.rs`, split by R25 if touched size requires | CLI, desktop, SDK/MCP | existing owner, extended R05/R17/R19/R21 |
 | Local operator bootstrap | `crates/koi-serve/src/local_ipc/` and `koi-common::local_control` | local CLI/desktop | existing; not duplicated |
 | Public Pond catalog | `koi-serve` allowlisted `PublicCatalogSnapshot` projector | Pond only | proposed, R09 |
@@ -329,6 +329,12 @@ alone. Commands use optimistic `expected_revision`; a mismatch returns
 `stale_revision` and the current revision. The owner atomically commits, publishes
 status, emits its semantic event, then acknowledges. A no-op does none of those.
 
+`koi-preferences` alone owns `state/preferences.json`. A schema-0 document is copied
+byte-for-byte to `state/preferences.schema0.json.bak` before atomic schema-1
+replacement. A malformed document exposes `recovery_required`; a future schema exposes
+`unsupported_schema` in read-only mode. Neither case is treated as empty, and writes
+cannot replace the stored bytes.
+
 An absent favorite retains: stable key, friendly alias, last safe display name/device,
 last condition, and last-seen time. It excludes raw TXT, private diagnostics, local
 process details, DAT, invitations, keys, and receipts.
@@ -555,9 +561,14 @@ atomic replacement; an unknown future schema is never reset.
 - Task-oriented CLI/API organization may replace current domain-first primary flows.
   Advanced domain commands remain directly reachable until their replacement path is
   accepted; long-lived duplicate primary experiences are removed before R29.
-- R05 migrates desktop `localStorage["koi-watched"]` only for unambiguous stable-key
-  matches. It writes a backup before the schema-1 preference commit. Unmatched values
-  remain available for manual review and do not bind by display name.
+- R05 migrates desktop `localStorage["koi-watched"]` only when a value has exactly one
+  catalog service whose raw observation name is an exact match. Before the first daemon
+  commit it writes the byte-exact source JSON to
+  `localStorage["koi-watched-schema0-backup"]` (or a timestamp-suffixed key when that
+  key already contains different bytes). Stable `service:<id>` values are daemon-owned
+  and never written back to localStorage. Unmatched or same-name ambiguous values remain
+  in the original key for manual review; a failed daemon commit leaves that key
+  unchanged.
 - Installation ID is created once for an existing data root and then retained across
   upgrade/reinstall. It is removed only by an explicit purge/factory reset whose scope
   is shown to the user.

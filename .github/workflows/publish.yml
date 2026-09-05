@@ -52,6 +52,7 @@ jobs:
             koi-mdns        # Layer 1: mDNS Querier/Responder
             koi-udp         # Layer 1: UDP host socket binding
             koi-runtime     # Layer 1: container integration runtime
+            koi-preferences # Layer 1: durable personal preferences
             koi-certmesh    # Layer 2: cert CA and enrollment mesh
             koi-dns         # Layer 3: DNS server zone storage
             koi-proxy       # Layer 3: proxy and termination engine

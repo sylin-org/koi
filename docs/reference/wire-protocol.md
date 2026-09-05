@@ -109,6 +109,9 @@ either request. Windows gives the pipe a protected DACL for SYSTEM, Administrato
 and the recorded operator, then returns bytes only when the connected process token
 has the exact recorded operator SID. Unix admits root and the one recorded UID.
 Neither response is exposed by Pond or public HTTP status.
+Catalog snapshots, catalog subscriptions, and preference commands do not add another
+IPC dialect. After `access`, local clients use the returned endpoint and DAT with the
+schema-1 HTTP routes documented in [HTTP API Reference](http-api.md).
 
 ---
 

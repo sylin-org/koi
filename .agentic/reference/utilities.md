@@ -207,7 +207,11 @@ evidence from PID transitions.
 | `CatalogSnapshot` | Schema-checked coherent Device/Service/Endpoint read model |
 | `Device`, `Service`, `Endpoint`, `Observation`, `CheckEvidence` | Shared catalog facts with provenance and freshness |
 | `AvailableAction`, `ServiceCondition`, `IdentityConfidence` | Typed presentation decisions without a `trusted` boolean |
+| `PreferencesStatus`, `ServicePreference`, `CandidatePreference` | Schema-checked personal-intent status and stable-key records |
+| `SetServicePreferenceRequest`, `SetCandidatePreferenceRequest` | Optimistic revision-checked preference commands |
+| `PreferenceErrorBody`, `PreferencesMode`, `PreferencesProblem` | Typed conflict, recovery and compatibility results |
 | `CATALOG_SCHEMA` | Current catalog/installation wire schema (`1`) |
+| `PREFERENCES_SCHEMA` | Current durable preference and command schema (`1`) |
 | `INSTALLATION_ID_TXT_KEY`, `SERVICE_ID_TXT_KEY` | Koi-owned DNS-SD identity metadata keys |
 
 ### `koi_config::installation`
@@ -226,6 +230,19 @@ evidence from PID transitions.
 | `MAX_OBSERVATIONS_PER_SERVICE` | Maximum retained source observations per service (`16`) |
 | `MAX_CHECKS_PER_SERVICE` | Maximum current checks per service (`32`) |
 | `STALE_RETENTION` | Maximum source-loss evidence retention (`10 minutes`) |
+
+### `koi_preferences`
+
+| Type / constant | Purpose |
+| --------------- | ------- |
+| `PreferencesCore` | Sole facade for durable favorites, friendly aliases and candidate dismissals |
+| `PreferencesError` | Stale revision, unsupported schema, recovery-required and I/O failures |
+| `PREFERENCES_FILE` | Owner-relative durable path (`state/preferences.json`) |
+| `LEGACY_BACKUP_FILE` | Byte-exact schema-0 migration backup (`preferences.schema0.json.bak`) |
+
+`PreferencesCore` commits through temp-file flush plus atomic replacement, publishes
+status before its semantic event, suppresses no-ops, and exposes future or malformed
+storage as read-only status instead of replacing it.
 
 ---
 
@@ -481,6 +498,7 @@ evidence from PID transitions.
 | `Config`             | `cli.rs`            | Daemon runtime configuration                        |
 | `DaemonCores`        | `main.rs`           | Runtime state: `Option<Arc<Core>>` per domain       |
 | `KoiClient`          | `koi-client`        | Blocking HTTP client (ureq) for client mode & admin |
+| `CatalogSubscription`| `koi-client`        | Full-snapshot SSE iterator that refetches on epoch/revision gap, decode failure, or stream loss |
 | `Mode`               | `commands/mod.rs`   | Execution mode enum (Standalone, Client)            |
 | `DashboardState`     | `koi-dashboard` (`dashboard.rs`) | Dashboard identity + injected `SnapshotFn` + SSE channel |
 | `BrowserState`       | `koi-dashboard` (`browser.rs`)   | mDNS browser state (browse source + cache + lazy meta-browse) |

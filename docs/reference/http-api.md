@@ -17,10 +17,10 @@ containers or other hosts, start the daemon with `--http-bind bridge` / `<ip>` /
 **Daemon Access Token (DAT):**
 At startup, the daemon generates a fresh random token and writes it to the breadcrumb file (`koi.endpoint`) with owner-only permissions.
 - **GET / HEAD / OPTIONS** requests are normally unauthenticated — **except `/v1/mcp` and `/v1/events`** (live channels), **`/v1/certmesh/{posture,log}`** (live posture and trust history), **`/v1/pond`** (operator desire), and the **`/v1/udp/*`** surface (binding enumeration + datagram streams), which require the token on every resource-bearing method and every peer. CORS `OPTIONS` preflight remains body-free and token-free.
-- **Peer-gated reads:** `/v1/inventory`, `/v1/certmesh/{status,diagnose}`, `/v1/dns/{list,zone,entries}`, and `/v1/dashboard/{snapshot,events}` are GET-exempt for a **loopback** peer (local CLI / dashboard) but require the token from a **non-loopback** peer; when the peer address is unknown they fail closed. The aggregate projections carry the same health and DNS detail as the protected domain reads.
+- **Peer-gated reads:** `/v1/catalog`, `/v1/inventory`, `/v1/certmesh/{status,diagnose}`, `/v1/dns/{list,zone,entries}`, and `/v1/dashboard/{snapshot,events}` are GET-exempt for a **loopback** peer (local CLI / dashboard) but require the token from a **non-loopback** peer; when the peer address is unknown they fail closed. The aggregate projections carry the same health and DNS detail as the protected domain reads.
 - **Public certmesh protocol reads:** `/v1/certmesh/bootstrap` and `/v1/certmesh/trust-bundle` stay open on every peer. A joiner uses the minimal bootstrap projection to pin the CA before it holds a credential; members pull the ES256-signed, self-verifying trust bundle over plain HTTP. Full `/v1/certmesh/status` is not the bootstrap surface.
-- **All mutations (POST, PUT, DELETE)** require the token to be sent in the `x-koi-token` header (except `/v1/certmesh/join`, which uses standard TOTP credentials during bootstrap).
-- **Server-Sent Events (SSE)** endpoints are `GET`, so they follow the same policy: `/v1/mcp`, `/v1/events`, and `/v1/udp/recv/{id}` require the token on every peer, while `/v1/dashboard/events` requires it from remote or unknown peers.
+- **All mutations (POST, PUT, DELETE)** require the token to be sent in the `x-koi-token` header (except `/v1/certmesh/join`, which uses standard TOTP credentials during bootstrap). Preference mutations additionally require a loopback peer; remote callers receive `403 local_operator_required` even with a valid DAT.
+- **Server-Sent Events (SSE)** endpoints are `GET`, so they follow the same policy: `/v1/mcp`, `/v1/events`, `/v1/catalog/events`, and `/v1/udp/recv/{id}` require the token on every peer, while `/v1/dashboard/events` requires it from remote or unknown peers.
 
 The header value is the **bare token** — the breadcrumb file stores it with a `dat:` line prefix, but that prefix is **not** part of the header value (clients strip it):
 ```http
@@ -39,6 +39,11 @@ Interactive API docs are available at `GET /docs` (Scalar UI).
 | ------ | -------------------- | ------------------------------------------ |
 | GET    | `/healthz`           | Health check - returns `"OK"` (plain text) |
 | GET    | `/v1/status`         | Revisioned composition-owned capability status |
+| GET    | `/v1/catalog`        | Schema-1 authoritative service catalog snapshot |
+| GET    | `/v1/catalog/events` | Full-snapshot catalog SSE; DAT required |
+| GET    | `/v1/preferences`    | Local-operator schema-1 preference status; DAT required |
+| PUT    | `/v1/preferences/services/{service_id}` | Set favorite/friendly alias with expected revision |
+| PUT    | `/v1/preferences/candidates/{candidate_id}` | Set stable-key candidate dismissal with expected revision |
 | GET    | `/v1/inventory`      | Capability, health, and DNS views from one product revision |
 | POST   | `/v1/admin/shutdown` | Initiate graceful shutdown                 |
 | GET    | `/v1/host`           | Host identity and network interfaces       |
@@ -47,6 +52,73 @@ Interactive API docs are available at `GET /docs` (Scalar UI).
 | GET    | `/.well-known/mcp/server-card.json` | Public MCP discovery descriptor (unauthenticated) |
 | GET    | `/openapi.json`      | OpenAPI specification                      |
 | GET    | `/docs`              | Interactive API documentation              |
+
+### Catalog and durable preferences
+
+`GET /v1/catalog` returns one coherent value. `epoch` changes when the daemon
+restarts; `revision` is meaningful only within that epoch. The SSE route sends the
+same complete JSON value as `event: catalog`. Clients replace their snapshot on a new
+epoch and refetch after a revision gap, malformed event, or lost stream.
+
+An empty but valid snapshot has this exact top-level shape:
+
+```json
+{
+  "schema": 1,
+  "epoch": "0199a4f2-8a08-7c41-8d7a-c3e638f6ab6b",
+  "revision": 0,
+  "generated_at": "2026-09-05T15:00:00Z",
+  "devices": [],
+  "services": [],
+  "local_candidates": []
+}
+```
+
+Preferences have their own process epoch/revision and durable records. This status is
+also the successful response to a preference command:
+
+```json
+{
+  "schema": 1,
+  "epoch": "0199a4f2-8a09-7d60-93d8-9d9f3fd04b42",
+  "revision": 4,
+  "mode": "writable",
+  "services": [
+    {
+      "service_key": {"kind": "koi_service", "id": "svc_0199a4f2"},
+      "favorite": true,
+      "friendly_alias": "Workshop dashboard",
+      "last_known": {
+        "device_id": "dev_0199a4f2",
+        "display_name": "Grafana",
+        "device_name": "bench",
+        "kind": "web",
+        "last_condition": "found",
+        "last_seen": "2026-09-05T14:59:50Z"
+      }
+    }
+  ],
+  "candidates": []
+}
+```
+
+The service command body carries the same stable ID in the route and key:
+
+```json
+{
+  "schema": 1,
+  "expected_revision": 3,
+  "service_key": {"kind": "koi_service", "id": "svc_0199a4f2"},
+  "favorite": true,
+  "friendly_alias": "Workshop dashboard"
+}
+```
+
+Candidate commands use `candidate_key: {"recognizer":"...","source":"..."}`
+plus `dismissed`; display name and port are never identity. A stale command returns
+HTTP 409 with `error: "stale_revision"` and `current_revision`. Malformed stored
+preferences report `recovery_required`; future schemas report `unsupported_schema`
+and stay read-only. Neither condition silently resets the file.
 
 ### Pond operator control and public projection
 

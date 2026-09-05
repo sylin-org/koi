@@ -1,5 +1,67 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-05 (28) — R05 catalog API/preferences Windows acceptance
+
+task: `R05` | Koi source `e673af61b624a7603946b02af57d12cf20bc6aba` |
+desktop source `ba39faff62ea758baaac5cffe2a8ac4ac206bfb3` | run
+`v1-20260905-r05-e673af6-win-01` | verdict: **PASS — installed catalog
+snapshot/subscription, authorization and preference restart durability**; R05 remains
+implemented until required hosted Linux evidence passes
+
+koi state now: exactly one AutoStart LocalSystem SCM service, PID `3888`, descriptor
+`"C:\Program Files\Koi\koi.exe" --daemon`, exact release/installed SHA-256
+`ca6386df292cfd40c019d30ea36bcab33eea80ea7f50a1c78e375bac8d19cb21`
+(48,852,992 bytes), health 200 and standard ports. Restart actions remain 5s/10s.
+The upgraded installed 0.1.3 workbench is sole PID `29424`, SHA-256
+`d6f61627d31820f520876476f2fc5149dd804a78d5dcd3da9636a4847a47e042`
+(12,323,328 bytes), with its installed-path `--minimized` login entry. Pond remains
+disabled and port 5644 is closed.
+
+evidence and findings:
+
+1. Source adds schema-1 catalog/preference transport DTOs, a typed blocking client and
+   refetching catalog subscription, sole `koi-preferences` atomic repository/facade,
+   composition joins for stable/absent favorites, local-operator HTTP authorization,
+   and a desktop bridge that migrates only exact unique legacy raw-name matches after
+   byte-exact backup. Full locked workspace check/test/strict Clippy/format passed;
+   final relevant totals include common 142, compose 78, preferences 6, client 46,
+   serve 167 plus one existing ignored live-firewall case, and architecture 16.
+   Desktop test/strict Clippy/format/JS syntax passed; its JS suite passed 40/40.
+2. The transactional installer replaced R04 PID `12292` / SHA-256
+   `93cb9574a1f33e756019a6a25b32123ac6addcec2ed7f8b7aa3e15e41779588e`
+   with the exact candidate, then the explicit persistence restart produced PID 3888.
+   The ordinary account could not read the owner-private breadcrumb; authenticated
+   named-pipe access returned endpoint/data-root and DAT length 43 without disclosing
+   or persisting the DAT.
+3. The live schema-1 catalog held 29 services. Loopback snapshot and DAT-gated SSE
+   returned 200; SSE supplied `event: catalog` with a complete schema-1 snapshot. One
+   stable service ID accepted favorite plus local alias at revision 3; the repeated
+   stale request returned 409 and current revision 3. After SCM restart both preference
+   status and the joined catalog retained the same ID, favorite and alias across new
+   epochs. A revision-checked cleanup removed the run-owned record; final schema-1
+   preference storage contains zero service/candidate records.
+4. The installed authorization matrix returned: local preference/no DAT 401; LAN
+   catalog/no DAT 401; LAN catalog/valid DAT 200; LAN preference GET and PUT/valid DAT
+   403 `local_operator_required`; LAN PUT/wrong DAT 401. The unchanged Windows pipe
+   DACL and exact-SID check retain journal entry 3's physical wrong-account denial
+   before DAT handoff, while new preference middleware tests guard the composed route.
+5. Config and operator-policy hashes stayed byte-exact at
+   `17fe9a664f76bb748da8beeb5c18fabf64da55d1901384772d1e7aecfab2c3ed`
+   and `14d3432b0efd0a52a697bb80adaa16bcd264c2ff79f57ac1156ac513decc9873`.
+   No SCM transaction/backup remains. The workspace run created 14 Windows Firewall
+   prompt rules whose application filters all resolved to exact debug-test executable
+   paths; those run-owned rules were removed and rechecked at zero. The five product
+   rules still point only at the installed image.
+6. Locked `cargo tauri build --bundles nsis --ci -- --locked` produced NSIS SHA-256
+   `6b9af0bbef432d2b0ce531864c7d7a9694cc1f896d621f4ed916a528141358a6`
+   (2,960,526 bytes). Its silent supported upgrade replaced workbench SHA
+   `bb07bb2c232f1ea7398348b1cb4a215dc7d2de04c9c21461bc6fe092de05e245`;
+   one minimized installed process came back, `--poke` preserved that PID, and a live
+   daemon preference read returned writable schema 1 with the cleaned empty state.
+
+next: publish Koi documentation/evidence and require the complete hosted Linux CI run.
+Promote R05 to accepted/ready only after that independent result is green; R06 waits.
+
 ## 2026-09-05 (27) — R04 authoritative catalog implemented and accepted natively
 
 task: `R04` | source `b82281147b91c29f78fb513f25a9042a4c1e108a` |

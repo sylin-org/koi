@@ -18,6 +18,9 @@ token (DAT) are the operator's responsibility.
 | `GET /v1/certmesh/bootstrap`, `/ca-cert`, or `/trust-bundle` | Public | Public | Deliberately narrow enrollment/trust bootstrap; the signed bundle verifies itself |
 | `POST /v1/certmesh/join` | Public to DAT middleware | Public to DAT middleware | The handler requires a valid invite or TOTP and enrollment policy permits the join |
 | Full posture reads: certmesh status/diagnose, trust status, DNS list/zone/entries, inventory, dashboard snapshot/events | Public | DAT required | Loopback peer identity or valid `x-koi-token` |
+| `GET /v1/catalog` | Public | DAT required | Full operator catalog snapshot; not mounted on Pond |
+| `GET /v1/catalog/events` | DAT required | DAT required | Full-snapshot SSE channel |
+| `GET /v1/preferences` and preference `PUT` routes | DAT + local operator | Rejected even with DAT | Machine-local personal intent only |
 | Audit log, certmesh posture, unified events, UDP reads, `/v1/pond`, and every method under `/v1/mcp` | DAT required | DAT required | Valid `x-koi-token` |
 | Other `POST`/`PUT`/`DELETE` mutations | DAT required | DAT required | Valid `x-koi-token` |
 | `OPTIONS` | Public | Public | CORS preflight only; it does not return a protected resource body |
