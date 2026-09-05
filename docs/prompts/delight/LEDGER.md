@@ -13,9 +13,9 @@ All rows are queued at creation. No implementation or native validation is impli
 - Product implementation: eligible fixed-owner tasks may proceed; no new routine approval required.
 - Active candidate: none; Epic 002's frozen candidate is rejected.
 - Windows physical evidence: reserved for a later operator-dispatched Windows session.
-- Current dispatch: R02/R03/R04 and R28 are accepted. Windows has implemented R05
-  at Koi `e673af6` and desktop `ba39faf`, with installed Windows proof published;
-  complete hosted Linux CI remains pending. CachyOS R06 waits for R05 acceptance.
+- Current dispatch: R02/R03/R04/R05 and R28 are accepted. R05 is complete at Koi
+  `e673af6` and desktop `ba39faf`; Windows installed proof and complete hosted CI
+  `33974240044` pass. CachyOS R06 is dependency-ready.
 - Capacity constraint (owner instruction, 2026-09-04): Debian is a very weak thin
   client. Preserve its current R03 claim through its small documentation handoff;
   R04/R05 are now reassigned to Windows. Before any later heavy Debian row is
@@ -140,7 +140,7 @@ identity and complete hosted/native evidence, even if infrastructure tasks passe
 | [R02](R02-critical-documentation-truth.md) | R01 | accepted | ready | bluefin-linux | [reports/R02.md](reports/R02.md) | Complete on implementation source `299ae89`; six finding dispositions published and CONTRACT/LEDGER reservation released to Debian for R03 |
 | [R03](R03-discovery-record-correctness.md) | R01 | accepted | ready | debian-linux | [reports/R03.md](reports/R03.md) | Complete at source `d48d4df`; contract rows and Windows native proof `189ea32` reconciled |
 | [R04](R04-service-catalog.md) | R01, R03 | accepted | ready | windows | [reports/R04.md](reports/R04.md) | Source `b822811`; Windows installed-service run passes; CI `33949639819` supplies green Ubuntu workspace plus macOS and contract jobs |
-| [R05](R05-catalog-api-and-preferences.md) | R04 | implemented | pending | windows | [reports/R05.md](reports/R05.md) | Koi `e673af6` and desktop `ba39faf` implemented; Windows installed service/workbench run passes; require complete hosted Linux CI before acceptance |
+| [R05](R05-catalog-api-and-preferences.md) | R04 | accepted | ready | windows | [reports/R05.md](reports/R05.md) | Koi `e673af6`, desktop `ba39faf`, Windows installed service/workbench run and complete hosted CI `33974240044` pass; complete and R06 unblocked |
 | [R06](R06-rust-ui-and-family-foundation.md) | R01, R05 | queued | pending | cachyos-linux | - | See required subrows below |
 | [R07](R07-home-launchpad.md) | R05, R06 | queued | pending | cachyos-linux | - | Wait for dependencies |
 | [R08](R08-devices-and-comparison.md) | R07 | queued | pending | cachyos-linux | - | Wait for dependencies |

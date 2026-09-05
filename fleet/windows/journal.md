@@ -5,8 +5,8 @@
 task: `R05` | Koi source `e673af61b624a7603946b02af57d12cf20bc6aba` |
 desktop source `ba39faff62ea758baaac5cffe2a8ac4ac206bfb3` | run
 `v1-20260905-r05-e673af6-win-01` | verdict: **PASS — installed catalog
-snapshot/subscription, authorization and preference restart durability**; R05 remains
-implemented until required hosted Linux evidence passes
+snapshot/subscription, authorization and preference restart durability**; R05 is
+accepted/ready after complete hosted CI `33974240044` passed
 
 koi state now: exactly one AutoStart LocalSystem SCM service, PID `3888`, descriptor
 `"C:\Program Files\Koi\koi.exe" --daemon`, exact release/installed SHA-256
@@ -58,9 +58,15 @@ evidence and findings:
    `bb07bb2c232f1ea7398348b1cb4a215dc7d2de04c9c21461bc6fe092de05e245`;
    one minimized installed process came back, `--poke` preserved that PID, and a live
    daemon preference read returned writable schema 1 with the cleaned empty state.
+7. Complete hosted CI run `33974240044` passed on published Koi source `c02282f`:
+   Ubuntu/macOS/Windows workspace tests, Windows GNU, cross-host exchange, architecture,
+   strict Clippy, MSRV, client/release/frontend contracts, lean/publish guards,
+   surfaces, format and audit. Attempt 1 had one isolated Windows access-denied result
+   in the existing concurrent atomic-write stress test; the failed-job rerun passed its
+   complete 18-minute test step and the dependent cross-host job without a code change
+   or waiver.
 
-next: publish Koi documentation/evidence and require the complete hosted Linux CI run.
-Promote R05 to accepted/ready only after that independent result is green; R06 waits.
+next: R05 is accepted/ready and R06 is dependency-ready for CachyOS.
 
 ## 2026-09-05 (27) — R04 authoritative catalog implemented and accepted natively
 
