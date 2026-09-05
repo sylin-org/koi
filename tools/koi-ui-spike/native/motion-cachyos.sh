@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# Bound to the accepted test-01 package and explicit true GSettings baseline.
+# Bound to an explicitly supplied test-01 package hash and true GSettings baseline.
 # No daemon/package/network mutation. Run as the existing desktop user.
 set -euo pipefail
 [[ $(hostname) == test-01 && $(id -u) == 1000 ]]
-[[ $(sha256sum /usr/bin/koi-desktop | cut -d ' ' -f1) == 316fc8fa06a2474fe4de75c445cd5f3ee77d1a2fe91ccb23a9b188033065843e ]]
 
 restore() {
     gsettings set org.gnome.desktop.interface enable-animations true
@@ -22,7 +21,8 @@ if [[ ${1:-} == restore ]]; then
     restore
     exit
 fi
-[[ $# == 1 ]]
+[[ $# == 2 && $2 =~ ^[a-f0-9]{64}$ ]]
+[[ $(sha256sum /usr/bin/koi-desktop | cut -d ' ' -f1) == "$2" ]]
 evidence=$(realpath "$1")
 [[ $evidence == */tools/koi-ui-spike/target/native/motion-cachyos-* ]]
 native=$(cd -- "$(dirname -- "$0")" && pwd)
@@ -38,21 +38,36 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 systemctl --user stop app-koi-r06-normal.service
-systemd-run --user --collect --unit=koi-r06-motion-probe --working-directory=/ \
-    --setenv="GTK_MODULES=$native/../target/gtk-motion-observer.so" \
+phases=(enabled reduced resumed)
+if [[ ${KOI_MOTION_START_REDUCED:-0} == 1 ]]; then
+    gsettings set org.gnome.desktop.interface enable-animations false
+    phases=(initial-reduced enabled reduced resumed)
+fi
+observer=()
+if [[ ${KOI_MOTION_OBSERVER_MODULE:-0} == 1 ]]; then
+    observer=(--setenv="GTK_MODULES=$native/../target/gtk-motion-observer.so")
+fi
+systemd-run --user --collect --unit=koi-r06-motion-probe --working-directory=/ "${observer[@]}" \
     /usr/bin/koi-desktop --renderer-probe
 sleep 2
+process=$(systemctl --user show koi-r06-motion-probe.service --property=MainPID --value)
+[[ $process -gt 0 && $(pgrep -u test -xc koi-desktop) == 1 ]]
+echo "evaluation_pid=$process observer_module=${KOI_MOTION_OBSERVER_MODULE:-0}"
 script_id=$(qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript \
     "$native/kwin-narrow.js" koi-r06-motion-narrow)
 qdbus6 org.kde.KWin "/Scripting/Script$script_id" org.kde.kwin.Script.run
 sleep 1
 qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript koi-r06-motion-narrow
+spectacle --background --activewindow --nonotify --no-shadow --output "$evidence/live.png"
+"$native/../target/tab-once"
+spectacle --background --activewindow --nonotify --no-shadow --output "$evidence/focus.png"
 "$native/../target/tab-once" --page-down
 sleep 3
-for phase in enabled reduced resumed; do
-    if [[ $phase == reduced ]]; then animations=false; else animations=true; fi
+for phase in "${phases[@]}"; do
+    if [[ $phase == *reduced ]]; then animations=false; else animations=true; fi
     gsettings set org.gnome.desktop.interface enable-animations "$animations"
     sleep 1
+    [[ $(systemctl --user show koi-r06-motion-probe.service --property=MainPID --value) == "$process" ]]
     "$native/../target/gtk-motion-observer"
     dump_xsettings | rg EnableAnimations
     for sample in a b; do
@@ -67,9 +82,13 @@ for phase in enabled reduced resumed; do
         2>"$evidence/$phase-ae.txt" || comparison=$?
     [[ $comparison -le 1 ]]
     metric=$(<"$evidence/$phase-ae.txt")
-    echo "$phase changed_pixels=$metric"
+    echo "$phase absolute_error=$metric"
     # A diagnostic run continues through all phases, then fails if reduction did
     # not settle. This preserves evidence of restoring the animation preference.
 done
-[[ $(<"$evidence/reduced-ae.txt") == 0* ]]
-[[ $(<"$evidence/enabled-ae.txt") != 0* && $(<"$evidence/resumed-ae.txt") != 0* ]]
+awk 'NR == 1 { exit !($1 == 0) }' "$evidence/reduced-ae.txt"
+awk 'NR == 1 { exit !($1 > 0) }' "$evidence/enabled-ae.txt"
+awk 'NR == 1 { exit !($1 > 0) }' "$evidence/resumed-ae.txt"
+if [[ ${KOI_MOTION_START_REDUCED:-0} == 1 ]]; then
+    awk 'NR == 1 { exit !($1 == 0) }' "$evidence/initial-reduced-ae.txt"
+fi

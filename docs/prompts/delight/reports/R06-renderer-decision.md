@@ -628,3 +628,151 @@ the native fallback is inserted/removed while media remains no-preference.
 This proves the shared declarations, not native GTK integration. Publishing this
 source first allows the desktop's two Git dependencies to pin the same immutable
 revision; installed native proof and peer retries are still pending.
+
+## Native motion correction — 2026-09-05 17:13–17:16 EDT
+
+The correction is published and **passes CachyOS installed motion/focus proof**.
+Shared source `72cb286f7c4b4c285893693a58fdebcf896a1538`, desktop
+`ccee0fce1bb579e032a0aad2a8603f869b22a2b2`. Both desktop Git dependencies pin
+`72cb286`; common/client/config are byte-unchanged from the prior pin `d2f6645`.
+R20's accepted source is not an implicit daemon upgrade. No root workspace
+manifest, lock, domain source or CONTRACT change was needed.
+
+### Boundary, implementation and gates
+
+The GTK3 Wayland backend maps GSettings/portal preferences to the actual
+`GtkSettings:gtk-enable-animations`; XSettings is not a sufficient proxy. See
+[GTK 3.24.52 Wayland settings source](https://github.com/GNOME/gtk/blob/3.24.52/gdk/wayland/gdkscreen-wayland.c)
+and [WebKitGTK 2.52.6 settings observer](https://github.com/WebKit/WebKit/blob/webkitgtk-2.52.6/Source/WebKit/UIProcess/gtk/SystemSettingsManagerProxyGtk.cpp).
+[WebKit issue 255097](https://bugs.webkit.org/show_bug.cgi?id=255097) documents
+GTK motion support and a related GTK3 Wayland caveat; it is context, not proof
+of the exact upstream cause here. The in-process read-only observer established
+that the old installed application received 1→0→1 while its halo still animated.
+
+The Linux-only evaluation binding now reads that property at attachment and on
+notification, adds the shared motion rules as a WebKit user stylesheet when
+disabled, and removes only its own stylesheet on re-enable. Destruction disconnects
+the session-lived settings handler; a weak manager reference prevents retaining
+the webview. No polling, JS, replacement card, desktop-specific preference file,
+new dependency family, normal-mode change or domain behavior was introduced.
+
+Shared seven tests, strict all-target Clippy, formatting and both offline renderer
+browser checks pass (including fallback insertion/removal with media=no-preference).
+Desktop all-target check, locked tests (25 pass, 1 existing ignored), strict locked
+all-target Clippy, formatting and all 40 JS tests pass. The unchanged Arch recipe
+then passed locked release build in 53.58s, locked tests in 14.56s and packaging
+from a clean detached exact source; recipe test result is again 25/0/1.
+An initial build-directory placement beneath the isolated spike workspace was
+rejected by Cargo's workspace ancestry check before compilation. Moving the
+detached build to `/var/tmp` resolved it without a manifest/recipe workaround.
+
+### Artifact and measured native behavior
+
+Installed package `koi-desktop-git 0.1.3.r63.gccee0fc-1`:
+4,340,458 bytes, SHA-256
+`0b7ac83875b9193dfd7c01baf158ea47424a42620d03b9d900edd312dc5ae7ff`.
+Embedded/installed `/usr/bin/koi-desktop`: 13,456,704 bytes, SHA-256
+`29de5306d31362a766498678803edc769595116bc19b08f52ed69fbb2317438e`.
+Its 15 direct ELF imports remain the existing GTK/WebKit library family.
+The package is 1,510 bytes smaller and executable 1,280 bytes larger than c497b3b;
+these are artifact measurements, not a performance benchmark.
+
+Before stopping the sole workbench, preserved the accepted c497b3b package in a
+fresh root-private `0700` checkpoint `/var/tmp/koi-r06-motion.Njz4EvIu`, checked
+its hash, and armed a root 25-minute desktop-only rollback timer. The historical
+daemon/data restore helper was **not** reused. Ordinary `pacman -U` performed the
+serial upgrade (normal snapshot hooks 59/60). The daemon was never stopped.
+
+Both following runs used the **installed** executable from `/`, without the
+diagnostic GTK module. Each user three-minute preference/workbench restore guard
+was active before mutation; each run preserved its evaluation PID across phases.
+ImageMagick AE is reported as an absolute-error metric, not an integer pixel count.
+
+| Run / evaluation PID | Initial reduced | Enabled AE | Reduced AE | Resumed AE |
+|---|---:|---:|---:|---:|
+| `motion-cachyos-fixed-20260905` / 1379477 | not requested | 144.685 | **0** | 238.986 |
+| `motion-cachyos-startup-fixed-20260905` / 1379883 | **0** | 229.971 | **0** | 238.198 |
+
+GTK/GDK Wayland values were 1→0→1 (second run also started at 0), while XSettings
+remained 1 throughout. The complete original card was visibly intact and the
+reduced pairs were byte-identical. The second run also visibly showed a real
+catalog row at snapshot revision 19716, four narrow navigation destinations and
+the native Tab skip-link/focus outline at 320 px. No fixture or JS probe was used.
+Historical c497b3b offline/tray/singleton/unavailable evidence remains historical;
+those unrelated cases were not rerun or relabeled as ccee0fc proof in this delta.
+
+Captures remain in ignored `tools/koi-ui-spike/target/native/<run>/`:
+
+| Capture | SHA-256 |
+|---|---|
+| First run `reduced-a.png` and `reduced-b.png` | `d30e3de0071fed9894541bb1ef3b43bb5e336600400ca576b0f8b2b5bdaed631` |
+| Startup run `initial-reduced-a.png` and `initial-reduced-b.png` | `ae31157142495cb47bdf2b093a7a8caad6baff28306d19bb04a6eecdac4187b5` |
+| Startup run `reduced-a.png` and `reduced-b.png` | `b1aca98a110692d5f4cb04ffd13ace149f4ae906e0ca7c5d21868eda3b033ba7` |
+| Startup run `focus.png` | `39eae7f05d6e6ab8a30cf8dca1d8c51e1f1ae96f9750accaaa680af383e0f8e9` |
+| Startup run `normal-restored.png` | `64894d9f6c163ca384968063a35125f8822f2eead387ec3241b86f98aeda9e96` |
+
+### Restoration
+
+Exactly one unchanged R05 daemon, PID **1366166**, NRestarts 0, and one upgraded
+normal-mode workbench, PID **1380276**, remain healthy on loopback 5641/5640.
+One Koi tray item remains; Pond 5644 is closed. The normal 1100 px workbench visibly
+reports authenticated posture; no evaluation flag/module is in its ExecStart or
+unit environment. Explicit GSettings=true was restored, not reset to a guessed
+default. Unit, daemon binary, member, config, health, DNS, trust, Pond, installation,
+local policy, both UFW files, GTK settings, xsettingsd config and kdeglobals all
+match the fresh baseline hashes. Providers/firewall are active/enabled, `/etc/koi`
+and autostart entries remain absent. No daemon warnings since the diagnostic start.
+
+Verified restoration before accepting under the root restore lock, disarmed the
+timer and removed its copied privileged executable helper (tracked source remains).
+Prior package and baseline hashes remain private for recovery. Both user timers,
+evaluation units and KWin scripts are gone; the input device exited and generated
+input/observer executables were relocated into ignored evidence storage. No new
+input permission, credential file or remote mutation occurred. Package/build
+material remains at `/var/tmp/koi-r06-motion-build.uDJ7tas1/package`.
+
+## Corrected packaged peer requests
+
+Fresh requests: `R06/windows-packaged-motion-v2` and
+`R06/alpine-packaged-motion-v2`; fresh run IDs
+`r06-native-ccee0fc-windows-<date>` / `r06-native-ccee0fc-alpine-<date>`.
+Exact desktop **ccee0fce1bb579e032a0aad2a8603f869b22a2b2** pins shared
+**72cb286f7c4b4c285893693a58fdebcf896a1538**. Required daemon remains accepted
+R05 **e673af61b624a7603946b02af57d12cf20bc6aba** or an explicitly reconciled
+already accepted successor. Reuse an accepted installed daemon when available.
+Alpine's failed request and issue 001 remain historical/open until its own retry;
+cancel the unacknowledged old Windows request rather than ask it to test stale code.
+
+Follow all five steps in **Bounded packaged peer requests** above, substituting
+these exact sources, plus the following correction:
+
+1. Acknowledge in the owning journal before any mutation. Build/test/install using
+   the native package path with fresh exact-baseline recovery and bounded timer.
+   Only the owning OS recipe's source pin may be updated after claiming it; shared
+   manifests/renderer/security policy changes return to CachyOS. Windows does not
+   build Linux-only GTK bindings. Keep one real service and workbench per host.
+2. On Linux, first observe the **actual GTK/GDK backend preference** using the
+   provided read-only observer. If needed, use its read-only module for diagnosis,
+   then repeat final proof without it. XSettings remaining 1 while GTK Wayland=0
+   is expected on CachyOS, not a failed preference update. Capture exact prior
+   GSettings/portal/file values and restore them, including unset versus explicit.
+   Use only a safely controllable actual native source. Do not imitate an OS
+   preference with an injected product config, force media emulation or weaken
+   input permissions. Alpine should reconcile issue 001's XSettings-only wording
+   in its own evidence against these actual backend observations.
+3. In the same evaluation PID show animated→static→animated with the complete
+   original card intact; also launch once with reduction already enabled. On
+   Windows use the real OS animation setting and WebView2, not GTK instructions.
+   Native focus, offline assets, tray/singleton and unavailable/recovery remain
+   required per the existing procedure. Missing physical keyboard infrastructure
+   stays an explicit unverified case; no permission relaxation is requested.
+4. Finish normal-mode, restore all temporary state and publish exact artifacts,
+   captures, commands, native limitations and final process/identity/port evidence.
+   Mark only the fresh request completed/failed. Do not erase the failed first run.
+
+No cross-host service is consumed/reserved by these requests. Each own-host artifact
+reservation starts at acknowledgement and ends on completion/restoration; the
+acknowledgement expires at session end or 24 hours, whichever comes first. A later
+session re-acknowledges its exact baseline before mutation. No remote agent launch
+is authorized; Debian receives no build. Renderer selection remains pending the
+required peer reconciliation; shared-shell, R07 and R11 are not released yet.

@@ -98,6 +98,27 @@ firewall are unchanged. Reduced-motion behavior is proven in offline Chromium,
 not yet a native OS-preference journey. Windows and Alpine packaged requests now
 name this exact source; their earlier compiler passes do not replace them.
 
+## Native motion follow-up
+
+Alpine's first packaged c497b3b run failed the native motion lane and restored its
+exact prior deployment; its original issue remains open. CachyOS reproduced a
+real gap with the actual in-process GTK preference, not only an XSettings file:
+GTK Wayland received animations 1→0→1 while the visible halo continued moving.
+The [R06 correction](../prompts/delight/reports/R06-renderer-decision.md#native-motion-correction--2026-09-05-17131716-edt)
+publishes shared `72cb286` and desktop `ccee0fc`: a Linux-only evaluation binding
+applies the shared reduction stylesheet through native WebKit at startup and on
+GTK notification, removing only its own sheet when re-enabled. No JS preference
+imitation, normal-mode change or new native library family is required.
+
+Installed CachyOS ccee0fc now passes two physical runs without instrumentation:
+motion on/off/on in the same PID, startup with reduction already active, intact
+original card, real row and native narrow keyboard focus. Reduced capture pairs
+are byte-identical; enabled/resumed pairs differ. The exact normal deployment and
+native preferences are restored with the daemon unchanged. Both renderer browser
+regression checks pass even when media says no-preference. Fresh Windows and
+Alpine packaged requests name ccee0fc; their physical evidence remains pending.
+This resolves the own-host motion gap, not the renderer decision or Alpine issue.
+
 ## Production component map (proposal, not implemented)
 
 These destinations are proposed within R01's `crates/koi-ui/` boundary. R06 must

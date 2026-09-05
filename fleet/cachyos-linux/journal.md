@@ -448,3 +448,74 @@ requests for exact desktop `c497b3b`; neither remote launch nor mutation occurre
 Debian remains exempt from heavy work. R06/renderer-decision stays in_progress /
 pending until peer/native reduced-motion evidence and the measured decision;
 shared-shell/R07/R11 remain blocked by that dependency, not silently accepted.
+
+## 2026-09-05 17:16 EDT — R06 native GTK motion corrected and installed
+
+task: `R06/renderer-decision` | shared source `72cb286f7c4b4c285893693a58fdebcf896a1538`,
+desktop `ccee0fce1bb579e032a0aad2a8603f869b22a2b2` | verdict: **own-host motion/focus
+delta PASS; renderer selection and corrected peer physical proof pending**.
+
+Reconciled Alpine's `5f422ba` failed packaged motion result without modifying its
+owned issue or journal. R20 is accepted (`3eb1147` / `9fd7fae`), not an implicit
+deployment here. Published diagnostic and expanded source claims `57e94e8` /
+`fcf7ac3` before the shared changes. The explore workflow kept the correction at
+the existing GTK/WebKit and shared CSS boundary; no domain type or API was needed.
+
+Observed the old installed c497b3b process receive actual GtkSettings 1→0→1 while
+its halo continued moving. Its reduced-phase AE was 543.484, not zero. XSettings
+remained 1 even while actual GTK/GDK Wayland reported 0; an XSettings-only test
+cannot establish this process's preference. Both diagnostic runs automatically
+restored explicit GSettings=true and the normal workbench, with no daemon change.
+
+Published one shared reduction stylesheet and a Linux-only native evaluation
+binding. It reads actual GtkSettings at attachment/notification, adds/removes only
+its owned WebKit stylesheet and disconnects on destruction. Original assets,
+browser media behavior, script-free document, normal UI and dependency family are
+preserved. Shared source tests 7/7, both offline browser behavioral suites, strict
+Clippy and formatting pass. Desktop all-target check, locked Rust tests 25/0/1,
+strict locked Clippy, formatting and existing JS tests 40/40 pass. Both Git pins
+resolve the same immutable shared source; common/client/config bytes are unchanged.
+
+Unchanged Arch recipe from detached ccee0fc passed release (53.58s), locked tests
+(14.56s, 25/0/1) and packaging. An initial nested-workspace build-directory error
+was corrected by placing the build outside the workspace, not changing its source.
+Installed package `koi-desktop-git 0.1.3.r63.gccee0fc-1`, 4,340,458 bytes, SHA-256
+`0b7ac83875b9193dfd7c01baf158ea47424a42620d03b9d900edd312dc5ae7ff`.
+Installed executable 13,456,704 bytes, SHA-256
+`29de5306d31362a766498678803edc769595116bc19b08f52ed69fbb2317438e`.
+Prepared fresh desktop-only root-private recovery checkpoint
+`/var/tmp/koi-r06-motion.Njz4EvIu` with exact prior c497b3b package and a verified
+25-minute root rollback timer before serial `pacman -U` (snapshot hooks 59/60).
+The historical rejected-daemon restoration helper was not reused.
+
+Native runs, both installed/from `/` and **without** the diagnostic GTK module:
+
+- `motion-cachyos-fixed-20260905`, PID 1379477: enabled/reduced/resumed AE
+  144.685 / **0** / 238.986, same PID, intact original card.
+- `motion-cachyos-startup-fixed-20260905`, PID 1379883: startup-reduced AE **0**,
+  then 229.971 / **0** / 238.198. Real row at snapshot 19716, 320 px four-item
+  navigation and visible physical Tab focus pass. Both reduced pairs have identical
+  hashes; captures/commands are in the R06 report. No screenshot media emulation.
+
+koi state now: one unchanged enabled/active daemon PID **1366166**, NRestarts 0,
+hash `dc1ebd15b8d1bf2d725c212912d78a5dd9581aa897c505596e8b0a268d9b3975`,
+and one upgraded **normal-mode** workbench PID **1380276**. Both loopback health
+surfaces pass; 5644 closed; one Koi tray item and visible authenticated posture.
+No daemon stop/restart, re-enrollment, port change or remote mutation this iteration.
+
+Restored explicit GSettings=true; verified byte-identical daemon/unit, member,
+config, health, DNS, trust, Pond, installation/local policy, UFW and GTK/XSettings/
+KDE config. Avahi/resolved/UFW remain active/enabled; `/etc/koi` and autostart files
+remain absent. No daemon warnings since diagnostics. Root guard accepted/disarmed
+under its lock after verification; its copied executable removed (tracked source
+is recoverable). Prior package/baseline hashes remain private. User timers,
+evaluation units, KWin scripts and input device are gone; generated input/observer
+binaries moved to ignored evidence storage. No credential helper was created.
+
+Coordination: cancelled the unacknowledged stale Windows c497b3b request; preserved
+Alpine's failed row/open issue. New `R06/windows-packaged-motion-v2` and
+`R06/alpine-packaged-motion-v2` request exact ccee0fc native package, actual preference
+and physical/lifecycle proof on each owning host's next invocation. No agent was
+launched; Debian receives no heavy work. Await those results before selecting the
+renderer/releasing shared-shell, R07 or R11. Previous c497b3b offline/tray/singleton/
+unavailable checks remain historical evidence, not relabeled as this artifact.
