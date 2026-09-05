@@ -35,6 +35,25 @@ limpid-dune/topaz-butte/silent-cascade are phase-two Debian twins. The Windows
 workstation may supervise launches; Epic 003 coordination is assigned to CachyOS.
 Every hat still owns only its own system mutations.
 
+## Debian capacity constraint — owner instruction, 2026-09-04
+
+Halcyon (`debian-linux`) is a very weak thin client. Future assignments must fit
+that hardware: favor bounded headless/native checks, lightweight peer observations,
+documentation, review, and small focused changes. Do not assign it heavy feature
+implementation, full-workspace build/test/clippy runs, cross-target matrices,
+release builds, or sustained load/stress work.
+
+CachyOS coordinates heavy source and validation work on stronger machines such as
+CachyOS or Bluefin, or on hosted CI, with explicit ownership and published source
+identity. Debian retains its own physical headless evidence; remote builds do not
+substitute for that evidence. Required checks still run on an appropriate executor.
+
+Apply this constraint before the next iteration is assigned. Existing published
+claims and in-flight edits remain with their owner until a coherent checkpoint and
+handoff; do not duplicate or discard them. Before Debian claims another heavy queued
+Epic 003 task, CachyOS must split or reassign that row and publish the updated owners.
+The old fixed-owner table is not permission to ignore this capacity constraint.
+
 ## The UX charter (what "simply works" means on each hat)
 
 The product promise is identical everywhere; the *mechanism* is the OS's own:

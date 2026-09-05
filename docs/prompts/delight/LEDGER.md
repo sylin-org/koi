@@ -14,6 +14,11 @@ All rows are queued at creation. No implementation or native validation is impli
 - Active candidate: none; Epic 002's frozen candidate is rejected.
 - Windows physical evidence: reserved for a later operator-dispatched Windows session.
 - Next eligible assignments: Bluefin R02, Debian R03 (including Windows issue 004), and Alpine R28. CachyOS R06 waits for R05.
+- Capacity constraint (owner instruction, 2026-09-04): Debian is a very weak thin
+  client. Preserve its current R03 claim through checkpoint/handoff; before its
+  next iteration, CachyOS must split or reassign heavy queued work (starting with
+  R04/R05) to stronger executors. Do not assign full builds, test matrices or stress
+  workloads to Debian. See [fleet capacity guidance](../../../fleet/coordination.md#debian-capacity-constraint--owner-instruction-2026-09-04).
 
 ## Status and selection rules
 

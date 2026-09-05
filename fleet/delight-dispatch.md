@@ -21,6 +21,14 @@ and status authority. Read only the selected prompt's source set after routing.
 | bluefin-linux | Documentation, container journey, SDKs/integration, Windows source preparation, immutable native recipe |
 | alpine-linux | Install contracts, Linux firewall integration, CI, CLI/MCP/embedding and musl/native portability |
 
+Capacity override: Debian is a very weak thin client. Follow the
+[Debian capacity constraint](coordination.md#debian-capacity-constraint--owner-instruction-2026-09-04)
+before assigning the next iteration. CachyOS must split or reassign heavy queued
+Debian rows to stronger executors before they are claimed; keep Debian's work
+lightweight and its native checks bounded. Preserve active claims through an
+explicit checkpoint/handoff. Required heavy validation belongs on a stronger host
+or hosted CI, with the exact source and evidence recorded.
+
 Each executable ledger row has exactly one owner. A parent with subrows names its
 integration owner; it is not an additional implementation assignment. Native rows
 belong to their actual hats. The Windows hat is reserved for later native proof:
