@@ -1,5 +1,52 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-05 (30) — R20 authorized service certificates accepted
+
+task: `R20` | implementation source
+`3eb1147995e4899cc7ac084a4e8441d4aa285dc6` | hosted run
+`33987878995` | verdict: **PASS — exact service-name authorization, atomic host
+leaf lifecycle, account-bound single-name ACME and cross-host exchange; R20
+accepted/ready**
+
+koi state now: unchanged exactly one AutoStart LocalSystem SCM service, PID `3888`,
+descriptor `"C:\Program Files\Koi\koi.exe" --daemon`, installed SHA-256
+`ca6386df292cfd40c019d30ea36bcab33eea80ea7f50a1c78e375bac8d19cb21`,
+health 200 on 5641. The unchanged installed workbench remains sole PID `29424`,
+SHA-256 `d6f61627d31820f520876476f2fc5149dd804a78d5dcd3da9636a4847a47e042`,
+on loopback 5640. Pond remains disabled with no 5644 listener.
+
+evidence and findings:
+
+1. Certmesh now persists schema-1 exact configured-zone grants from stable service
+   IDs to either the host Proxy owner or one durable ACME account. Host issuance and
+   renewal atomically publish `cert.pem`, `key.pem`, `ca.pem` and `fullchain.pem`,
+   validate exact SAN/key/chain/fingerprint/expiry on reuse, rotate the key, and
+   preserve the previous generation on failure. Revocation removes the exact grant
+   and host material; copied ordinary-TLS leaves remain usable until `NotAfter`
+   because R20 does not add CRL/OCSP.
+2. ACME new-order and finalization both require the same account-bound exact grant;
+   wildcards, zone apex/out-of-zone names, multi-name orders and CSR SAN expansion
+   fail. The signing transition recheck closes revoke-after-ready races. Successful
+   service issuance updates the grant rather than inventing mesh membership, and
+   public events/adapters contain no PEM or private key.
+3. With `KOI_NO_CREDENTIAL_STORE=1`, locked local gates passed: complete workspace
+   check/test/strict Clippy/format; final Certmesh 427 passed and one ignored; ACME
+   9/9 including real `instant-acme`; architecture and downstream dashboard/embedded
+   tests; lean dependency, all 19 publishable crates, 32 surface rows and doc-leak
+   guards. The published exact source then passed all 13 jobs in hosted CI
+   `33987878995`, including three hosted OS suites and the dependent cross-host
+   Certmesh exchange.
+4. This source-only task did not deploy a candidate or mutate the SCM service,
+   workbench, configuration, credentials, trust, firewall, providers, ports or
+   network. No peer machine was directly mutated. The run-owned lean probe directory
+   was removed. A 251.6 GiB regenerable checkout `target` cache caused the first
+   check to exhaust F:; `cargo clean` removed only its 249,781 build artifacts and
+   all gates completed in the existing isolated `target-gate` directory. No product
+   artifact or recovery action was involved.
+
+next: R20 is accepted/ready. R21 still waits for R11 and R19; Windows next services
+any ready native-evidence request and otherwise remains dependency-idle.
+
 ## 2026-09-05 (29) — R06 native Windows renderer compiler probe
 
 task: `R06/windows-renderer-compile` | exact source
