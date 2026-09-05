@@ -179,7 +179,7 @@ Bluefin; Windows physical cases remain pending for the Windows hat.
 
 | Slice | Additional prerequisite | Owner | Status | Readiness | Deliverable | Evidence |
 |---|---|---|---|---|---|---|
-| R06/renderer-decision | - | cachyos-linux | queued | pending | One live-row/card spike, measured target viability, renderer ADR and exact component/build plan | - |
+| R06/renderer-decision | - | cachyos-linux | in_progress | pending | Isolated Maud/Tauri versus Dioxus comparison claimed; live/native evidence and decision pending | [report](reports/R06-renderer-decision.md) |
 | R06/shared-shell | R06/renderer-decision | cachyos-linux | queued | pending | Selected reusable shell/assets/data adapter; no remaining production spike variant | - |
 | R11/result-contract | - | alpine-linux | queued | pending | Typed install result, artifact compatibility, durable recipe/receipt ownership | - |
 | R11/restart-and-rollback | R11/result-contract | alpine-linux | queued | pending | Interrupted install/upgrade recovery, idempotency and old-state preservation | - |
