@@ -1,5 +1,50 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-05 (34) — R06 Windows recovery tail prerequisite unavailable
+
+task: `R06/windows-recovery-tail` | intended run
+`r06-recovery-ccee0fc-windows-20260905` | instruction head
+`11b845b374bbe7142b1c96bc6a1ae3b2a1601087` | desktop source
+`ccee0fce1bb579e032a0aad2a8603f869b22a2b2` | shared renderer source
+`72cb286f7c4b4c285893693a58fdebcf896a1538` | verdict: **FAILED BEFORE
+ACKNOWLEDGEMENT OR MUTATION — required elevated recovery facility unavailable**
+
+The operator-dispatched shell is still medium-integrity (`S-1-16-8192`) and its
+Windows principal has no active Administrator token. The corrected procedure says
+to acknowledge only after sufficient elevation can arm and verify the independent
+timed start fallback for the existing `koi` service. That prerequisite is false.
+The earlier denied task-creation paths were not retried, the healthy service was
+not stopped, and the already-passed motion/focus/offline/singleton/tray evidence was
+not repeated.
+
+koi state now: unchanged exactly one Running AutoStart LocalSystem SCM service,
+PID `3888`, descriptor `"C:\Program Files\Koi\koi.exe" --daemon`, installed
+SHA-256 `ca6386df292cfd40c019d30ea36bcab33eea80ea7f50a1c78e375bac8d19cb21`,
+health 200 on 5641. Failure actions remain restart after 5 seconds and 10 seconds
+with an 86,400-second reset. The exact installed normal-user 0.1.3 NSIS workbench
+remains the sole desktop PID `22992`, launched `--minimized` from
+`C:\Users\onose\AppData\Local\Koi\koi-desktop.exe`, SHA-256
+`f1d7a7a750130dac48241cfc5235951d9baeff18d100dedc8217ca8b5135b487`,
+on loopback 5640. Pond remains disabled and 5644 is closed.
+
+Final read-only comparison retained config SHA-256
+`17fe9a664f76bb748da8beeb5c18fabf64da55d1901384772d1e7aecfab2c3ed`,
+local-access policy SHA-256
+`14d3432b0efd0a52a697bb80adaa16bcd264c2ff79f57ac1156ac513decc9873`
+and installation identity SHA-256
+`a3b1c896d2d92c9fa768992570f0ec317e6b6289bf53a2e01ed4576fe36f118a`.
+The installed-path startup entry and 15-rule effective Koi display-rule baseline
+remain exact. Final enumeration found zero `Koi R06 recovery*` or earlier motion-v2
+tasks. No helper, backup, capture, process, credential, firewall rule, service
+transition or recovery action was created, so no restoration was needed.
+
+next: dispatch Codex itself from an already elevated interactive session, then run
+only this tail. First arm and verify the independent service-start fallback; only
+then stop the existing service, capture the installed evaluator's unavailable page,
+restart and health-check that same service, capture the recovered real row, restore
+one normal `--minimized` workbench, and remove the run-owned guard. R06 remains
+blocked; the historical failed packaged-motion row is not rewritten.
+
 ## 2026-09-05 (33) — R06 Windows packaged motion v2 result
 
 task: `R06/windows-packaged-motion-v2` | run
