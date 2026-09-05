@@ -1301,6 +1301,17 @@ mod tests {
         SseStream::new(Box::new(cursor))
     }
 
+    fn complete_http_request_len(bytes: &[u8]) -> Option<usize> {
+        let header_len = bytes.windows(4).position(|window| window == b"\r\n\r\n")? + 4;
+        let headers = String::from_utf8_lossy(&bytes[..header_len]).to_ascii_lowercase();
+        let body_len = headers
+            .lines()
+            .find_map(|line| line.strip_prefix("content-length:"))
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+        Some(header_len + body_len)
+    }
+
     fn json_response_server_once(
         status: u16,
         reason: &'static str,
@@ -1315,9 +1326,12 @@ mod tests {
                 .expect("set read timeout");
             let mut bytes = Vec::new();
             let mut buffer = [0_u8; 1024];
-            while !bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+            while complete_http_request_len(&bytes).is_none_or(|length| bytes.len() < length) {
                 let read = stream.read(&mut buffer).expect("read request");
-                assert!(read > 0, "request closed before its headers completed");
+                assert!(
+                    read > 0,
+                    "request closed before its declared body completed"
+                );
                 bytes.extend_from_slice(&buffer[..read]);
             }
             let request = String::from_utf8_lossy(&bytes).into_owned();
@@ -1337,27 +1351,11 @@ mod tests {
         json_response_server_once(200, "OK", body)
     }
 
-    fn error_server_once(status: u16, body: &'static str) -> (String, std::thread::JoinHandle<()>) {
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind stub server");
-        let address = listener.local_addr().expect("stub address");
-        let handle = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept request");
-            let mut bytes = Vec::new();
-            let mut buffer = [0_u8; 1024];
-            while !bytes.windows(4).any(|window| window == b"\r\n\r\n") {
-                let read = stream.read(&mut buffer).expect("read request");
-                assert!(read > 0, "request closed before its headers completed");
-                bytes.extend_from_slice(&buffer[..read]);
-            }
-            let response = format!(
-                "HTTP/1.1 {status} Test Error\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            stream
-                .write_all(response.as_bytes())
-                .expect("write error response");
-        });
-        (format!("http://{address}"), handle)
+    fn error_server_once(
+        status: u16,
+        body: &'static str,
+    ) -> (String, std::thread::JoinHandle<String>) {
+        json_response_server_once(status, "Test Error", body)
     }
 
     fn captured_json_request(
