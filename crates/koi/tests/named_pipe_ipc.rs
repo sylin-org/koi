@@ -99,7 +99,7 @@ async fn connect_pipe(
     daemon: &mut Daemon,
 ) -> BufReader<tokio::net::windows::named_pipe::NamedPipeClient> {
     let mut last_err = None;
-    for _ in 0..100 {
+    for _ in 0..300 {
         match ClientOptions::new().open(name) {
             Ok(client) => return BufReader::new(client),
             Err(e) => last_err = Some(e),
