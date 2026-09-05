@@ -9,6 +9,10 @@ services:
       dockerfile: Dockerfile
     image: koi-tier3:latest
     hostname: node-a
+    # The machine-bound vault needs a stable OS identity. These are distinct,
+    # synthetic test-host IDs; never copy the runner's identity into the fixture.
+    volumes:
+      - ./node-a.machine-id:/etc/machine-id:ro
     networks: [mesh]
     # `koi status` (client mode via the in-container breadcrumb) exits 0 once the daemon's
     # HTTP adapter is up — so node-b waits for a *ready* node-a, not just a started one.
@@ -22,6 +26,8 @@ services:
   node-b:
     image: koi-tier3:latest
     hostname: node-b
+    volumes:
+      - ./node-b.machine-id:/etc/machine-id:ro
     depends_on:
       node-a:
         condition: service_healthy

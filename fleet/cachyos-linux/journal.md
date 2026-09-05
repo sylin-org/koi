@@ -258,3 +258,36 @@ next: Bluefin R02, Debian R03 and Alpine R28 are eligible for owner claims throu
 `fleet/task.md`. CachyOS R06 waits for R05. Windows's inherited assignment is complete;
 future native execution requires its subsequent operator dispatch. No old peer
 reservation, restoration assignment or second soak remains active.
+
+## 2026-09-05 — Fleet handoff and R28 cross-host fixture correction
+
+task: coordinator handoff plus bounded R28 CI correction | starting source
+`6b35f0c3cfdc863505affa51d8217f479b3061ba`; claim `8f83e72` | verdict:
+**shared-file handoff released; fixture correction implemented; hosted proof pending**
+
+The owner directed the paused fleet to proceed. R28's remaining CI work did not
+require a blanket CONTRACT reservation, so the published handoff transfers its
+next edit to Bluefin for R02, then Debian for R03. Debian can reconcile Windows
+entry 26 immediately in its own report. The unclaimed heavy R04/R05 rows now belong
+to Windows for its next operator invocation; Linux checks remain with stronger
+Linux hosts or CI. No remote agent was launched or existing source edit taken over.
+
+Hosted run [33945321135](https://github.com/sylin-org/koi/actions/runs/33945321135)
+at `1f65a0f4bebd7b485914660c70f11f7123b4aa66` passed all twelve preceding jobs,
+including all three OS workspace suites, but failed the final cross-host exchange
+at CA creation: the Alpine image had no machine ID while its explicit no-keychain
+configuration required the machine-bound vault. The failure is retained; R28 is
+not accepted and no required CI gate was removed.
+
+The correction gives the two isolated test containers distinct synthetic 32-hex
+machine IDs through read-only mounts and checks the actual IDs before enrollment.
+All code is in the existing Compose fixture and driver. Production vault behavior,
+security checks and platform machine identity remain unchanged. The test IDs are
+non-secret fixture data, not copies of any real fleet identity.
+
+Checks: shell syntax, local fixture validity/distinctness and mount assertions,
+surface ledger (30 rows), documentation leak guard and diff checks passed. This
+host has no Docker/Podman executable; the actual container exchange is left to
+replacement CI and is not claimed from static checks. No installed Koi, provider,
+firewall, peer, credential or native machine state changed in this session. R28's
+report contains the exact claim, exploration, local results and remaining evidence.

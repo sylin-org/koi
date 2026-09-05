@@ -56,6 +56,16 @@ ready() {
 ready node-a
 ready node-b
 
+# This image has no OS keychain, so its vault is bound to /etc/machine-id.
+# Assert the actual container identities before enrollment; a shared or missing
+# ID would invalidate the two-host fixture even if its network exchange passed.
+MACHINE_A="$($COMPOSE exec -T node-a cat /etc/machine-id)"
+MACHINE_B="$($COMPOSE exec -T node-b cat /etc/machine-id)"
+if [[ ! "$MACHINE_A" =~ ^[0-9a-f]{32}$ || ! "$MACHINE_B" =~ ^[0-9a-f]{32}$ || "$MACHINE_A" == "$MACHINE_B" ]]; then
+  echo "FAIL: cross-host fixtures require distinct valid machine IDs"
+  exit 1
+fi
+
 # Extract the `token` field from a `--json` invite response (no jq dependency).
 invite_token() {
   $COMPOSE exec -T node-a koi certmesh invite "$1" --ttl 60 --json 2>/dev/null \
