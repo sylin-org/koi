@@ -139,7 +139,7 @@ identity and complete hosted/native evidence, even if infrastructure tasks passe
 | [R02](R02-critical-documentation-truth.md) | R01 | accepted | ready | bluefin-linux | [reports/R02.md](reports/R02.md) | Complete on implementation source `299ae89`; six finding dispositions published and CONTRACT/LEDGER reservation released to Debian for R03 |
 | [R03](R03-discovery-record-correctness.md) | R01 | accepted | ready | debian-linux | [reports/R03.md](reports/R03.md) | Complete at source `d48d4df`; contract rows and Windows native proof `189ea32` reconciled |
 | [R04](R04-service-catalog.md) | R01, R03 | accepted | ready | windows | [reports/R04.md](reports/R04.md) | Source `b822811`; Windows installed-service run passes; CI `33949639819` supplies green Ubuntu workspace plus macOS and contract jobs |
-| [R05](R05-catalog-api-and-preferences.md) | R04 | queued | pending | windows | - | Reassigned from Debian for capacity; claim after R04 acceptance; arrange required Linux evidence |
+| [R05](R05-catalog-api-and-preferences.md) | R04 | in_progress | pending | windows | [reports/R05.md](reports/R05.md) | Claimed at Koi `4126ffe` / desktop `2503ab2`; implement typed catalog transport, durable preferences, stable legacy migration and required Windows/Linux evidence |
 | [R06](R06-rust-ui-and-family-foundation.md) | R01, R05 | queued | pending | cachyos-linux | - | See required subrows below |
 | [R07](R07-home-launchpad.md) | R05, R06 | queued | pending | cachyos-linux | - | Wait for dependencies |
 | [R08](R08-devices-and-comparison.md) | R07 | queued | pending | cachyos-linux | - | Wait for dependencies |
