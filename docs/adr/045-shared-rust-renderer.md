@@ -58,13 +58,45 @@ Chromium 152.0.7977.75. Exact commands and final results are in the R06 report.
   clipped text; removed the nested-scroll risk, added per-text-line bounds checks
   and fixed Chromium's full-page screenshot gutter cropping. Final captures pin
   the full 320 px width rather than cropping at the narrower document content size.
-- The installed daemon is still the old candidate and returns catalog HTTP 404.
-  Both readers therefore display **unavailable** and exit 1. These screenshots
-  and tests are not a live catalog row or installed-product acceptance.
+- The initial old installed daemon returned catalog HTTP 404, so the first
+  screenshots proved only unavailable/component behavior. The later guarded
+  R05 daemon upgrade and packaged `c497b3b` run below supersede that live-data gap.
 
 SSR reader sizes and normal dependency closures are measured in the report.
 They include the same HTTP client/assets but exclude a desktop shell; do not
 compare those numbers as full application size or user-observed performance.
+
+Native peer compiler requests are now complete at exact spike source `d2f6645`:
+Windows/MSVC (`51ea071`) and Alpine/musl (`b8f3062`) both passed the seven renderer
+tests, strict Clippy/format and Dioxus desktop dependency compilation. Neither peer
+launched a window. All three native compiler targets therefore have positive
+evidence; installed native behavior remains a separate gate.
+
+| Native SSR reader | Maud bytes | Dioxus bytes |
+|---|---:|---:|
+| CachyOS/glibc | 3,176,424 | 3,513,064 |
+| Windows/MSVC | 2,963,968 | 3,325,952 |
+| Alpine/musl | 3,277,728 | 3,618,112 |
+
+Desktop `c497b3b` adds an explicitly invoked candidate-A evaluation through
+[Tauri's asynchronous custom protocol](https://docs.rs/tauri/2.11.5/tauri/struct.Builder.html#method.register_asynchronous_uri_scheme_protocol),
+not a default UI replacement or extra server. Git-pinned shared components render
+the complete document after an authenticated Rust catalog read; only the existing
+main window's exact evaluation root is admitted. Locked source gates and release
+build pass. Its native Arch package and physical acceptance were exercised
+under the report's exact-baseline restoration guard. This remains an experiment,
+not a selection inferred from the SSR-reader size advantage.
+
+CachyOS packaged proof now passes at `c497b3b`: the installed workbench renders
+a real catalog row and original card with kernel-enforced external IP denial,
+320 px native client width, visible native keyboard focus, close-to-tray/reveal,
+singleton rejection and a safe missing-service page. The native Arch executable
+is 13,455,424 bytes with 15 direct ELF runtime imports (the existing GTK/WebKit
+family); package SHA and screenshots are in the report. One healthy upgraded
+daemon and one normal-mode packaged workbench remain; identity, settings and
+firewall are unchanged. Reduced-motion behavior is proven in offline Chromium,
+not yet a native OS-preference journey. Windows and Alpine packaged requests now
+name this exact source; their earlier compiler passes do not replace them.
 
 ## Production component map (proposal, not implemented)
 
@@ -90,10 +122,9 @@ No parallel serving path or permanent experiment mode is authorized by this ADR.
 
 ## Decision gate / next work
 
-Before selecting: finish exact-source native build gates, capture restoration,
-serially upgrade the one CachyOS daemon, render a **live** catalog row, and exercise
-the chosen integration through an installed, offline-capable workbench. Request
-actual musl and Windows build/native evidence with exact source and ownership.
+Before selecting: reconcile the requested exact-source musl and Windows packaged
+proof and the remaining native reduced-motion journey. CachyOS's build, guarded
+serial upgrade, live row and installed/offline integration are now proven.
 Headless/browser output alone cannot claim WebKit or desktop lifecycle parity.
 Windows-only physical gaps may later use the ledger's narrow readiness exception;
 missing Linux proof cannot. No readiness is granted by this proposed ADR.

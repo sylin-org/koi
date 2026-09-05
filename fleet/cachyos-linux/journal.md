@@ -377,3 +377,74 @@ no system mutation occurred. Test browser profiles were removed. The 30-minute
 initial renderer comparison is published and checkpointed, not promoted to
 linux-ready. Resume the claimed R06 native integration/restoration plan next;
 Windows/Alpine compiler requests remain pending their operator sessions.
+
+## 2026-09-05 14:34 EDT — R06 installed native Maud/Tauri lane passes
+
+task: `R06/renderer-decision` | run `r06-native-c497b3b-cachyos-20260905` |
+desktop `c497b3bc6ca2f99799b2f5e268a841f5c4d36d77`, shared probe `d2f6645`,
+daemon unchanged R05 product tree `e673af6` | verdict: **PASS for this measured
+CachyOS packaged lane; renderer selection and peer physical proof pending**.
+
+gates: locked desktop check/tests/strict Clippy/format pass (25 Rust tests, zero
+failures, one existing ignored); all 40 existing JS tests pass. Published source
+resolves Git-pinned shared Rust renderer/client without a sibling dependency.
+The unchanged native Arch recipe separately passed release build (4m44s), locked
+tests (4m58s, same 25/0/1) and package creation from exact detached `c497b3b`.
+Package `koi-desktop-git 0.1.3.r61.gc497b3b-1` is 4,341,968 bytes, SHA-256
+`c95ae640911e5624ac1fdee99ec35b056352f023252fd4c7c1c118553155bf20`;
+its embedded/installed executable is 13,455,424 bytes, SHA-256
+`316fc8fa06a2474fe4de75c445cd5f3ee77d1a2fe91ccb23a9b188033065843e`.
+The normal GTK/WebKit ELF dependency family remains (15 direct imports).
+
+native findings:
+
+1. Armed an integrity-checked root-private exact-baseline recovery checkpoint and
+   root 25-minute timer before any mutation. `koi install --operator test` upgraded
+   the sole service `1249009→1364590`, retaining standard ports and identity.
+   Installed daemon now matches the earlier full-workspace-gated release at
+   `dc1ebd15b8d1bf2d725c212912d78a5dd9581aa897c505596e8b0a268d9b3975`.
+   The old rejected Epic 002 artifact's historical failure is not reclassified.
+2. Stopped only verified old package workbench PID 1150, used ordinary `pacman -U`,
+   and launched the installed evaluation from `/` as PID 1365330. Cgroup BPF
+   ingress/egress programs 487/486 enforced deny-any/allow-loopback for this app;
+   no host UFW/provider/network change occurred. The actual WebKit window rendered
+   one real catalog row and the complete original card, with 320 px client width,
+   readable/reflowed navigation and a visible native Tab skip-link/focus outline.
+3. Second invocation exited/revealed the existing singleton. A real compositor
+   close kept its process/SNI alive; the real tray menu's Open Workbench item
+   revealed that same PID/window. `--poke` is refresh only, not reveal evidence.
+   With the service deliberately stopped, a fresh installed evaluation rendered
+   the safe unavailable copy/assets. No fixture row or extra daemon was used.
+4. The locked Maud headless reader then read 33 actual catalog services. Its offline
+   Chromium check rendered one row, zero clipped text/network assets, four 44 px
+   destinations, both source images, visible focus and zero animations under
+   reduced motion. Native GTK reduced-motion preference remains a separate pending
+   journey; it was not changed. Captures/hashes and harness corrections are in the
+   [R06 report](../../docs/prompts/delight/reports/R06-renderer-decision.md).
+
+koi state now: exactly one enabled/active/running root `/usr/local/bin/koi --daemon`,
+PID **1366166**, NRestarts 0, installed hash above, healthy loopback 5641; exactly
+one normal-mode package-owned `/usr/bin/koi-desktop`, PID **1366184**, healthy UI
+5640 and one Koi SNI, visibly authenticated. Pond remains disabled/5644 closed.
+The service restart after the missing-service check is the only later daemon
+generation. No temporary evaluation flag enters normal startup/autostart.
+
+restoration: unit, member identity, local-access policy, data-root config, DNS,
+health, Pond and trust file hashes are byte-exact. Avahi, resolved and UFW remain
+active/enabled; UFW bytes/mode/owner/mtime match exactly. GTK settings/kdeglobals
+are unchanged; `/etc/koi` and XDG autostart entries remain absent; `/run/koi.sock`
+is 0600 test:root. No installer debris remains. After checks, disarmed the timer
+under its lock; both evaluation units/cgroups, KWin scripts, input device and
+generated input helper are gone. No credential helper was created. Exact prior
+archive/package remain private in `/var/tmp/koi-r06-native.5AgVQlFu` (0700; archive
+SHA `b462145b6d5e33d3b596e007a2127baa5900584c1fd1a07a9d1e97d78915a0d7`);
+the privileged executable helper was removed. Build/package/capture material is
+retained under ignored `tools/koi-ui-spike/target/`; the temporary package directory
+was relocated there after system-mount trash was unavailable, preserving recovery.
+
+coordination: Windows `51ea071` and Alpine `b8f3062` close both exact-source native
+compiler requests, not their physical UI gates. Published new own-host packaged
+requests for exact desktop `c497b3b`; neither remote launch nor mutation occurred.
+Debian remains exempt from heavy work. R06/renderer-decision stays in_progress /
+pending until peer/native reduced-motion evidence and the measured decision;
+shared-shell/R07/R11 remain blocked by that dependency, not silently accepted.

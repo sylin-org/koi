@@ -1,6 +1,7 @@
 // Deliver a real compositor close request; Tauri must hide into its existing tray.
 const candidates = workspace.windowList().filter(window =>
-    window.caption === 'Koi renderer experiment' && window.normalWindow);
+    ['Koi renderer experiment', 'Koi — R06 renderer evaluation'].includes(window.caption)
+        && window.normalWindow);
 if (candidates.length !== 1) {
     throw new Error('Expected exactly one R06 evaluation window');
 }

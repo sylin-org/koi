@@ -332,14 +332,14 @@ Windows published `51ea071`: exact `d2f6645`, native MSVC, both renderer tests
 7/7, strict Clippy/format and Dioxus desktop dependency check passed. Independent
 Maud/Dioxus stripped SSR readers are 2,963,968 / 3,325,952 bytes; normal dependency
 closures are 145 / 190 lines (desktop alternative 326). See its
-[owned journal](../../../fleet/windows/journal.md#2026-09-05-29--r06-native-windows-renderer-compiler-probe)
+[owned journal](../../../../fleet/windows/journal.md#2026-09-05-29--r06-native-windows-renderer-compiler-probe)
 for hashes, native runtime prerequisites and unchanged deployment attestation.
 
 Alpine published `b8f3062`: exact `d2f6645`, native musl 1.2.6, Rust 1.98.0,
 both renderer tests 7/7, strict Clippy/format and desktop dependency check passed
 with its established shared-musl CRT flag. Independent SSR readers are 3,277,728 /
 3,618,112 bytes, both static PIE without DT_NEEDED. See its
-[owned journal](../../../fleet/alpine-linux/journal.md#2026-09-05-1806-utc--r06-native-musl-renderer-compiler-probe)
+[owned journal](../../../../fleet/alpine-linux/journal.md#2026-09-05-1806-utc--r06-native-musl-renderer-compiler-probe)
 for hashes and unchanged OpenRC/package/provider deployment attestation.
 
 Both requests are completed compiler evidence only. No peer launched a reader or
@@ -373,3 +373,166 @@ embedded/installed executable `cf6f256aef2254cc3ef8f19fcf8892c60d8b32463748ed6de
 The prepared root-private checkpoint is `/var/tmp/koi-r06-native.5AgVQlFu`, mode
 0700. Its archive contains identity material and is deliberately not published.
 No installed transition has happened at this source/preparation checkpoint.
+
+## CachyOS packaged native proof — 2026-09-05 14:27–14:34 EDT
+
+Run `r06-native-c497b3b-cachyos-20260905` **passes its measured CachyOS lane**.
+R06/renderer-decision is still pending; this does not select a renderer, complete
+the shared-shell slice, or claim untested physical targets.
+
+### Exact artifact and serial deployment
+
+- Desktop source: `c497b3bc6ca2f99799b2f5e268a841f5c4d36d77`, checked before and
+  after the unchanged Arch recipe. Native `build()` passed in 4m44s; `check()` in
+  4m58s, with 25 passing Rust tests, zero failures and one existing ignored case.
+- Native package `koi-desktop-git-0.1.3.r61.gc497b3b-1-x86_64.pkg.tar.zst`:
+  4,341,968 bytes, SHA-256
+  `c95ae640911e5624ac1fdee99ec35b056352f023252fd4c7c1c118553155bf20`.
+  Embedded and installed executable: 13,455,424 bytes, SHA-256
+  `316fc8fa06a2474fe4de75c445cd5f3ee77d1a2fe91ccb23a9b188033065843e`.
+  `readelf -d` lists 15 direct ELF runtime imports in the existing GTK/WebKit family.
+  The recipe warns about an embedded `$srcdir` reference; strings inspection
+  confirms a compiled source-location string. Assets are `include_str!/include_bytes!`
+  data, not files loaded from that path; launch uses neutral working directory `/`.
+- Root-private checkpoint `/var/tmp/koi-r06-native.5AgVQlFu`, mode 0700,
+  baseline archive SHA-256
+  `b462145b6d5e33d3b596e007a2127baa5900584c1fd1a07a9d1e97d78915a0d7`.
+  Archive/old package/helper integrity passed before arming a root 25-minute
+  `koi-r06-native-rollback.timer`; it was active before the first install.
+- Supported `target/release/koi install --operator test` serially upgraded the
+  existing service, PID `1249009 → 1364590`, preserving standard ports. Installed
+  daemon matches the earlier fully gated unchanged R05 product tree (`e673af6`):
+  SHA-256 `dc1ebd15b8d1bf2d725c212912d78a5dd9581aa897c505596e8b0a268d9b3975`.
+  This replaces the old rejected Epic 002 deployment without rewriting its failure.
+- Retired only verified package-owned workbench PID `1150`, upgraded through
+  `pacman -U`, and launched `/usr/bin/koi-desktop --renderer-probe` as test from `/`.
+  Pacman's existing snapshot hooks created ordinary root snapshots 57/58.
+  There was no second daemon, alternate data root, port remap or peer mutation.
+
+### Visible and behavioral results
+
+1. Evaluation PID `1365330` ran in a transient unit with `IPAddressDeny=any`,
+   `IPAddressAllow=localhost`. `bpftool cgroup show` confirmed both real ingress
+   and egress programs (487/486) attached to its cgroup. This blocks external IP
+   traffic for the workbench and its children while leaving the machine network,
+   local-control Unix socket and existing loopback endpoints intact. No UFW rule
+   or provider changed. The native view displayed one real service, its declared
+   "Found on the network" condition and snapshot revision 108, not fixture data.
+2. The original card and image render fully offline. KWin's settled observation
+   records frame `{x:80,y:80,width:320,height:900}`, native client
+   `{x:80,y:108,width:320,height:872}`. Top navigation and critical text fit; a
+   native PageDown exposed the complete original card. The first KWin print was
+   made before asynchronous resizing settled; the helper now observes the settled
+   geometry instead of treating the old size as final evidence.
+3. A real Tab event through existing user-authorized libevdev/uinput produced
+   the visible skip-link and blue focus outline in WebKit. The two-second helper
+   creates only a navigation-key device and removes it on exit; no new permission,
+   package, input daemon, text, Enter or pointer action was required.
+4. A second `--renderer-probe` invocation exited with "already running; revealed
+   it", preserving PID `1365330`. KWin delivered the actual close request; the
+   process and sole Koi SNI remained. Invoking the real SNI menu's **Open Workbench**
+   item (DBusMenu ID 3) revealed that same process and 320 px client again.
+   `--poke` only refreshes and is not reveal evidence; this Ayatana SNI has no
+   Activate handler, so the actual menu route was used. No product defect was
+   inferred from those harness route corrections.
+5. Stopped the evaluation and the existing service, then launched the same
+   installed evaluation package as PID `1366029`. With service MainPID 0/inactive,
+   WebKit displayed "Cannot read the local catalog" plus its embedded original
+   assets; no live row or success state was fabricated. Stopped that evaluation,
+   restarted the service and launched the normal installed workbench without flags.
+6. Rebuilt the locked Maud headless reader using its existing feature, read the
+   real local catalog (33 services), and passed the offline Chromium smoke again:
+   one rendered row, unavailable=false, zero clipped text, four 44 px destinations,
+   both images decoded, zero network assets, visible keyboard focus and zero active
+   animations under reduced motion. The first reader command hit the previously
+   Dioxus-only executable and refused Maud with exit 2; no false live result was
+   taken from it. Native GTK reduced-motion preference was **not** changed/tested.
+
+The offline evaluation cgroup reported 259.9 MiB peak memory and 55.270 CPU seconds
+over 3m44.956s while these interactions ran. This is a single observed run, not a
+comparative performance benchmark. No corresponding Dioxus desktop runtime metric
+has been measured. Existing Ayatana deprecation warnings appeared in both modes;
+no Koi warning/error appeared in the installed daemon during this lane.
+
+Visible captures remain under ignored `tools/koi-ui-spike/target/`:
+
+| Capture | SHA-256 |
+|---|---|
+| `native-live-320.png` | `961452dfef56d254c0899a11af23681748754525453b8755d050489430481235` |
+| `native-focus-320.png` | `2ab922167067c5ddcfbfd85c9e525a1b3f060a42ac339797f8f06e30bd402629` |
+| `native-card-320.png` | `0e4c1c83596eb592d045e56c56cf406063868dced9514702faa9869bec747fda` |
+| `native-tray-reveal.png` | `418a0ccbb00d43e1fc938145c6fd55434606705471b8bf635ecf5eb209492344` |
+| `native-unavailable-320.png` | `fd228078025ebfe33c2b12169cc6368576b6a2b3d161e858168c98144d3aa678` |
+| `native-normal-restored.png` | `54cbf886516ebcfb5fd1354ec7333cc85527d2e6bc1d11ff9556732b94570685` |
+
+### Final restoration and handoff
+
+Exactly one enabled/active/running `/usr/local/bin/koi --daemon`, PID `1366166`,
+NRestarts 0, and one package-owned normal `/usr/bin/koi-desktop`, PID `1366184`,
+remain. Normal UI visibly reports authenticated posture, UI health and daemon
+health pass, and exactly one Koi SNI remains. Only normal 5640/5641 loopback
+listeners are present; Pond 5644 is closed. The default workbench retains its
+normal 1100 px client width; `--renderer-probe` is absent from its arguments and
+autostart. The originally absent XDG autostart entry remains absent.
+
+Unit, member identity, local-access policy, data-root config, DNS, health, Pond
+intent and trust files match the pre-run hashes exactly. Avahi, resolved and UFW
+remain active/enabled. Both UFW files match the prior hashes and metadata exactly;
+GTK settings and kdeglobals are unchanged. `/etc/koi` remains absent; local-control
+socket is 0600 test:root. No installer backup/transaction debris remains.
+
+After these checks, disarmed the timer under the restore lock, marked the checkpoint
+accepted and removed its executable helper. Both offline evaluation units/cgroups,
+the timer, KWin scripts and temporary input device are gone. No credential helper
+was created. Keep the root-private archive and old package for recovery; never
+publish their contents. The generated input executable was removed. The fresh
+package/build-source directory was moved into ignored `target/native/` after the
+system mount refused desktop trash; nothing from the build was irrecoverably
+deleted and the shared Cargo target was preserved. Native package and build logs
+remain available locally. No change to CONTRACT.md or root product source/lock was
+made, so those files remain available for R20.
+
+## Bounded packaged peer requests
+
+Requests: `R06/windows-packaged-renderer` and `R06/alpine-packaged-renderer`.
+Each hat must acknowledge in its own journal before its own native mutation.
+No remote agent launch or peer mutation is authorized; Debian receives no build.
+The next owner invocation may service this ready evidence request before R20;
+an already claimed disjoint task need not be abandoned or duplicated.
+
+Exact desktop source: `c497b3bc6ca2f99799b2f5e268a841f5c4d36d77`. Shared renderer/
+client source is pinned inside that manifest to `d2f6645`. Required catalog daemon
+product source: accepted R05 `e673af61b624a7603946b02af57d12cf20bc6aba` (or explicitly
+reconciled already accepted successor). Reuse an already accepted installed R05
+artifact; do not rebuild/reinstall it ceremonially. Alpine's last journal still
+records the older deployment, so first claim its exact own-platform package paths,
+run required native daemon gates and use its ordinary signed APK/OpenRC upgrade
+with captured identity/config/ports and interruption-safe recovery. Do not migrate
+its owned 5651 port or revive Avahi merely for this request.
+
+1. Verify clean/reserved source and native provenance; run locked desktop tests,
+   strict all-target Clippy, formatting, existing 40 JS tests and release build.
+   Build/install through the existing native package recipe. Claim only any required
+   OS-specific recipe pin update; do not change shared renderer, root types, desktop
+   Cargo version/lock or security policy without returning the issue to CachyOS.
+2. Capture prior exact service/package, durable recovery artifacts and restored
+   startup/identity/provider/firewall state. Arm interruption-safe rollback before
+   the serial stop/install/start. Keep one daemon and one installed workbench.
+3. Quit the old workbench; launch the package-owned executable with explicit
+   `--renderer-probe` from a neutral directory. Capture the real row/original card,
+   320 px navigation/readability, native keyboard focus and native reduced-motion
+   preference where safely controllable. Prove embedded assets without external
+   network access using a scoped mechanism; do not change another host/network.
+4. Check singleton, actual tray close/reveal and safe missing-service behavior with
+   recovery. Finish with one healthy daemon and one **normal-mode** packaged
+   workbench, exact restored temporary state and no credential/helper residue.
+5. Publish exact sources, installed/package hashes, package/runtime dependencies,
+   screenshots, commands/results, limitations and final process/port/identity
+   attestations in the owning journal. Mark only this request completed/failed.
+   Missing physical infrastructure is pending evidence, never an invented pass.
+
+After peer reconciliation, finish the remaining native reduced-motion journey,
+make the measured ADR selection, reserve the selected production `koi-ui`/adapter
+paths and retire both spike variants in the required follow-on slice. Until then,
+R06, shared-shell, R07 and R11 remain pending; this successful CachyOS lane is not
+permission to install an experimental default UI or publish Pond's operator view.

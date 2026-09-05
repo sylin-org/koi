@@ -30,7 +30,8 @@ requires immediate investigation, never a passing checkpoint.
 evaluation window using the [KWin API](https://develop.kde.org/docs/plasma/kwin/api/).
 Load each by name only for its check, then unload it; they set no persistent rule.
 `tab-once.c` uses installed libevdev to send one real Tab event to the active
-window, with automatic device removal when it exits (including interruption).
+window (or one PageDown with explicit `--page-down` for a scrolled card capture),
+with automatic device removal when it exits (including interruption).
 Build with `cc -Wall -Wextra -Werror -O2 tab-once.c $(pkg-config --cflags --libs
 libevdev) -o ../target/tab-once` using the appropriate working-directory paths.
 Run as the existing desktop user, never grant new input permissions, and activate

@@ -179,7 +179,7 @@ Bluefin; Windows physical cases remain pending for the Windows hat.
 
 | Slice | Additional prerequisite | Owner | Status | Readiness | Deliverable | Evidence |
 |---|---|---|---|---|---|---|
-| R06/renderer-decision | - | cachyos-linux | in_progress | pending | Isolated Maud/Tauri versus Dioxus comparison claimed; live/native evidence and decision pending | [report](reports/R06-renderer-decision.md) |
+| R06/renderer-decision | - | cachyos-linux | in_progress | pending | All three native compiler targets pass; packaged CachyOS Maud/Tauri live/offline/focus/tray/unavailable proof passes; peer packaged proof and decision pending | [report](reports/R06-renderer-decision.md) |
 | R06/shared-shell | R06/renderer-decision | cachyos-linux | queued | pending | Selected reusable shell/assets/data adapter; no remaining production spike variant | - |
 | R11/result-contract | - | alpine-linux | queued | pending | Typed install result, artifact compatibility, durable recipe/receipt ownership | - |
 | R11/restart-and-rollback | R11/result-contract | alpine-linux | queued | pending | Interrupted install/upgrade recovery, idempotency and old-state preservation | - |
@@ -224,6 +224,8 @@ fresh run ID and restoration. Each peer writes evidence only in its own journal.
 | `R03/windows-native-reconciliation` | windows | debian-linux | Reconcile completed issue 004 native proof with [R03](reports/R03.md); no peer mutation | completed | [Windows journal](../../../fleet/windows/journal.md); [issue 004](../../../fleet/windows/issues/004-windows-dnsapi-meta-browse-resource-growth.md) |
 | `R06/windows-renderer-compile` | cachyos-linux | windows | Exact `d2f6645` native compiler/dependency probe; no installed-host mutation; [procedure](reports/R06-renderer-decision.md#bounded-peer-compile-requests) | completed | [Windows journal](../../../fleet/windows/journal.md#2026-09-05-29--r06-native-windows-renderer-compiler-probe) |
 | `R06/alpine-renderer-compile` | cachyos-linux | alpine-linux | Exact `d2f6645` musl compiler/dependency probe; no installed-host mutation; [procedure](reports/R06-renderer-decision.md#bounded-peer-compile-requests) | completed | [Alpine journal](../../../fleet/alpine-linux/journal.md#2026-09-05-1806-utc--r06-native-musl-renderer-compiler-probe) |
+| `R06/windows-packaged-renderer` | cachyos-linux | windows | Desktop `c497b3b` native package/live evaluation on own host only; acknowledge before mutation; [procedure](reports/R06-renderer-decision.md#bounded-packaged-peer-requests) | requested | Pending |
+| `R06/alpine-packaged-renderer` | cachyos-linux | alpine-linux | Desktop `c497b3b` native musl package/live evaluation on own host only; acknowledge before mutation; [procedure](reports/R06-renderer-decision.md#bounded-packaged-peer-requests) | requested | Pending |
 
 States: requested, acknowledged, running, completed, failed, cancelled. A scheduled
 mutation requires peer acknowledgement before a candidate/run is armed. Do not
