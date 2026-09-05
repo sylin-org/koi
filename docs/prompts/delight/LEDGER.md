@@ -157,7 +157,7 @@ identity and complete hosted/native evidence, even if infrastructure tasks passe
 | [R17](R17-reversible-service-sharing.md) | R05, R11, R16 | queued | pending | debian-linux | - | See required subrows below |
 | [R18](R18-share-service-experience.md) | R07, R16, R17 | queued | pending | cachyos-linux | - | Wait for dependencies |
 | [R19](R19-url-diagnosis.md) | R04, R07 | queued | pending | debian-linux | - | Wait for dependencies |
-| [R20](R20-authorized-service-certificates.md) | R01, R04 | queued | pending | windows | - | Dependencies accepted; reassigned from Debian by owner direction on 2026-09-05; claim exact source paths before implementation |
+| [R20](R20-authorized-service-certificates.md) | R01, R04 | in_progress | pending | windows | [reports/R20.md](reports/R20.md) | Exact service-name grant, host certificate lifecycle and account-bound ACME authorization claimed at `c9def8f` |
 | [R21](R21-secure-service-operation.md) | R11, R19, R20 | queued | pending | debian-linux | - | See required subrows below |
 | [R22](R22-secure-access-and-client-onboarding.md) | R07, R15, R21 | queued | pending | cachyos-linux | - | See required subrows below |
 | [R23](R23-renewal-and-recovery.md) | R21, R22 | queued | pending | debian-linux | - | Wait for dependencies |
