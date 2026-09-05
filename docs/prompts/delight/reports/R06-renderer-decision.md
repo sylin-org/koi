@@ -204,3 +204,43 @@ No peer artifact or service is reserved. Expected result is truthful native
 compile/test evidence (or exact failing prerequisite), not a renderer selection.
 Do not install new system packages under this compile-only request; report the
 missing prerequisite for a separately scoped native step. Debian has no work here.
+
+## Preparation gates reconciled — 2026-09-05 13:35 EDT
+
+The separate gate chain completed with exit 0:
+
+- `KOI_NO_CREDENTIAL_STORE=1 cargo test --workspace --locked`: **1,939 passed,
+  0 failed, 15 ignored** across 58 reported suites/doctest groups. Ignored cases
+  are not accepted native evidence. Initial compilation/linking took 13m 32s.
+- `cargo check --workspace --all-targets --locked`: pass (39.73s).
+- `KOI_NO_CREDENTIAL_STORE=1 cargo clippy --workspace --all-targets --locked --
+  -D warnings`: pass (38.11s).
+- `cargo fmt --all --check`: pass.
+- `cargo build --locked --release -p koi-net`: pass (2m 18s). Prepared, **not
+  installed**, `target/release/koi`: 64,844,120 bytes, SHA-256
+  `dc1ebd15b8d1bf2d725c212912d78a5dd9581aa897c505596e8b0a268d9b3975`.
+
+These check the unchanged R05 product tree: `git diff e673af6 HEAD -- crates
+Cargo.toml Cargo.lock` is empty. Gate preparation began at `2593c7e`; only the
+isolated probe and documentation were published while those gates ran. The release
+phase completed with source head `78955474f6083d2048e1de1cced3413de6f6cd2c`.
+No changed product source, lock or installer was introduced during compilation.
+
+Source conformance also passed: the extracted CSS prefix and original card match
+the desktop source exactly (terminal whitespace normalized); all 37 root tokens
+match the discovered Ghostlight source except the three intentional Koi accent
+tokens. The original PNG is byte-identical. Both temporary browser profiles were
+removed; generated evidence remains ignored under the experiment's `target/`.
+
+Final installed-state check: systemd active/running, MainPID `1249009`, NRestarts
+0; `pgrep -x koi` returns that one PID and `pgrep -x koi-desktop` returns the
+unchanged package-owned PID `1150`; loopback health is OK. Installed daemon hash
+remains the recorded old candidate. Both repositories are clean and published.
+
+The initial 30-minute comparison is checkpointed with real source/build/component
+evidence, **not** a selected renderer. R06/renderer-decision remains in_progress
+and pending; shared-shell/R07/R11 are not unblocked. Next session resumes this
+claim: reconcile peer compiler results, specify/claim the native packaged integration
+and interruption-safe restoration, then serially upgrade the one installed daemon
+and workbench for the live-row/offline/native acceptance cases. Do not deploy the
+prepared binary or mark linux-ready merely because the source gates pass.

@@ -54,9 +54,10 @@ Chromium 152.0.7977.75. Exact commands and final results are in the R06 report.
   it is not proof that Dioxus is broken.
 - Both offline Chromium pages passed 320 px layout, four 44 px navigation targets,
   visible keyboard skip-link/focus, source image loading, no network assets and
-  zero active animations under reduced motion. The first visual inspection found
-  nested-scroll clipping that a document-width assertion missed; corrected the
-  experiment override and added per-text-line bounds checks.
+  zero active animations under reduced motion. The first visual capture showed
+  clipped text; removed the nested-scroll risk, added per-text-line bounds checks
+  and fixed Chromium's full-page screenshot gutter cropping. Final captures pin
+  the full 320 px width rather than cropping at the narrower document content size.
 - The installed daemon is still the old candidate and returns catalog HTTP 404.
   Both readers therefore display **unavailable** and exit 1. These screenshots
   and tests are not a live catalog row or installed-product acceptance.

@@ -356,3 +356,24 @@ operator invocation. Debian receives no build work. CachyOS's separate existing
 workspace gates are still preparation, not native acceptance. Next: reconcile
 those gates, then claim the exact own-host installation/packaged UI transition
 and restoration before live acceptance. CONTRACT.md remains unreserved for R20.
+
+## 2026-09-05 13:35 EDT — R06 source preparation gates complete
+
+task: `R06/renderer-decision` checkpoint | experiment `d2f6645`; peer dispatch
+`78955474f6083d2048e1de1cced3413de6f6cd2c` | verdict: **source preparation passes;
+renderer/native acceptance pending**.
+
+The unchanged R05 product tree passed full workspace tests (1,939 passed, zero
+failed, 15 ignored), all-target check, strict all-target Clippy, formatting and
+locked release build. Prepared `target/release/koi` is 64,844,120 bytes, SHA-256
+`dc1ebd15b8d1bf2d725c212912d78a5dd9581aa897c505596e8b0a268d9b3975`; it was not
+installed and is not an R29 candidate. Source identity/timing and the proof of
+unchanged product files throughout these gates are recorded in the R06 report.
+
+Final real deployment remains exactly one active/running systemd daemon PID
+`1249009`, NRestarts 0, old installed hash `b2079cd3…c54cdc3`, loopback health OK,
+and one package-owned desktop PID `1150`. No host/peer restoration was needed;
+no system mutation occurred. Test browser profiles were removed. The 30-minute
+initial renderer comparison is published and checkpointed, not promoted to
+linux-ready. Resume the claimed R06 native integration/restoration plan next;
+Windows/Alpine compiler requests remain pending their operator sessions.
