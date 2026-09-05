@@ -313,3 +313,16 @@ is still pending; CachyOS R06 remains gated on the R05 owner's acceptance.
 
 This session changed documentation only. No service, build artifact, provider,
 firewall, peer or credential was mutated. Documentation and diff guards passed.
+
+## 2026-09-05 — R20 capacity handoff; R06 next
+
+task: coordinator assignment | starting source `a892808` | verdict: R20 assigned,
+not implemented or accepted. The owner approved proceeding with CachyOS R06 and
+moving dependency-ready R20 from the weak Debian thin client to Windows. R01/R04
+are accepted and R20 has no active claim or code to transfer. Updated the sole
+ledger and dispatcher; Windows must publish its own exact-path claim on its next
+operator invocation. Shared manifests/lockfiles/CONTRACT edits remain serialized
+with R06 through ordinary claims. No remote agent was launched or host mutated.
+
+Checks: documentation leak, surface and diff guards. Next local action: complete
+R06 exploration and publish its renderer-decision claim before implementation.

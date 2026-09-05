@@ -15,7 +15,9 @@ All rows are queued at creation. No implementation or native validation is impli
 - Windows physical evidence: reserved for a later operator-dispatched Windows session.
 - Current dispatch: R02/R03/R04/R05 and R28 are accepted. R05 is complete at Koi
   `e673af6` and desktop `ba39faf`; Windows installed proof and complete hosted CI
-  `33974240044` pass. CachyOS R06 is dependency-ready.
+  `33974240044` pass. CachyOS R06 is dependency-ready. The owner's instruction to
+  proceed assigns dependency-ready R20 to Windows; its next invocation claims that
+  task after any ready native-evidence request. Debian does not build R20.
 - Capacity constraint (owner instruction, 2026-09-04): Debian is a very weak thin
   client. Preserve its current R03 claim through its small documentation handoff;
   R04/R05 are now reassigned to Windows. Before any later heavy Debian row is
@@ -155,7 +157,7 @@ identity and complete hosted/native evidence, even if infrastructure tasks passe
 | [R17](R17-reversible-service-sharing.md) | R05, R11, R16 | queued | pending | debian-linux | - | See required subrows below |
 | [R18](R18-share-service-experience.md) | R07, R16, R17 | queued | pending | cachyos-linux | - | Wait for dependencies |
 | [R19](R19-url-diagnosis.md) | R04, R07 | queued | pending | debian-linux | - | Wait for dependencies |
-| [R20](R20-authorized-service-certificates.md) | R01, R04 | queued | pending | debian-linux | - | Wait for dependencies |
+| [R20](R20-authorized-service-certificates.md) | R01, R04 | queued | pending | windows | - | Dependencies accepted; reassigned from Debian by owner direction on 2026-09-05; claim exact source paths before implementation |
 | [R21](R21-secure-service-operation.md) | R11, R19, R20 | queued | pending | debian-linux | - | See required subrows below |
 | [R22](R22-secure-access-and-client-onboarding.md) | R07, R15, R21 | queued | pending | cachyos-linux | - | See required subrows below |
 | [R23](R23-renewal-and-recovery.md) | R21, R22 | queued | pending | debian-linux | - | Wait for dependencies |

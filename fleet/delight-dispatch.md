@@ -11,6 +11,13 @@ reservation and assigns the unclaimed R04/R05 source tasks to Windows under the
 owner's capacity guidance and instruction to proceed. Each host still requires
 its own operator invocation; this file never launches a remote session.
 
+After R04/R05 acceptance, the owner directed the next work to proceed: CachyOS
+executes R06 and Windows receives the unclaimed, dependency-ready R20 service
+certificate task from Debian. Windows's next invocation selects R20 after ready
+peer requests. Claim exact paths and serialize any shared manifest, lockfile or
+CONTRACT.md changes with R06; neither task reserves those files implicitly.
+This assignment does not launch Windows or authorize another host's mutation.
+
 ## Read and route
 
 Read [the epic](epics/003-delight-realignment.md), the
@@ -23,7 +30,7 @@ and status authority. Read only the selected prompt's source set after routing.
 |---|---|
 | cachyos-linux | R01 coordination and product contract, Rust UI/Sylin integration, usability, candidate reconciliation |
 | debian-linux | Finish R03 documentation/evidence handoff; lightweight headless/native work; later heavy rows require reassignment |
-| windows | R04 catalog and R05 preferences/API implementation when dependencies pass; Windows native evidence |
+| windows | R04/R05 completed; R20 service certificates next; Windows native evidence |
 | bluefin-linux | Documentation, container journey, SDKs/integration, Windows source preparation, immutable native recipe |
 | alpine-linux | Install contracts, Linux firewall integration, CI, CLI/MCP/embedding and musl/native portability |
 
