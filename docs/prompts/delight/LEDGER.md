@@ -137,7 +137,7 @@ identity and complete hosted/native evidence, even if infrastructure tasks passe
 |---|---|---|---|---|---|---|
 | [R01](R01-contract-and-handover.md) | - | accepted | ready | cachyos-linux | [reports/R01.md](reports/R01.md) | Complete; contract and inherited-run restoration verified |
 | [R02](R02-critical-documentation-truth.md) | R01 | accepted | ready | bluefin-linux | [reports/R02.md](reports/R02.md) | Complete on implementation source `299ae89`; six finding dispositions published and CONTRACT/LEDGER reservation released to Debian for R03 |
-| [R03](R03-discovery-record-correctness.md) | R01 | implemented | pending | debian-linux | [reports/R03.md](reports/R03.md) | Reconcile Windows proof at `189ea32` now; finish mDNS/D04 contract rows after Bluefin's handoff; documentation-only tail |
+| [R03](R03-discovery-record-correctness.md) | R01 | implemented | pending | debian-linux | [reports/R03.md](reports/R03.md) | Windows proof at `189ea32` reconciled; wait for Bluefin's explicit CONTRACT handoff, then finish R03 rows/doc guards and promote if unchanged |
 | [R04](R04-service-catalog.md) | R01, R03 | queued | pending | windows | - | Reassigned from Debian for capacity; claim on Windows when R03 is accepted; arrange Linux checks with stronger hosts/CI |
 | [R05](R05-catalog-api-and-preferences.md) | R04 | queued | pending | windows | - | Reassigned from Debian for capacity; claim after R04 acceptance; arrange required Linux evidence |
 | [R06](R06-rust-ui-and-family-foundation.md) | R01, R05 | queued | pending | cachyos-linux | - | See required subrows below |
@@ -218,7 +218,7 @@ fresh run ID and restoration. Each peer writes evidence only in its own journal.
 
 | Request / task | Requesting hat | Peer hat | Mode / report | State | Peer evidence |
 |---|---|---|---|---|---|
-| `R03/windows-native-reconciliation` | windows | debian-linux | Reconcile completed issue 004 native proof with [R03](reports/R03.md); no peer mutation | requested | [Windows journal](../../../fleet/windows/journal.md); [issue 004](../../../fleet/windows/issues/004-windows-dnsapi-meta-browse-resource-growth.md) |
+| `R03/windows-native-reconciliation` | windows | debian-linux | Reconcile completed issue 004 native proof with [R03](reports/R03.md); no peer mutation | completed | [Windows journal](../../../fleet/windows/journal.md); [issue 004](../../../fleet/windows/issues/004-windows-dnsapi-meta-browse-resource-growth.md) |
 
 States: requested, acknowledged, running, completed, failed, cancelled. A scheduled
 mutation requires peer acknowledgement before a candidate/run is armed. Do not
