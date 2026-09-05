@@ -1,7 +1,7 @@
 # Epic 003 product contract and campaign handoff
 
 Contract version: **1**
-Status: **R01 contract complete; activation waits for one Windows process-restoration check**
+Status: **accepted; R01/G0 ready and campaign active**
 
 This is the source contract for Epic 003. It is usable without conversation history.
 Names marked **existing** resolve in the tree at the R01 source revision. Names marked
@@ -15,19 +15,21 @@ not evidence that a second alternative owner should be created.
 - Execution authority: the owner delegated the work to the Linux machines through
   `fleet/task.md` on 2026-09-04. Once R01 is accepted, no additional routine
   plan-approval question is required.
-- Product implementation gate: R01 acceptance. Contract preparation does not release
-  R02-R30 by itself.
+- Product implementation gate: R01 accepted after final restoration evidence at
+  `b18302b200eba3049fec6b7e00c701ac9b4cff64`; fixed-owner dependency selection is active.
 - Koi source when the R01 claim was published: `c5805859ad3976c2504d16cac8ff62b94755ad2d`.
   The claim's starting revision was `e2c4a8266ff07ffd85846b672e1be84b5fbc1e42`.
 - koi-desktop source observed by the claim: `4c05ed22dfdc2c11fd220eb3a65a64abad05e299`.
+- Acceptance source: Koi `b18302b200eba3049fec6b7e00c701ac9b4cff64` plus this
+  documentation activation; koi-desktop remains clean at the recorded revision.
 - Branch/publication mode: fixed Linux owners claim and publish coherent changes
   directly to `origin/dev` under the fleet protocol. No public release, tag, signing,
   package submission, or remote-agent launch is authorized.
 - Windows physical evidence: reserved for a later operator-dispatched Windows hat.
   Linux implementation may become `linux_ready`; it cannot become Windows or full
   native acceptance.
-- Epic 002 disposition: **collector campaign complete; failed candidate rejected;
-  handover cleanup pending**. Frozen source
+- Epic 002 disposition: **closed unsuccessful; failed candidate rejected;
+  restoration verified**. Frozen source
   `b3eb47e08817045f9371703d780ada9aab00995d`, run
   `v1-20260904-od3-b3eb47e`, sampled for the full six hours. Debian and Alpine
   passed 14/14 with 361/361 Bluefin reads and exact cleanup. Bluefin served all
@@ -36,10 +38,12 @@ not evidence that a second alternative owner should be created.
   growth (`+280`, limit 8); issue 004 assigns the diagnosed DNSAPI PTR-owner defect
   to R03 after activation. Windows removed run residue and preserved configuration,
   policy, artifact, service, workbench, provider, and disabled-Pond identity, but its
-  live service process remained resource-elevated. R01 therefore remains
-  `implemented/pending` only until Windows restarts that unchanged SCM service once
-  and publishes the bounded restoration evidence dispatched by Epic 002. No rebuild,
-  corrected-candidate test, peer reservation, or second soak is part of that cleanup.
+  live service process remained resource-elevated until the final cleanup. Windows
+  journal entry 25 at `b18302b` proves one SCM restart to PID `24100` and two
+  observations at 340/62 and 342/63 handles/threads, below the required 364/75
+  envelope, with exact artifact/state and recovery-task removal. R01 is now
+  `accepted/ready`. This restoration does not fix issue 004 or accept the failed
+  candidate; R03 retains the correction and later Windows native evidence.
 
 ## Binding architecture
 
@@ -576,10 +580,10 @@ acceptance. It is not a claim that the new service experience exists.
 
 | Surface | Current evidence entering R01 | Epic 003 requirement |
 | --- | --- | --- |
-| Windows SCM | frozen OD-3 candidate ready; native six-hour verdict pending | install/catalog/share/secure source plus later Windows physical proof |
+| Windows SCM | OD-3 six-hour resource gate failed; candidate rejected; final SCM restoration passed at `b18302b` | R03 correction and native resource proof; install/catalog/share/secure source plus later Windows physical proof |
 | glibc systemd (CachyOS/Debian) | exact installed lifecycle/local control/mDNS/Pond and short collectors accepted | fresh install, catalog, sharing, secure path, candidate rerun |
 | immutable Fedora/Bluefin | exact frozen systemd candidate and packaged desktop ready | recommended immutable install + desktop/headless journey |
-| musl OpenRC/Alpine | exact APK/OpenRC candidate ready; native six-hour verdict pending | daemon/headless catalog, sharing where supported, package/candidate rerun |
+| musl OpenRC/Alpine | exact APK/OpenRC six-hour collector passed 14/14 with restoration | daemon/headless catalog, sharing where supported, package/candidate rerun |
 | Plasma/GNOME desktop | installed workbench/tray/startup evidence on recorded artifacts | one R06-selected shared Rust UI and complete user journeys |
 | headless web | daemon/Pond read-only evidence | full local operator web where authenticated plus bounded Pond projection |
 | mDNS providers | Avahi, resolved/native, OpenRC native and Windows DNS-SD evidence on recorded artifacts | automatic second-machine browsing + publication + resolution on final candidate |
@@ -646,8 +650,7 @@ correlation and eviction fixtures, repository interruption/migration tests, loca
 remote authorization tests, and retained-owner cancellation/shutdown tests. Native and
 second-client evidence remains separate from those repository tests.
 
-Current next action: Windows performs only Epic 002's unchanged-artifact SCM
-restart/resource restoration check and publishes its journal. CachyOS then closes
-Epic 002 with the preserved failed verdict, sets `Campaign: active`, accepts R01,
-and releases R02, R03, and R28 according to the ledger. R03 owns issue 004's product
-correction. No second six-hour soak is scheduled.
+Current next action: Bluefin claims R02, Debian claims R03 including issue 004,
+and Alpine claims R28 through `fleet/task.md` and the ledger. CachyOS R06 waits for
+R05. Windows's inherited cleanup is complete; future Windows physical proof awaits
+its operator dispatch. No second six-hour soak is scheduled.

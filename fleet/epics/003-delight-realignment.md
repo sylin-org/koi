@@ -1,12 +1,12 @@
 # Epic 003 - Realign Koi around user delight
 
-- **Status:** execution authorized on Linux; R01 contract complete, handover pending one Windows process-restoration check.
+- **Status:** active on Linux; R01/G0 accepted with verified inherited-run restoration.
 - **Opened:** 2026-09-04.
 - **Owner intent:** a comprehensive realignment of code, installation, product
   experience, documentation and contributor/release quality before the next 1.0 candidate.
 - **Execution entry:** [fleet/task.md](../task.md) -> [Linux dispatch](../delight-dispatch.md) -> [prompt pack](../../docs/prompts/delight/README.md).
 - **Progress authority:** [LEDGER.md](../../docs/prompts/delight/LEDGER.md).
-- **Implementation gate:** R01 acceptance; finish/reconcile the inherited Epic 002 native run before product work.
+- **Implementation gate:** R01 satisfied; fixed owners may claim eligible tasks in the ledger.
 
 ## Outcome
 
@@ -27,6 +27,13 @@ On 2026-09-04 the owner delegated execution to the Linux machines through
 `fleet/task.md`. The dispatcher and fixed ledger assignments are active for that
 delegation. R01 contract preparation is the first assignment; implementation is
 not started or accepted by this wiring change.
+
+Handover completed on 2026-09-04 after Windows journal entry 25 at `b18302b`
+proved its final SCM process restoration. Epic 002 is closed as an unsuccessful
+candidate campaign: OD-3's resource failure and rejected artifact remain recorded.
+ADR-044 and CONTRACT v1 are accepted; R01/G0 is ready. Bluefin R02, Debian R03,
+and Alpine R28 may now claim work through the existing dispatcher. Windows issue
+004 transfers to R03; corrected Windows native proof remains required later.
 
 R01 records the actual Epic 002 disposition: finished with verified restoration,
 or explicitly superseded by the operator with verified restoration. No new

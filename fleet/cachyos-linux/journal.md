@@ -218,3 +218,43 @@ findings:
 1. The Linux binary changed from the earlier `ab84782` product tree as expected because the frozen product includes the OpenRC installer changes. The exact candidate therefore required a real replacement even though this host uses systemd; installed bytes and native observation, rather than inferred platform reachability, are now reconciled.
 2. A first otherwise-green collector was launched from the later coordination checkout and therefore recorded `c606d94` as its source metadata. It was not used as canonical evidence. Repeating the same bounded read from the clean detached worktree produced the accepted exact-frozen-source run above without changing either service or peer state.
 3. The CachyOS matrix row is complete. This host now remains stable while the four other hats reconcile their exact candidates; no private soak starts before the fleet readiness barrier and published UTC `T0`.
+
+## 2026-09-04 20:35 EDT — R01 accepted; inherited OD-3 closed with failed verdict
+
+task: Epic 003 R01/G0 | contract source `8837044`; reconciliation `7788812`;
+final evidence head `b18302b200eba3049fec6b7e00c701ac9b4cff64` plus this documentation
+activation | koi-desktop clean at `4c05ed22dfdc2c11fd220eb3a65a64abad05e299` |
+verdict: **R01 accepted/ready; campaign active; Epic 002 closed unsuccessful**
+
+evidence: Debian and Alpine six-hour collectors each passed 14/14 with 361/361
+Bluefin reads, their one native PID transition and exact restoration. Bluefin served
+all 1,083 reads, held PID/hash across 380/380 checks, restored false Pond desire and
+the closed listener, and preserved firewall/service state. Windows's collector
+remains FAIL, 12/14, with handles +1329 and threads +280. Issue 004 diagnoses the
+DNSAPI PTR-owner classification defect; Debian R03 owns its correction and later
+Windows physical resource proof remains required.
+
+Windows final restoration run `v1-20260904-od3-b3eb47e-win-final-restoration` passed
+at `b18302b`: one SCM restart `22564→24100`, unchanged artifact `d47138c5…7610`,
+observations 340/62 and 342/63 handles/threads under the 364/75 envelope, healthy
+authenticated control, concrete routes, and `1/1/0/0` publications. Descriptor,
+configuration, policy, workbench, provider and disabled-Pond state stayed exact;
+the recovery task and temporary helper were removed. Receipt SHA-256 is
+`703cd730e542da8078eea471acd669113a66d6d7b13cb1ffca9a210f97baffa9`. This meets the
+published restoration condition without changing the rejected candidate's verdict.
+
+local state: the read-only audit at `2026-09-04T20:35:06-04:00` found
+`/usr/local/bin/koi` SHA-256
+`b2079cd3bb2e35a46f0344b8181b92e302b33681c12104124dadf4026d54cdc3`, systemd
+active/running/enabled, PID `1249009`, `NRestarts=0`, and loopback `/healthz` OK.
+This documentation session created no host/peer mutation or temporary native state.
+
+verification: `git diff --check`, `bash scripts/lint-surfaces.sh` (30 rows),
+`bash scripts/check-doc-leaks.sh`, and all 91 local Markdown link targets in the six
+activation documents passed. The contract source is unchanged; acceptance updates
+the ledger, activation record, both epics, coordination and R01 report consistently.
+
+next: Bluefin R02, Debian R03 and Alpine R28 are eligible for owner claims through
+`fleet/task.md`. CachyOS R06 waits for R05. Windows's inherited assignment is complete;
+future native execution requires its subsequent operator dispatch. No old peer
+reservation, restoration assignment or second soak remains active.

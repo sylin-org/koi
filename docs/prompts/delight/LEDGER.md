@@ -5,15 +5,15 @@ All rows are queued at creation. No implementation or native validation is impli
 
 ## Dispatch state
 
-- Campaign: authorized; handover pending on one Windows process-restoration check.
+- Campaign: active.
 - Universal entry: [fleet/task.md](../../../fleet/task.md), routed through
   [Linux dispatch](../../../fleet/delight-dispatch.md).
 - Authorization: owner delegated execution to the Linux machines on 2026-09-04.
-- First assignment: cachyos-linux prepares R01 and reconciles the inherited OD-3 run.
-- Product implementation: waits for R01 acceptance; no new approval needed afterward.
-- Active candidate: none for Epic 003; old native run retains its own exact artifacts.
+- Handover: R01 accepted after Windows restoration at `b18302b`; Epic 002 closed with its failed OD-3 verdict preserved.
+- Product implementation: eligible fixed-owner tasks may proceed; no new routine approval required.
+- Active candidate: none; Epic 002's frozen candidate is rejected.
 - Windows physical evidence: reserved for a later operator-dispatched Windows session.
-- Current iteration: R01 claimed by cachyos-linux at `e2c4a82`; the contract and OD-3 verdict reconciliation are complete. Windows must publish the narrow unchanged-artifact SCM restart/restoration evidence in Epic 002 before R01 acceptance.
+- Next eligible assignments: Bluefin R02, Debian R03 (including Windows issue 004), and Alpine R28. CachyOS R06 waits for R05.
 
 ## Status and selection rules
 
@@ -87,9 +87,9 @@ identity and complete hosted/native evidence, even if infrastructure tasks passe
 
 | ID | Dependencies | Status | Readiness | Owner | Evidence/report | Next action |
 |---|---|---|---|---|---|---|
-| [R01](R01-contract-and-handover.md) | - | implemented | pending | cachyos-linux | [reports/R01.md](reports/R01.md) | Wait only for Windows's unchanged-artifact SCM restart/resource restoration journal, then close Epic 002 failed and activate the campaign |
-| [R02](R02-critical-documentation-truth.md) | R01 | queued | pending | bluefin-linux | - | Wait for dependencies |
-| [R03](R03-discovery-record-correctness.md) | R01 | queued | pending | debian-linux | - | Wait for dependencies |
+| [R01](R01-contract-and-handover.md) | - | accepted | ready | cachyos-linux | [reports/R01.md](reports/R01.md) | Complete; contract and inherited-run restoration verified |
+| [R02](R02-critical-documentation-truth.md) | R01 | queued | pending | bluefin-linux | - | Eligible: claim critical documentation truth |
+| [R03](R03-discovery-record-correctness.md) | R01 | queued | pending | debian-linux | - | Eligible: claim discovery correctness, including Windows issue 004 and its required regression/native evidence |
 | [R04](R04-service-catalog.md) | R01, R03 | queued | pending | debian-linux | - | Wait for dependencies |
 | [R05](R05-catalog-api-and-preferences.md) | R04 | queued | pending | debian-linux | - | Wait for dependencies |
 | [R06](R06-rust-ui-and-family-foundation.md) | R01, R05 | queued | pending | cachyos-linux | - | See required subrows below |
@@ -114,7 +114,7 @@ identity and complete hosted/native evidence, even if infrastructure tasks passe
 | [R25](R25-developer-and-agent-experience.md) | R05, R17, R19, R21 | queued | pending | alpine-linux | - | See required subrows below |
 | [R26](R26-documentation-and-contributor-path.md) | R02, R09, R14, R15, R18, R22, R23, R24, R25 | queued | pending | bluefin-linux | - | Wait for dependencies |
 | [R27](R27-accessibility-and-interaction-proof.md) | R09, R10, R18, R22 | queued | pending | cachyos-linux | - | Wait for dependencies |
-| [R28](R28-ci-and-release-contracts.md) | R01 | queued | pending | alpine-linux | - | Wait for dependencies |
+| [R28](R28-ci-and-release-contracts.md) | R01 | queued | pending | alpine-linux | - | Eligible: claim CI and release contracts |
 | [R29](R29-candidate-fleet-acceptance.md) | R02, R03, R09, R10, R12, R13, R14, R15, R18, R23, R24, R25, R26, R27, R28 | queued | pending | cachyos-linux | - | See required subrows below |
 | [R30](R30-usability-and-release-review.md) | R29 | queued | pending | cachyos-linux | - | Wait for dependencies |
 
@@ -182,7 +182,7 @@ Update only when an entire gate changes state; the epic carries the definition.
 
 | Gate | State | Evidence |
 |---|---|---|
-| G0 contract/handover | queued | - |
+| G0 contract/handover | accepted | [R01 report](reports/R01.md); ADR-044/CONTRACT v1; final Windows restoration `b18302b` |
 | G1 truth/catalog | queued | - |
 | G2 common experience | queued | - |
 | G3 install/second machine | queued | - |

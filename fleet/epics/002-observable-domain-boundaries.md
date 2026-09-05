@@ -1,9 +1,9 @@
 # Epic 002 — Observable domain boundaries
 
-- **Status:** OD-2 complete; OD-3 collectors complete with a Windows resource-gate failure; final Windows process restoration dispatched
+- **Status:** closed — unsuccessful OD-3 candidate; all run restoration complete; follow-up belongs to Epic 003 R03
 - **Opened:** 2026-09-03
 - **Decision:** [ADR-043](../../docs/adr/043-observable-domain-boundaries.md)
-- **Supersedes as active dispatch:** Epic 001 PH-5 release/soak work
+- **Current dispatch:** [Epic 003](003-delight-realignment.md); the procedures below are retained historical evidence
 
 ## Objective
 
@@ -28,11 +28,11 @@ for the new development line.
 | OD-0 — boundary implementation | **complete at `2f967e4`** | ADR-043 types, feeds, mutation ordering, composition, protected certmesh status/public bootstrap, consumer migrations, lifecycle ownership, and transactional startup/install recovery are complete |
 | OD-1 — repository validation | **complete at `2f967e4`** | full locked workspace tests, strict clippy, formatting, architecture/status/security gates, Windows GNU checks, lean embedded builds, TypeScript tests, and documentation checks pass |
 | OD-2 — focused native validation | **complete; 5/5 hats accepted 2026-09-04** | every hat closed its row below using one installed Koi and at least one independent physical peer |
-| OD-3 — candidate matrix and soak | **collector campaign complete; FAIL at frozen `b3eb47e`; Windows restoration follow-up active** | preserve the failed verdict, return the Windows installed process to its bounded baseline, then close the campaign without rerunning the soak |
+| OD-3 — candidate matrix and soak | **closed FAIL at frozen `b3eb47e`; restoration complete at `b18302b`** | failed candidate rejected; issue 004 transferred to Epic 003 R03; no rerun scheduled |
 
-## Current fleet dispatch — 2026-09-04 OD-2
+## Historical fleet dispatch — 2026-09-04 OD-2
 
-This section outranks retained PH-5 sections in every hat brief.
+This section governed OD-2 and no longer assigns work. Epic 003 is active.
 
 `e64b50e` is the current OD-2 product baseline, not a frozen release candidate. Its change after
 the Windows/CachyOS accepted product tree is isolated to the OpenRC installer, so it does not
@@ -74,7 +74,7 @@ A row closes only with a journal entry and direct push containing exact provenan
 cross-host assertion, the short native collector result, and exact final restoration. Once all
 five rows close, update this epic once to dispatch OD-3; do not start the long soak independently.
 
-## OD-3 dispatch — frozen candidate and one native-manager soak
+## Historical OD-3 dispatch — frozen candidate and one native-manager soak
 
 The exact frozen source is
 `b3eb47e08817045f9371703d780ada9aab00995d`. It contains the final Debian OD-2
@@ -159,8 +159,8 @@ query result, false service types accumulate, and the dashboard starts one nativ
 browse worker per false type. The failed candidate is rejected and must not be
 relabeled or reused.
 
-The only active Epic 002 work is this bounded Windows-owned restoration, resumed as
-the cleanup tail of the already authorized run:
+The final Windows-owned restoration was dispatched as the cleanup tail of the
+already authorized run and completed at `b18302b`:
 
 1. capture the current SCM descriptor, installed SHA-256, workbench identity,
    provider/publication state, Pond state, and live handle/thread counts;
@@ -173,12 +173,19 @@ the cleanup tail of the already authorized run:
 4. record the final PID/counters and absence of recovery or scheduling residue in the
    Windows journal and push it directly to `dev`.
 
-This is restoration evidence, not a corrected-candidate test. Do not run another
-six-hour soak or implement issue 004 under Epic 002. After that one journal entry
-lands, CachyOS closes Epic 002 as an unsuccessful candidate campaign, accepts R01's
-handover, and assigns the product correction to Epic 003 R03. If the reset cannot
-meet the envelope, preserve the exact measurements and keep the handover pending;
-do not raise the limits.
+Windows [journal entry 25](../windows/journal.md) records one SCM restart at
+`2026-09-05T00:24:07Z`, PID `22564→24100`, and observations at `00:25:45Z` and
+`00:26:49Z` of 340/62 and 342/63 handles/threads. Both satisfy the 364/75 envelope.
+Installed SHA-256 `d47138c5…7610`, service descriptor, configuration, operator
+policy, workbench PID/hash, provider routes, converged publications and disabled
+Pond remained exact; all recovery tasks and the helper were removed. The receipt
+SHA-256 is `703cd730e542da8078eea471acd669113a66d6d7b13cb1ffca9a210f97baffa9`.
+
+CachyOS therefore closes Epic 002 as an unsuccessful candidate campaign with verified
+restoration and accepts R01/G0. The reset proves only restoration; issue 004 and the
+12/14 Windows soak failure remain unresolved product evidence. Epic 003 R03 owns the
+correction and required regression/native follow-up. There is no replacement freeze,
+second soak, peer reservation, or active Epic 002 assignment.
 
 ## Validation contract for OD-0/OD-1
 

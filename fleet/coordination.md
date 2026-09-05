@@ -92,16 +92,14 @@ CachyOS owns product/UX coordination, Debian the core service/trust work, Bluefi
 documentation/containers/integration, and Alpine installation/CI/portability.
 All four retain exclusive ownership of their own native evidence and mutations.
 
-**Handover pending on one exact restoration check:** Epic 002's OD-3 run on frozen
-source `b3eb47e08817045f9371703d780ada9aab00995d` completed on 2026-09-04. Debian and
-Alpine passed, Bluefin served every sample and restored exactly, and Windows failed
-the handle/thread bounds with diagnosed issue 004. The failed candidate is rejected.
-Windows alone must resume the run's cleanup tail: restart the unchanged installed SCM
-service once and publish the bounded process-restoration evidence specified by
-[Epic 002](epics/002-observable-domain-boundaries.md). No rebuild, product fix, peer,
-or second soak is assigned. CachyOS accepts R01 and activates product work only after
-that journal lands. Other hats remain read-only. Do not erase the red verdict, raise
-its limits, or ask again for routine activation once the restoration condition passes.
+**Campaign active; R01/G0 accepted:** Windows published the final process-restoration
+check at `b18302b`, completing the inherited handover. Epic 002 is closed with its
+OD-3 failure preserved and frozen candidate rejected. Debian and Alpine passed,
+Bluefin restored exactly, and Windows reset the unchanged service into the required
+resource envelope. Issue 004 remains open for Debian's R03 correction and later
+Windows physical proof. Through `fleet/task.md`, Bluefin may claim R02, Debian R03,
+and Alpine R28. CachyOS's next feature task R06 waits for R05. No old soak or cleanup
+assignment remains active; the ledger determines all next work.
 
 [Epic 002](epics/002-observable-domain-boundaries.md) retains the precise inherited
 run procedure and evidence. [Epic 001](epics/001-productization-hardening.md) is also
