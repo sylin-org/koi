@@ -440,17 +440,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refused_stale_generation_is_recovered_by_exact_inode() {
+    async fn refused_stale_generation_is_recovered_and_owned() {
         let root = test_root("stale");
         std::fs::create_dir_all(&root).expect("create IPC test root");
         let path = root.join("koi.sock");
         let stale = std::os::unix::net::UnixListener::bind(&path).expect("bind stale socket");
-        let stale_identity = observe_socket(&path).unwrap().expect("stale identity");
+        assert!(observe_socket(&path).unwrap().is_some());
         drop(stale);
 
         let owner = LocalControl::acquire(test_config(&root)).expect("recover stale socket");
         let current_identity = observe_socket(&path).unwrap().expect("current identity");
-        assert_ne!(stale_identity, current_identity);
+        assert_eq!(owner.socket_path.identity, current_identity);
+        std::os::unix::net::UnixStream::connect(&path).expect("replacement socket is live");
 
         drop(owner);
         assert!(observe_socket(&path).unwrap().is_none());
