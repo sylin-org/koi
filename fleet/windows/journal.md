@@ -1,5 +1,64 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-05 (27) — R04 authoritative catalog implemented and accepted natively
+
+task: `R04` | source `b82281147b91c29f78fb513f25a9042a4c1e108a` |
+run `v1-20260905-r04-b822811-win-01` | verdict: **PASS — one coherent
+catalog, durable self identity and exact installed-service projection**; complete
+hosted CI run `33949639819` still supplies the Linux readiness verdict
+
+koi state now: exactly one AutoStart LocalSystem SCM service, PID `12292`,
+descriptor `"C:\Program Files\Koi\koi.exe" --daemon`, exact release/installed
+SHA-256 `93cb9574a1f33e756019a6a25b32123ac6addcec2ed7f8b7aa3e15e41779588e`
+(47,985,664 bytes), health 200 and standard ports. Restart actions remain 5s/10s.
+The separately installed workbench remains sole PID `22548`, SHA-256
+`bb07bb2c232f1ea7398348b1cb4a215dc7d2de04c9c21461bc6fe092de05e245`,
+owning only loopback 5640. Pond remains disabled; no peer or provider/network
+mutation occurred.
+
+evidence and findings:
+
+1. Source adds the schema-1 Device/Service/Endpoint/Observation contract, atomic
+   UUIDv7 installation document and one composition-owned `ServiceCatalogRuntime`.
+   Correlation prioritizes explicit installation/service IDs, then durable source
+   identity, then exact scoped endpoints on a proven device. Retained evidence is
+   bounded, source-revision fenced and stale on closure; explicit withdrawal is
+   Absent. API/unknown TCP, wildcard and unzoned link-local endpoints never gain
+   an invented Open action. Dashboard, embedded and automation read the same
+   `KoiStatus.catalog` snapshot.
+2. Complete local gates passed: locked workspace check and tests, strict all-target
+   Clippy, formatting, 16 architecture tests, surface/doc guards and lean-embedded
+   closure. The final focused run passed common 141, config 20, compose 76 plus 3
+   webhook, and serve 164 (one intentionally ignored live-firewall test). The
+   locked release was built from the clean published source above.
+3. The transactional product installer replaced the old PID `15528` / SHA-256
+   `b10718f8bf5cc7367b272b24ffd261801c9eab67b7e9e8b5efa5eda650d56b08`
+   with PID `8072`, then a second exact-candidate install produced PID `12292`.
+   Candidate and installed bytes match. Config and local-access policy stayed
+   byte-exact at `17fe9a664f76bb748da8beeb5c18fabf64da55d1901384772d1e7aecfab2c3ed`
+   and `14d3432b0efd0a52a697bb80adaa16bcd264c2ff79f57ac1156ac513decc9873`.
+   No SCM transaction manifest or installer backup remains.
+4. `state/installation.json` is schema 1 with installation ID
+   `01a0703e-c6e3-74b0-bb7c-0f7def75c5c3`; it survived the second install.
+   The local MCP advertisement carried that value plus service ID
+   `svc_ef2d6d35658132fb08ed8fec9cfd74a8`. After restart the catalog retained
+   both IDs, classified the service with explicit identity, exposed its HTTP MCP
+   endpoint for copy/details/diagnosis, and correctly withheld Open.
+5. The lived-in source projected 29 devices and 29 services. Independent
+   `/v1/inventory` and `/v1/dashboard/snapshot` reads returned byte-equivalent
+   catalog JSON at one revision. Observations retained concrete Windows DNS-SD
+   provider, source revision/generation, observer, scope and freshness evidence.
+6. Workspace testing exposed 158 historical PersistentStore rules owned by
+   lowercase/test executable names. Every application filter was resolved first
+   and pointed outside `C:\Program Files\Koi\koi.exe`; a fail-closed elevated
+   cleanup removed exactly those rules. Final firewall state is the five intended
+   enabled inbound Any-profile Koi rules (mDNS, HTTP, Pond and DNS TCP/UDP), with
+   zero matching test rules. This residue was removed, not preserved.
+
+next: reconcile hosted run `33949639819`. A completely green Ubuntu/Windows/macOS
+matrix promotes R04 to accepted/ready and releases R05; a failing job is corrected
+at its source before any R05 claim.
+
 ## 2026-09-05 (26) — R03 Windows DNSAPI acceptance and issue 004 resource closure
 
 task: `R03/windows-native-proof`, activated by an explicit operator dispatch |
