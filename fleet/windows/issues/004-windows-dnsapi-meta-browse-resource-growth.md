@@ -1,7 +1,7 @@
 # Issue 004 — Windows DNS-SD meta-browse admits unrelated PTRs and expands native resources
 
 **Opened:** 2026-09-04 during Epic 002 OD-3 soak
-**Status:** open — R03 source correction implemented; installed Windows acceptance pending
+**Status:** resolved — R03 source correction and installed Windows acceptance complete; owner reconciliation requested
 **Machine:** stone-leaded-sparkle
 **Run:** `v1-20260904-od3-b3eb47e-win`
 **Frozen source:** `b3eb47e08817045f9371703d780ada9aab00995d`
@@ -86,6 +86,32 @@ are source checks only. This issue remains open until an operator-dispatched Win
 session proves matching instance resolution and withdrawal on the installed Koi,
 then repeats the bounded lived-in meta-browser handle/thread gate under a new run ID.
 
+## Windows acceptance — 2026-09-05
+
+The operator-dispatched Windows run built and transactionally installed exact
+published source `7344db3b99ff4107a93e1011ee4f0043967e1b1f`; its product binary SHA-256
+is `b10718f8bf5cc7367b272b24ffd261801c9eab67b7e9e8b5efa5eda650d56b08`.
+The real DNSAPI adapter resolved a matching run-owned CachyOS Avahi instance and,
+after graceful peer withdrawal, emitted its removal through the same subscription.
+The installed daemon independently retained the resolved and removed transition in
+its authoritative browser snapshot.
+
+With the installed workbench and meta-browser active, bounded run
+`v1-20260905-r03-7344db3-win-01` captured 21 samples over 600 seconds. The service
+kept PID `15528`, concrete DNSAPI/native routes, a converged permanent publication,
+and 21/21 successful physical Debian Koi Pond reads. There were no unavailable
+samples, PID changes, restarts or recovery events. First-to-final growth was
+2,482,176 bytes RSS, 11 handles and 3 threads, passing the published 67,108,864-byte,
+16-handle and 8-thread limits. The browser held 17 service types; every row matched
+the concrete `_name._tcp|udp` shape, with no instance FQDN or host label admitted.
+
+Peer Pond intent, peer publication processes, Windows Pond intent, config, operator
+policy, service identity and workbench identity were restored or preserved exactly.
+The Windows journal entry `2026-09-05 (26)` carries the complete native procedure,
+harness-attempt disposition, hashes and reconciliation boundary. This closes the
+Windows-owned defect evidence; Debian remains the R03 source/status owner and has a
+ledger request to reconcile this result with its remaining CONTRACT handoff.
+
 ## Evidence
 
 - Canonical report:
@@ -95,3 +121,9 @@ then repeats the bounded lived-in meta-browser handle/thread gate under a new ru
   `.tmp/od3-soak-windows/`.
 - Windows journal entry `2026-09-04 (24)` records artifact/PID, peer traffic,
   cleanup and final installed state.
+- Accepted replacement evidence:
+  `.lab-runs/v1-20260905-r03-7344db3-win-01/installed-service.json`, SHA-256
+  `511d015a975dd3da9e5dd24c0cf20ebed7ebf89f063e24a4a0526f6d6940d0b9`.
+- Windows journal entry `2026-09-05 (26)` records the matching physical
+  resolve/withdrawal, clean 17-type snapshot, bounded resource verdict, and exact
+  peer/local restoration.

@@ -1,5 +1,69 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-05 (26) — R03 Windows DNSAPI acceptance and issue 004 resource closure
+
+task: `R03/windows-native-proof`, activated by an explicit operator dispatch |
+R03 owner source `d48d4df`; exact tested and installed source
+`7344db3b99ff4107a93e1011ee4f0043967e1b1f` | run
+`v1-20260905-r03-7344db3-win-01` | verdict: **PASS — matching physical
+resolve/withdrawal and lived-in installed-service resource bounds**
+
+koi state now: exactly one AutoStart LocalSystem SCM service `koi`, command
+`"C:\Program Files\Koi\koi.exe" --daemon`, PID `15528`, installed/release
+SHA-256 `b10718f8bf5cc7367b272b24ffd261801c9eab67b7e9e8b5efa5eda650d56b08`
+(49,133,056 bytes), health 200, authenticated local control and the standard port
+plan. Provider generation 6 is Ready with `publish=native
+explicit_publish=native browse=windows-dns-sd resolve=windows-dns-sd` and
+publications `1/1/0/0`. Pond is restored disabled. The sole installed workbench
+remains PID `22548`; Bonjour remains absent.
+
+evidence and findings:
+
+1. The initial complete locked workspace run exposed four pre-existing Pond UI
+   interruption tests failing only on Windows with `Access is denied`: retrying an
+   already-visible generation opened the file read-only before `FlushFileBuffers`.
+   The accepted correction opens that immutable file with write access, matching
+   the repository's existing durable-file pattern. Focused `koi-serve` tests passed
+   163/163, strict workspace all-target Clippy passed, and the complete locked
+   workspace suite passed on the exact published `7344db3` tree. The locked release
+   build was installed through Koi's transactional installer; candidate and product
+   bytes match exactly and no installer transaction remains.
+2. A run-owned CachyOS Avahi publication `Koi R03 Gate 3._koi-r03._tcp` was fully
+   resolved by the real Windows DNSAPI adapter. After the peer process received
+   `SIGINT`, the same long-lived adapter subscription observed its TTL-zero removal;
+   the ignored physical test passed 1/1 in 16.21 seconds. Independently, the
+   installed daemon's browser snapshot recorded the same resolved instance and its
+   `removed_at` transition. Two earlier attempts are retained as harness failures:
+   one disconnected SSH instead of signaling Avahi and left the publication alive;
+   one did not deliver the signal before the test's withdrawal deadline. Both peer
+   processes were then signaled and reaped; neither was treated as product evidence.
+3. The installed browser/workbench lane stayed active throughout a ten-minute
+   elevated `windows-scm` collection. Its snapshot held 17 service types and every
+   row matched the concrete `_name._tcp|udp` service-type shape; no instance FQDN or
+   host label entered the type set. The collector captured 21 samples with zero
+   unavailable observations, PID changes, restarts or recovery events. Resource
+   growth was 2,482,176 bytes RSS, 11 handles and 3 threads, within the published
+   limits of 67,108,864 bytes, 16 and 8. All 21 physical reads of the independently
+   installed Debian Koi Pond succeeded without retry, and provider routes and the
+   permanent publication remained converged in every sample.
+4. The temporary peer surface used unchanged `stone-halcyon-savanna` service PID
+   `63153` and `/usr/local/bin/koi` SHA-256
+   `899d83efe76b6ba82aa38484f828f6879384cd321d11db49662cdb2fec95a1cc`.
+   Its initial `desired=false` Pond intent was restored to disabled, port 24444 is
+   closed again, and its PID/hash/service state are unchanged. CachyOS has no
+   `_koi-r03` publication process left. Windows config and operator-policy hashes
+   remain `17fe9a664f76bb748da8beeb5c18fabf64da55d1901384772d1e7aecfab2c3ed`
+   and `14d3432b0efd0a52a697bb80adaa16bcd264c2ff79f57ac1156ac513decc9873`.
+5. Canonical local evidence is
+   `.lab-runs/v1-20260905-r03-7344db3-win-01/installed-service.json`, SHA-256
+   `511d015a975dd3da9e5dd24c0cf20ebed7ebf89f063e24a4a0526f6d6940d0b9`;
+   its JUnit and text companions hash to
+   `c62abcc552470e11b94cbfcc21164f31bae3af02338ccd0e1a21170f63abff3b`
+   and `355ad9f5d9f2db7d156e650dd5c540b9ef9bfdf00b92d06304ad9eed8e232ca4`.
+   Issue 004 is resolved on its owning Windows evidence. Per dispatch, Debian still
+   owns R03 status/CONTRACT reconciliation; a ledger request links this proof rather
+   than Windows changing that row or its source report.
+
 ## 2026-09-04 (25) — OD-3 failed-candidate process restoration complete
 
 task: Epic 002 OD-3 cleanup tail / Epic 003 R01 handover dependency | frozen

@@ -178,6 +178,7 @@ fresh run ID and restoration. Each peer writes evidence only in its own journal.
 
 | Request / task | Requesting hat | Peer hat | Mode / report | State | Peer evidence |
 |---|---|---|---|---|---|
+| `R03/windows-native-reconciliation` | windows | debian-linux | Reconcile completed issue 004 native proof with [R03](reports/R03.md); no peer mutation | requested | [Windows journal](../../../fleet/windows/journal.md); [issue 004](../../../fleet/windows/issues/004-windows-dnsapi-meta-browse-resource-growth.md) |
 
 States: requested, acknowledged, running, completed, failed, cancelled. A scheduled
 mutation requires peer acknowledgement before a candidate/run is armed. Do not
