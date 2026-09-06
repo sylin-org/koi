@@ -8,10 +8,17 @@
   const view = document.getElementById('operator-view');
   const disconnect = document.getElementById('disconnect-browser');
   const pointer = 'koi-browser-session-v1';
-  let invitation = new URLSearchParams(location.hash.slice(1)).get('invite');
-  const automatic = new URLSearchParams(location.hash.slice(1)).get('open') === '1';
-  // The one-use capability must not survive in the visible/history URL.
-  if (invitation) history.replaceState(null, '', location.pathname + location.search);
+  let invitation, automatic = false;
+  function takeInvitation() {
+    const fragment = new URLSearchParams(location.hash.slice(1));
+    if (!fragment.get('invite')) return false;
+    invitation = fragment.get('invite');
+    automatic = fragment.get('open') === '1';
+    // The one-use capability must not survive in the visible/history URL.
+    history.replaceState(null, '', location.pathname + location.search);
+    return true;
+  }
+  takeInvitation();
   let current, query = location.search, database, stopped = false;
   const encode = bytes => btoa(String.fromCharCode(...new Uint8Array(bytes))).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
   const json = async (path, body, signal) => {
@@ -94,6 +101,7 @@
     apply: (html, intent) => {
       if (stopped) return;
       window.KoiRefresh.apply(view, html, intent);
+      invitation = undefined;
       panel.hidden = true; disconnect.hidden = false;
       status.textContent = 'Connected · View services';
     },
@@ -101,8 +109,8 @@
       if (fatal) {
         forget().catch(() => {});
         view.replaceChildren(); panel.hidden = false; disconnect.hidden = true;
-        form.hidden = true; help.hidden = false;
-        status.textContent = 'This browser’s access ended. Open Koi here or scan a new code to connect again.';
+        form.hidden = !invitation; help.hidden = !!invitation;
+        status.textContent = invitation ? 'Previous access ended. Tap Connect to use this invitation.' : 'This browser’s access ended. Open Koi here or scan a new code to connect again.';
       } else {
         window.KoiRefresh.stale(view);
         status.textContent = `Reconnecting to Koi… Trying again in ${delay / 1000} seconds.`;
@@ -174,7 +182,7 @@
   });
   window.addEventListener('pagehide', () => { stopped = true; reader.stop(); invitation = undefined; });
   window.addEventListener('pageshow', event => { if (event.persisted && current) { stopped = false; reader.read(); } });
-  (async () => {
+  async function initialize() {
     if (!window.isSecureContext || !crypto.subtle) throw new Error('Open Koi through its local address or trusted HTTPS to connect.');
     await prune();
     for (const storage of [sessionStorage, localStorage]) {
@@ -184,9 +192,14 @@
       if (current) break;
       storage.removeItem(pointer);
     }
-    if (current && !invitation) { form.hidden = true; await reader.read(); return; }
+    if (current) { form.hidden = true; await reader.read(); return; }
     form.hidden = !invitation; help.hidden = !!invitation;
     status.textContent = invitation ? 'Ready to connect.' : 'Connect from the Koi app or scan a new invitation.';
     if (automatic && invitation && ['127.0.0.1', 'localhost', '[::1]'].includes(location.hostname)) await connect();
-  })().catch(error => { status.textContent = error.message; });
+  }
+  const start = () => initialize().catch(error => { status.textContent = error.message; });
+  window.addEventListener('hashchange', () => {
+    if (takeInvitation()) { query = location.search; reader.stop(); start(); }
+  });
+  start();
 })();

@@ -10,6 +10,8 @@ link and QR. Scanning opens a connection page; only pressing Connect consumes th
 invitation. Preview/GET requests never redeem it. The person chooses temporary
 access or Remember this browser, then reaches Home. A valid session survives
 navigation, reload and ordinary daemon restart, preserving the Home query.
+Reopening reuses a valid browser session without consuming a new invitation.
+Invitation fragments also work when navigation stays in the same document.
 The local `koi launch` action obtains an invitation through authenticated local
 control and opens it; it never prints or puts the daemon access token in a URL.
 

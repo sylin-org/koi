@@ -36,9 +36,11 @@ try {
   const {targetId}=await call('Target.createTarget',{url:'about:blank'});
   ({sessionId}=await call('Target.attachToTarget',{targetId,flatten:true}));
   await call('Page.enable',{},sessionId);
+  await call('Emulation.setDeviceMetricsOverride',{width:320,height:740,deviceScaleFactor:1,mobile:false},sessionId);
   await call('Page.navigate',{url:process.env.KOI_TEST_INVITATION},sessionId);
   await until('document.getElementById("browser-status")?.textContent === "Ready to connect."');
   assert.equal(await evaluate('location.hash'),'');
+  assert.equal(await evaluate('document.documentElement.scrollWidth <= 320'),true);
   assert.equal(await evaluate('document.getElementById("operator-view").children.length'),0);
   await evaluate('document.getElementById("browser-label").value="Fixture browser";document.getElementById("remember-browser").checked=true;document.getElementById("connect-form").requestSubmit()');
   await until('document.getElementById("browser-status")?.textContent === "Connected · View services"');
@@ -54,6 +56,12 @@ try {
   await call('Page.navigate',{url:new URL('/healthz',process.env.KOI_TEST_INVITATION).href},sessionId);
   await call('Page.navigate',{url:new URL('/ui?search=notes',process.env.KOI_TEST_INVITATION).href},sessionId);
   await until('document.getElementById("browser-status")?.textContent === "Connected · View services"');
+  // Reopening from Koi reuses valid access and leaves the fresh code unspent.
+  const remembered = await evaluate('localStorage.getItem("koi-browser-session-v1")');
+  await call('Page.navigate',{url:process.env.KOI_TEST_TEMP_INVITATION + '&open=1'},sessionId);
+  await until('document.getElementById("browser-status")?.textContent === "Connected · View services"');
+  assert.equal(await evaluate('localStorage.getItem("koi-browser-session-v1")'),remembered);
+  assert.equal(await evaluate('sessionStorage.getItem("koi-browser-session-v1")'),null);
   await evaluate('document.getElementById("disconnect-browser").click()');
   await until('document.getElementById("browser-status")?.textContent === "This browser is disconnected."');
   assert.equal(await evaluate('localStorage.getItem("koi-browser-session-v1")'),null);
@@ -80,7 +88,11 @@ try {
   console.log('Browser exchange: preview, WebCrypto proof, non-extractable remembered key, search/reload/return, temporary tab isolation, server revocation and client cleanup passed.');
 } finally {
   await call('Browser.close').catch(()=>{});
-  browser.kill('SIGTERM');
-  await new Promise(resolve=>browser.exitCode!==null?resolve():browser.once('exit',resolve));
-  await rm(profile,{recursive:true,force:true});
+  await new Promise(resolve => {
+    if (browser.exitCode !== null || browser.signalCode !== null) return resolve();
+    const timeout = setTimeout(() => browser.kill('SIGTERM'), 3000);
+    browser.once('exit', () => { clearTimeout(timeout); resolve(); });
+  });
+  // Chrome helpers can finish their final profile writes just after the leader.
+  await rm(profile,{recursive:true,force:true,maxRetries:10,retryDelay:100});
 }
