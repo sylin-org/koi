@@ -6,17 +6,31 @@ The owner delegated execution to the Linux machines through `fleet/task.md` on
 existing own-host test/deployment and direct-to-dev publication protocol. It does
 not authorize a public release, remote agent launch, or another host's mutation.
 
-The 2026-09-05 coordinator handoff in LEDGER.md releases R28's shared-file
-reservation and assigns the unclaimed R04/R05 source tasks to Windows under the
-owner's capacity guidance and instruction to proceed. Each host still requires
-its own operator invocation; this file never launches a remote session.
+## Current execution model — owner instruction, 2026-09-06 UTC
 
-After R04/R05 acceptance, the owner directed the next work to proceed: CachyOS
-executes R06 and Windows receives the unclaimed, dependency-ready R20 service
-certificate task from Debian. Windows's next invocation selects R20 after ready
-peer requests. Claim exact paths and serialize any shared manifest, lockfile or
-CONTRACT.md changes with R06; neither task reserves those files implicitly.
-This assignment does not launch Windows or authorize another host's mutation.
+CachyOS is the sole implementation and integration owner for all unfinished Epic
+003 work, including platform adapters, package recipes, tests, SDKs and documentation.
+Other machines provide platform-specific verification only. This supersedes earlier
+distributed source assignments and retained brief instructions. Accepted work keeps
+its historical owner and evidence; no completed task is reassigned or repeated.
+
+The ledger names CachyOS on unfinished source/integration rows, including R13's
+per-platform recipe slices. That is source ownership, not authority to mutate the
+named platform remotely. Native R29 rows remain with their actual hats. R13 native
+checks run on CachyOS=systemd-plasma, Bluefin=rpm-ostree-gnome, Alpine=openrc-musl,
+Debian=systemd-headless through explicit exact-artifact peer requests.
+
+Verification hosts build/test/package the published source as needed, execute the
+requested own-host journey and publish their own evidence/issues. They do not claim
+new feature work, fix shared source, change package recipes or take over another
+source row. Return defects to CachyOS for one fix and an affected-case retry. Test
+helpers must stay within the request's exact scope; expanding it needs a recorded
+claim, not an improvised product or permission change.
+
+Each host still requires its own operator invocation. No remote agent launch,
+cross-host mutation, automatic elevation, relaxed input permission or acceptance
+waiver follows from consolidation. If a host finds unreported unfinished source
+edits, preserve and checkpoint them for handoff before CachyOS overlaps those paths.
 
 ## Read and route
 
@@ -28,40 +42,33 @@ and status authority. Read only the selected prompt's source set after routing.
 
 | Hat | Primary responsibility |
 |---|---|
-| cachyos-linux | R01 coordination and product contract, Rust UI/Sylin integration, usability, candidate reconciliation |
-| debian-linux | Finish R03 documentation/evidence handoff; lightweight headless/native work; later heavy rows require reassignment |
-| windows | R04/R05 completed; R20 service certificates next; Windows native evidence |
-| bluefin-linux | Documentation, container journey, SDKs/integration, Windows source preparation, immutable native recipe |
-| alpine-linux | Install contracts, Linux firewall integration, CI, CLI/MCP/embedding and musl/native portability |
+| cachyos-linux | All unfinished implementation/integration, coordination and own-host native proof; next R06/shared-shell |
+| debian-linux | Requested lightweight headless/systemd and peer verification only |
+| windows | Requested Windows native builds, packages and physical verification only |
+| bluefin-linux | Requested immutable Fedora/GNOME native and client verification only |
+| alpine-linux | Requested musl/OpenRC/Plasma native and client verification only |
 
 Capacity override: Debian is a very weak thin client. Follow the
 [Debian capacity constraint](coordination.md#debian-capacity-constraint--owner-instruction-2026-09-04)
-before assigning the next iteration. CachyOS must split or reassign heavy queued
-Debian rows to stronger executors before they are claimed; keep Debian's work
-lightweight and its native checks bounded. Preserve active claims through an
-explicit checkpoint/handoff. Windows is the most powerful fleet machine and the
-preferred executor for compatible heavy work when dispatched. Keep Linux-specific
+before assigning the next iteration. Debian receives no heavy implementation,
+full-workspace builds/test matrices or stress workloads; its native checks stay
+bounded. Windows is the most powerful fleet machine and the preferred executor
+for compatible heavy verification when explicitly requested. Keep Linux-specific
 validation on appropriate Linux hosts or hosted CI, with exact source and evidence
 recorded. This capacity preference does not itself activate the Windows session.
 
 Each executable ledger row has exactly one owner. A parent with subrows names its
-integration owner; it is not an additional implementation assignment. Native rows
-belong to their actual hats. Windows now owns R04/R05 source work as well as its
-native proof. Other Windows-related source assignments remain with their recorded
-owners. An operator invocation on Windows selects its eligible work; no Linux
-session may launch it. macOS remains unverified.
+integration owner; it is not an extra parallel implementation assignment. Native
+proof always belongs to the actual hat. Verification hosts select a ready addressed
+peer request or their eligible R29 native row, never another source task. Without
+one, report "verification-only; no ready request" and finish. Terminal failed
+requests are historical; a retry must explicitly reopen the request or add a fresh
+one after the missing prerequisite is available. Do not repeat failed preflights
+or green builds simply because the operator resumes the session.
 
-On that later Windows invocation, first execute the pending Windows cases linked
-from implemented/linux-ready task reports, using their published source and
-procedures. This supplies missing evidence; it does not waive a dependency or
-transfer another source owner's assignment. For those peer cases, write the Windows
-journal/evidence and link a reconciliation request for each source owner. Then select
-the earliest eligible Windows-owned source task, R04 followed by R05, with the same
-claim/publication rules as other hats. These tasks require accepted prerequisites;
-the Linux readiness exception does not grant Windows permission to consume pending
-dependencies. Request required Linux validation from CachyOS/Bluefin or hosted CI.
-Owners promote rows when their full cases pass. R29/windows waits for predecessor
-acceptances before its final candidate pass.
+CachyOS reconciles source/integration acceptance; each peer owns only its evidence
+and addressed request/native row. All dependencies and full Windows acceptance
+requirements remain intact. macOS remains unverified.
 
 ## First: finish the inherited native run
 
@@ -99,7 +106,9 @@ After handover, perform these steps in order:
    are recorded. A read-only peer cannot be converted into a system mutation.
 3. Reconcile completed subrows for parents this hat owns. CachyOS also updates
    whole-epic gates/candidate coordination when their evidence is complete.
-4. Select this hat's lowest-numbered unfinished R task with ready dependencies.
+4. CachyOS selects its lowest-numbered unfinished R source/integration task with
+   ready dependencies. Other hats select only eligible R29 native rows after ready
+   addressed peer requests; they never fall through to source implementation.
    For subrows use table order among this hat's eligible rows. Accepted work and
    implemented rows waiting only for unavailable Windows evidence are not selected
    for redundant implementation. Follow the ledger's Linux dependency rule.

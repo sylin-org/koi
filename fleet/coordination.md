@@ -1,9 +1,9 @@
 # fleet/coordination.md — the shared campaign map
 
 This is the shared campaign map; [`fleet/task.md`](task.md) is the only agent
-entry point. The Windows workstation (`stone-leaded-sparkle`) may launch sessions
-and watch the shared `dev` branch, but it does not manufacture another hat's prompt
-or perform that hat's system mutations. KISS: one branch (`dev`), direct
+entry point. CachyOS owns Epic 003 implementation and coordination; other hosts
+provide requested native verification. Each requires its own operator invocation;
+no host launches another hat's session or performs its system mutations. KISS: one branch (`dev`), direct
 authenticated pushes from every agent, no patch harvesting and no orphan branches
 or local-only commits. A hat's work is not complete until its commit is present on
 `origin/dev`.
@@ -16,9 +16,10 @@ unfinished dependency-ready assignment. Do not assemble per-hat prompts.
 
 One machine, one hat, one specialty. A hat has exclusive ownership of its own
 `fleet/<hat>/` evidence namespace and must not edit another hat's namespace. It
-is authorized to change the shared implementation, tests, ADRs, and user-facing
-documentation needed to make its platform work; those changes go directly to
-`dev` under the synchronization rules below. Facts live in
+may publish its own native evidence and issues. Under the owner's 2026-09-06 UTC
+instruction, only CachyOS changes unfinished Epic 003 implementation, recipes,
+tests, ADRs and user-facing documentation. Peers return defects to that owner;
+evidence and source changes still go directly to `dev` under the rules below. Facts live in
 `tools/koi-lab/lab.json` (addresses, users, host keys) and `local/NOTES.md`
 (credentials, repo paths); this table is the index.
 
@@ -32,31 +33,31 @@ documentation needed to make its platform work; those changes go directly to
 
 Non-agent machines: brook/granite are lab production (hands off);
 limpid-dune/topaz-butte/silent-cascade are phase-two Debian twins. The Windows
-workstation may supervise launches; Epic 003 coordination is assigned to CachyOS.
+workstation supplies Windows verification; Epic 003 coordination is assigned to CachyOS.
 Every hat still owns only its own system mutations.
 
 ## Debian capacity constraint — owner instruction, 2026-09-04
 
 Halcyon (`debian-linux`) is a very weak thin client. Future assignments must fit
-that hardware: favor bounded headless/native checks, lightweight peer observations,
-documentation, review, and small focused changes. Do not assign it heavy feature
+that hardware: favor bounded headless/native checks and lightweight peer observations.
+Remaining implementation/documentation now belongs to CachyOS. Do not assign it heavy feature
 implementation, full-workspace build/test/clippy runs, cross-target matrices,
 release builds, or sustained load/stress work.
 
 The owner identifies Windows (`stone-leaded-sparkle`) as the most powerful fleet
-machine. Prefer it for future heavy source/build/test assignments when the workload
-is compatible and its Windows session is dispatched. CachyOS coordinates explicit
-ownership and published source identity; use CachyOS, Bluefin or hosted CI for
-Linux-specific work or additional capacity. Hardware preference does not launch a
+machine. Prefer it for explicitly requested compatible native build/test verification,
+not independent source assignments. CachyOS owns implementation and published source
+identity; use appropriate native hosts or hosted CI for required verification.
+Hardware preference does not launch a
 Windows session or transfer an active claim. Debian retains its own physical headless
 evidence; remote builds do not substitute for that evidence. Required checks still
 run on an appropriate executor.
 
-Apply this constraint before the next iteration is assigned. Existing published
-claims and in-flight edits remain with their owner until a coherent checkpoint and
-handoff; do not duplicate or discard them. Before Debian claims another heavy queued
-Epic 003 task, CachyOS must split or reassign that row and publish the updated owners.
-The old fixed-owner table is not permission to ignore this capacity constraint.
+Apply this constraint before every verification request. The ownership transfer
+has removed Debian's queued source assignments; do not revive them from older
+tables. Any unreported in-flight edits must still be preserved and checkpointed
+for handoff rather than discarded or duplicated. Capacity changes do not waive
+required native evidence or authorize an unrequested build workload.
 
 ## The UX charter (what "simply works" means on each hat)
 
@@ -111,31 +112,29 @@ and the brief corrected.
 dispatcher target. The owner delegated implementation to the Linux machines through
 `fleet/task.md` on 2026-09-04. [The Linux dispatch](delight-dispatch.md) routes each
 bounded R task through one [assignment/progress ledger](../docs/prompts/delight/LEDGER.md).
-CachyOS owns product/UX coordination, Windows now owns the upcoming R04/R05
-catalog/preferences work, Bluefin documentation/containers/integration, and Alpine
-installation/CI/portability. Debian finishes its lightweight R03 handoff; later heavy
-rows require reassignment under the capacity constraint. Each hat retains exclusive
-ownership of its own native evidence and mutations.
+CachyOS now owns **all unfinished source and integration work** by explicit owner
+approval on 2026-09-06 UTC. Windows, Bluefin, Alpine and Debian are verification-only
+hosts; each retains exclusive ownership of its native evidence and own-host mutations.
+They run ready exact-artifact peer requests or eligible R29 native rows, not feature
+tasks. Accepted historical source work keeps its authorship and verdicts. See the
+ledger's [ownership handoff](../docs/prompts/delight/LEDGER.md#single-implementation-owner--2026-09-06-utc).
 
 **Campaign active; R01/G0 accepted:** Windows published the final process-restoration
 check at `b18302b`, completing the inherited handover. Epic 002 is closed with its
 OD-3 failure preserved and frozen candidate rejected. Debian and Alpine passed,
 Bluefin restored exactly, and Windows reset the unchanged service into the required
-resource envelope. Windows subsequently resolved issue 004 with native proof at
-`189ea32`; Debian must reconcile that evidence into R03. The 2026-09-05 coordinator
-handoff releases R28's blanket contract reservation: Bluefin completes R02's rows
-first, then Debian completes R03's rows. R28 stays pending on the final hosted
-cross-host result. Windows may claim R04/R05 when their prerequisites pass on its
-next `fleet/task.md` invocation. CachyOS R06 waits for R05. No old soak or cleanup
-assignment remains active; the ledger determines all next work.
+resource envelope. R02/R03/R04/R05/R20/R28 and R06/renderer-decision are now accepted.
+CachyOS next implements R06/shared-shell. Parent R06 and downstream tasks remain
+dependency-gated. No old soak, source handoff or cleanup assignment remains active;
+the current ledger determines all next work.
 
 [Epic 002](epics/002-observable-domain-boundaries.md) retains the precise inherited
 run procedure and evidence. [Epic 001](epics/001-productization-hardening.md) is also
 historical. Their accepted artifacts/results remain intact; old PH selectors and
 retained brief dispatches do not assign new Epic 003 feature work.
 
-Windows source preparation follows the ledger, including Windows-owned R04/R05;
-Windows physical proof belongs to its operator-dispatched hat. This does not reduce
+Windows source preparation now belongs to CachyOS; Windows physical proof belongs
+to its operator-dispatched hat. This does not reduce
 the native release matrix. The ledger permits explicitly qualified Linux progress
 while Windows-only evidence is pending; full acceptance still requires it.
 

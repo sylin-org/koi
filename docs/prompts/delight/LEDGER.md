@@ -10,7 +10,8 @@ All rows are queued at creation. No implementation or native validation is impli
   [Linux dispatch](../../../fleet/delight-dispatch.md).
 - Authorization: owner delegated execution to the Linux machines on 2026-09-04.
 - Handover: R01 accepted after Windows restoration at `b18302b`; Epic 002 closed with its failed OD-3 verdict preserved.
-- Product implementation: eligible fixed-owner tasks may proceed; no new routine approval required.
+- Product implementation: CachyOS owns all unfinished source/integration work;
+  other hosts are verification-only. No new routine approval for eligible work.
 - Active candidate: none; Epic 002's frozen candidate is rejected.
 - Windows physical evidence: reserved for a later operator-dispatched Windows session.
 - Current dispatch: R02/R03/R04/R05/R20 and R28 are accepted. R05 is complete at Koi
@@ -18,18 +19,44 @@ All rows are queued at creation. No implementation or native validation is impli
   `33974240044` pass. R20 is complete at `3eb1147`; all 13 jobs in hosted CI
   `33987878995` pass. R06/renderer-decision is accepted: Maud with the retained Tauri
   shell; CachyOS next owns R06/shared-shell. R06 parent/R07/R11 are not yet ready.
-  Windows has no further
-  dependency-ready source row and next services any ready native-evidence request.
+  Other hats next service only ready native-evidence requests or eligible R29 native
+  rows. They do not independently claim source work.
 - Capacity constraint (owner instruction, 2026-09-04): Debian is a very weak thin
-  client. Preserve its current R03 claim through its small documentation handoff;
-  R04/R05 are now reassigned to Windows. Before any later heavy Debian row is
-  claimed, CachyOS must split or reassign it. Do not assign full builds, test matrices or stress
+  client. R03 is complete; all remaining source work is now owned by CachyOS.
+  Do not assign Debian full builds, test matrices or stress
   workloads to Debian. See [fleet capacity guidance](../../../fleet/coordination.md#debian-capacity-constraint--owner-instruction-2026-09-04).
 - Capacity preference: Windows is the most powerful fleet machine; prefer it for
-  compatible heavy assignments when dispatched. Linux-specific evidence remains
+  compatible heavy verification when explicitly requested, not feature ownership.
+  Linux-specific evidence remains
   with appropriate Linux executors. Current claims are preserved until handoff.
 
-## Coordinator handoff — 2026-09-05
+## Single implementation owner — 2026-09-06 UTC
+
+The owner explicitly approved consolidating all remaining source work under
+CachyOS, retaining other machines only for platform-specific verification.
+This section supersedes historical source assignments below, in briefs and in
+earlier reports. All unfinished source/integration rows now belong to CachyOS;
+accepted rows and all historical peer evidence retain their original ownership.
+R13 per-platform rows include source integration owned by CachyOS; physical proof
+comes from the corresponding host via a bounded request. R29 native rows remain
+with their actual hats. No task dependency, readiness, acceptance case or gate
+was changed by this ownership transfer.
+
+Handoff audit at `8cc04dc`: both local worktrees clean; the only in-progress task
+is the CachyOS-owned R06 parent, with renderer decision accepted and shared-shell
+queued. All transferred source rows are queued. Published Bluefin R02, Debian R03,
+Windows R04/R05/R20 and Alpine R28/R06 evidence are complete; no published active
+source claim or live peer reservation needs interruption. Unreported remote edits
+are not assumed absent: preserve/checkpoint any discovered edits before overlap.
+
+Peers run only exact published native requests/eligible R29 cases and publish
+owned evidence or defects. CachyOS implements fixes and requests affected retries;
+no implicit peer source/package-recipe edits. No remote agent is launched and no
+host mutation or credential replication is authorized by this change. Debian stays
+lightweight. The next source slice is R06/shared-shell, not another coordination
+or peer-rebuild round.
+
+## Coordinator handoff — 2026-09-05 (historical)
 
 The owner directed the paused fleet to proceed. R28's source changes are published
 and its remaining work is hosted-result reconciliation. CachyOS releases R28's
@@ -150,22 +177,22 @@ identity and complete hosted/native evidence, even if infrastructure tasks passe
 | [R08](R08-devices-and-comparison.md) | R07 | queued | pending | cachyos-linux | - | Wait for dependencies |
 | [R09](R09-settings-about-and-surface-consolidation.md) | R08 | queued | pending | cachyos-linux | - | Wait for dependencies |
 | [R10](R10-meaningful-activity.md) | R07 | queued | pending | cachyos-linux | - | Wait for dependencies |
-| [R11](R11-installation-contract.md) | R01, R06 | queued | pending | alpine-linux | - | See required subrows below |
-| [R12](R12-windows-installation.md) | R11, R09 | queued | pending | bluefin-linux | - | Linux source preparation; Windows physical evidence reserved |
-| [R13](R13-linux-installation.md) | R11, R09 | queued | pending | alpine-linux | - | See required subrows below |
-| [R14](R14-automatic-second-machine.md) | R03, R07, R12, R13 | queued | pending | debian-linux | - | Wait for dependencies |
-| [R15](R15-container-ready-service.md) | R05, R07, R11 | queued | pending | bluefin-linux | - | Wait for dependencies |
-| [R16](R16-local-service-detection.md) | R04, R11 | queued | pending | debian-linux | - | See required subrows below |
-| [R17](R17-reversible-service-sharing.md) | R05, R11, R16 | queued | pending | debian-linux | - | See required subrows below |
+| [R11](R11-installation-contract.md) | R01, R06 | queued | pending | cachyos-linux | - | See required subrows below |
+| [R12](R12-windows-installation.md) | R11, R09 | queued | pending | cachyos-linux | - | Linux source preparation; Windows physical evidence reserved |
+| [R13](R13-linux-installation.md) | R11, R09 | queued | pending | cachyos-linux | - | See required subrows below |
+| [R14](R14-automatic-second-machine.md) | R03, R07, R12, R13 | queued | pending | cachyos-linux | - | Wait for dependencies |
+| [R15](R15-container-ready-service.md) | R05, R07, R11 | queued | pending | cachyos-linux | - | Wait for dependencies |
+| [R16](R16-local-service-detection.md) | R04, R11 | queued | pending | cachyos-linux | - | See required subrows below |
+| [R17](R17-reversible-service-sharing.md) | R05, R11, R16 | queued | pending | cachyos-linux | - | See required subrows below |
 | [R18](R18-share-service-experience.md) | R07, R16, R17 | queued | pending | cachyos-linux | - | Wait for dependencies |
-| [R19](R19-url-diagnosis.md) | R04, R07 | queued | pending | debian-linux | - | Wait for dependencies |
+| [R19](R19-url-diagnosis.md) | R04, R07 | queued | pending | cachyos-linux | - | Wait for dependencies |
 | [R20](R20-authorized-service-certificates.md) | R01, R04 | accepted | ready | windows | [reports/R20.md](reports/R20.md) | Source `3eb1147`; exact service-name grant, atomic host leaf lifecycle, account-bound single-name ACME authorization and all 13 hosted CI jobs `33987878995` pass |
-| [R21](R21-secure-service-operation.md) | R11, R19, R20 | queued | pending | debian-linux | - | See required subrows below |
+| [R21](R21-secure-service-operation.md) | R11, R19, R20 | queued | pending | cachyos-linux | - | See required subrows below |
 | [R22](R22-secure-access-and-client-onboarding.md) | R07, R15, R21 | queued | pending | cachyos-linux | - | See required subrows below |
-| [R23](R23-renewal-and-recovery.md) | R21, R22 | queued | pending | debian-linux | - | Wait for dependencies |
-| [R24](R24-finished-acme-integration.md) | R20, R22 | queued | pending | bluefin-linux | - | Wait for dependencies |
-| [R25](R25-developer-and-agent-experience.md) | R05, R17, R19, R21 | queued | pending | alpine-linux | - | See required subrows below |
-| [R26](R26-documentation-and-contributor-path.md) | R02, R09, R14, R15, R18, R22, R23, R24, R25 | queued | pending | bluefin-linux | - | Wait for dependencies |
+| [R23](R23-renewal-and-recovery.md) | R21, R22 | queued | pending | cachyos-linux | - | Wait for dependencies |
+| [R24](R24-finished-acme-integration.md) | R20, R22 | queued | pending | cachyos-linux | - | Wait for dependencies |
+| [R25](R25-developer-and-agent-experience.md) | R05, R17, R19, R21 | queued | pending | cachyos-linux | - | See required subrows below |
+| [R26](R26-documentation-and-contributor-path.md) | R02, R09, R14, R15, R18, R22, R23, R24, R25 | queued | pending | cachyos-linux | - | Wait for dependencies |
 | [R27](R27-accessibility-and-interaction-proof.md) | R09, R10, R18, R22 | queued | pending | cachyos-linux | - | Wait for dependencies |
 | [R28](R28-ci-and-release-contracts.md) | R01 | accepted | ready | alpine-linux | [reports/R28.md](reports/R28.md) | CachyOS reconciled run 33946904793: all 13 jobs passed on `aa229ea`; CI infrastructure accepted, fresh candidate proof remains R29 |
 | [R29](R29-candidate-fleet-acceptance.md) | R02, R03, R09, R10, R12, R13, R14, R15, R18, R23, R24, R25, R26, R27, R28 | queued | pending | cachyos-linux | - | See required subrows below |
@@ -175,38 +202,39 @@ identity and complete hosted/native evidence, even if infrastructure tasks passe
 
 Owners below are fixed dispatch assignments, not an instruction to spawn agents.
 One iteration executes one row. Claim exact write paths through the Linux dispatch
-before editing. Native evidence stays with the actual hat even when source preparation
-has a Linux owner. R12, R16/windows and R17/windows-firewall assign source work to
-Bluefin; Windows physical cases remain pending for the Windows hat.
+before editing. CachyOS owns all unfinished source/integration slices, including
+platform-specific adapters/recipes and multi-host recovery integration. Actual
+native evidence is requested from its host; only R29's native-only rows assign
+the hat directly. Source ownership never substitutes for a physical platform pass.
 
 | Slice | Additional prerequisite | Owner | Status | Readiness | Deliverable | Evidence |
 |---|---|---|---|---|---|---|
 | R06/renderer-decision | - | cachyos-linux | accepted | ready | Maud 0.27.0 / retained Tauri 2.11.5 selected; native tails 0233b43 and 16effd8 reconciled; ADR-045/CONTRACT map fixed | [final acceptance](reports/R06-renderer-decision.md#final-decision-and-acceptance) |
 | R06/shared-shell | R06/renderer-decision | cachyos-linux | queued | pending | Selected reusable shell/assets/data adapter; no remaining production spike variant | - |
-| R11/result-contract | - | alpine-linux | queued | pending | Typed install result, artifact compatibility, durable recipe/receipt ownership | - |
-| R11/restart-and-rollback | R11/result-contract | alpine-linux | queued | pending | Interrupted install/upgrade recovery, idempotency and old-state preservation | - |
+| R11/result-contract | - | cachyos-linux | queued | pending | Typed install result, artifact compatibility, durable recipe/receipt ownership | - |
+| R11/restart-and-rollback | R11/result-contract | cachyos-linux | queued | pending | Interrupted install/upgrade recovery, idempotency and old-state preservation | - |
 | R13/systemd-plasma | - | cachyos-linux | queued | pending | Installed systemd/glibc Plasma journey including package/login/rollback | - |
-| R13/rpm-ostree-gnome | - | bluefin-linux | queued | pending | Immutable native RPM/layer/reboot/session/rollback journey | - |
-| R13/openrc-musl | - | alpine-linux | queued | pending | OpenRC/musl package/UI/startup and rollback journey | - |
-| R13/systemd-headless | - | debian-linux | queued | pending | No-GUI systemd install/operator/upgrade/rollback journey | - |
-| R16/contract | - | debian-linux | queued | pending | Typed candidate/evidence projection, scan limits, mock adapter fixtures | - |
-| R16/windows | R16/contract | bluefin-linux | queued | pending | Native Windows listener/process/runtime observation; no mutation | - |
-| R16/linux | R16/contract | debian-linux | queued | pending | Native Linux listener/runtime observation with permission fallback; no mutation | - |
-| R17/intent-contract | - | debian-linux | queued | pending | Durable intent/receipt, scoped resource IDs, admission/stop/error contract | - |
-| R17/routing-and-names | R17/intent-contract | debian-linux | queued | pending | Loopback forwarder, real alias resolution and conflict handling | - |
-| R17/windows-firewall | R17/routing-and-names | bluefin-linux | queued | pending | Scoped Windows native rules with durable ownership and idempotent reversal | - |
-| R17/linux-firewall | R17/routing-and-names | alpine-linux | queued | pending | Applicable native Linux firewall adapters and precise unsupported/policy-denied results | - |
-| R17/recovery-proof | R17/windows-firewall, R17/linux-firewall | debian-linux | queued | pending | Full share crash/restart/stop/cleanup proof across the integrated adapters | - |
-| R21/operation-contract | - | debian-linux | queued | pending | Typed progress and durable resource intent over existing domain commands | - |
-| R21/domain-composition | R21/operation-contract | debian-linux | queued | pending | Actual name/grant/leaf/listener/backend integration and client prerequisite output | - |
-| R21/recovery-proof | R21/domain-composition | debian-linux | queued | pending | Cancellation/restart/conflict/cleanup proof and existing-resource reuse | - |
-| R22/creation-and-joining | - | debian-linux | queued | pending | Simple create/invite/join language and any justified ceremony ADR amendment | - |
+| R13/rpm-ostree-gnome | - | cachyos-linux | queued | pending | Immutable native RPM/layer/reboot/session/rollback journey | - |
+| R13/openrc-musl | - | cachyos-linux | queued | pending | OpenRC/musl package/UI/startup and rollback journey | - |
+| R13/systemd-headless | - | cachyos-linux | queued | pending | No-GUI systemd install/operator/upgrade/rollback journey | - |
+| R16/contract | - | cachyos-linux | queued | pending | Typed candidate/evidence projection, scan limits, mock adapter fixtures | - |
+| R16/windows | R16/contract | cachyos-linux | queued | pending | Native Windows listener/process/runtime observation; no mutation | - |
+| R16/linux | R16/contract | cachyos-linux | queued | pending | Native Linux listener/runtime observation with permission fallback; no mutation | - |
+| R17/intent-contract | - | cachyos-linux | queued | pending | Durable intent/receipt, scoped resource IDs, admission/stop/error contract | - |
+| R17/routing-and-names | R17/intent-contract | cachyos-linux | queued | pending | Loopback forwarder, real alias resolution and conflict handling | - |
+| R17/windows-firewall | R17/routing-and-names | cachyos-linux | queued | pending | Scoped Windows native rules with durable ownership and idempotent reversal | - |
+| R17/linux-firewall | R17/routing-and-names | cachyos-linux | queued | pending | Applicable native Linux firewall adapters and precise unsupported/policy-denied results | - |
+| R17/recovery-proof | R17/windows-firewall, R17/linux-firewall | cachyos-linux | queued | pending | Full share crash/restart/stop/cleanup proof across the integrated adapters | - |
+| R21/operation-contract | - | cachyos-linux | queued | pending | Typed progress and durable resource intent over existing domain commands | - |
+| R21/domain-composition | R21/operation-contract | cachyos-linux | queued | pending | Actual name/grant/leaf/listener/backend integration and client prerequisite output | - |
+| R21/recovery-proof | R21/domain-composition | cachyos-linux | queued | pending | Cancellation/restart/conflict/cleanup proof and existing-resource reuse | - |
+| R22/creation-and-joining | - | cachyos-linux | queued | pending | Simple create/invite/join language and any justified ceremony ADR amendment | - |
 | R22/service-setup-ui | R22/creation-and-joining | cachyos-linux | queued | pending | Live secure-service progress/retry/reopen flow with contextual details | - |
-| R22/client-verification | R22/service-setup-ui | bluefin-linux | queued | pending | Public client setup bundle and real named second-client/container HTTPS proof | - |
-| R25/cli-rust-client | - | alpine-linux | queued | pending | Stable task commands, transport/errors, help and human/JSON behavior | - |
-| R25/typescript-python | R25/cli-rust-client | bluefin-linux | queued | pending | Both existing thin SDKs, compatibility/negative fixtures and minimal recipes | - |
-| R25/mcp | R25/cli-rust-client | alpine-linux | queued | pending | Permitted service tasks and one actual named-client recipe | - |
-| R25/embedded | R25/cli-rust-client | alpine-linux | queued | pending | Shared lifecycle facade, external lean example and orderly shutdown | - |
+| R22/client-verification | R22/service-setup-ui | cachyos-linux | queued | pending | Public client setup bundle and real named second-client/container HTTPS proof | - |
+| R25/cli-rust-client | - | cachyos-linux | queued | pending | Stable task commands, transport/errors, help and human/JSON behavior | - |
+| R25/typescript-python | R25/cli-rust-client | cachyos-linux | queued | pending | Both existing thin SDKs, compatibility/negative fixtures and minimal recipes | - |
+| R25/mcp | R25/cli-rust-client | cachyos-linux | queued | pending | Permitted service tasks and one actual named-client recipe | - |
+| R25/embedded | R25/cli-rust-client | cachyos-linux | queued | pending | Shared lifecycle facade, external lean example and orderly shutdown | - |
 | R29/windows | - | windows | queued | pending | Exact-candidate Windows native/journey/soak obligations | - |
 | R29/cachyos-linux | - | cachyos-linux | queued | pending | Exact-candidate glibc Plasma native/journey/soak obligations | - |
 | R29/bluefin-linux | - | bluefin-linux | queued | pending | Exact-candidate immutable GNOME native/journey/peer obligations | - |

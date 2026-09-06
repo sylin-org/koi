@@ -605,3 +605,38 @@ checks still observe one daemon PID **1366166**, one normal workbench PID **1380
 and both loopback health surfaces passing. No host mutation, cleanup, credential or
 peer launch occurred. Release this decision's shared-document reservation after
 publication; the next production slice has its own claim.
+
+## 2026-09-05 21:59 EDT — single implementation owner activated
+
+task: owner-approved Epic 003 ownership consolidation | starting source
+`8cc04dcf65cc85137b157b4618b6836d3e748bbf`, sibling `ee5333f` |
+verdict: **all unfinished source/integration assigned to CachyOS; peers verification-only**.
+
+The owner explicitly approved one implementation owner after the renderer decision.
+Audited the published ledger, latest peer evidence and local worktrees: transferred
+source rows are queued, accepted source tasks have closed their published claims,
+and no live published peer reservation needs interruption. This does not claim
+that unreported remote edits are absent; a host discovering any must preserve and
+checkpoint them for handoff before overlapping implementation.
+
+Changed 35 source/integration owner fields to CachyOS. All 62 task/subrows retain
+their IDs, dependencies, statuses, readiness, deliverables and evidence. Eight
+accepted rows retain historical owners; five native-only R29 rows retain their
+actual hats; all peer request history is unchanged. R13's four recipe slices now
+have CachyOS source/integration ownership, with physical verification still requested
+from the corresponding CachyOS/Bluefin/Alpine/Debian host. No native acceptance is
+inferred from source ownership.
+
+Updated ledger, dispatcher, universal entry, coordination, charter, epic and R13
+routing consistently. Peers execute only bounded published native requests or
+eligible native R29 rows, return source defects to CachyOS and do not independently
+edit product/recipes. Windows remains preferred for compatible heavy verification;
+Debian receives only lightweight native checks. Existing privilege, input, recovery,
+one-instance and own-host requirements are unchanged. No remote session, system
+mutation, source build, credential handling or agent launch occurred.
+
+Checks: automated before/after owner-only row audit and preserved peer history,
+documentation leak/surface guards, changed-link and whitespace checks. Both local
+repositories were clean before this documentation-only change; no peer worktree
+was accessed. Next implementation is R06/shared-shell under a fresh bounded claim;
+this ownership change is not a blanket file reservation or a new acceptance gate.

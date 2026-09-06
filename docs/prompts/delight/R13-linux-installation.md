@@ -27,6 +27,12 @@ Select one applicable dependency-ready slice from LEDGER.md. Execute and report 
 that slice; complete the parent task only when all required rows are accepted.
 The slice table defines order, owner and narrow deliverable.
 
+Ownership update, 2026-09-06 UTC: CachyOS owns source/integration for all four
+recipe slices. Physical proof still runs on the matching native host through an
+exact-artifact peer request. Verification hosts do not independently edit recipes
+or product code; return defects to CachyOS. This does not combine the four native
+acceptance runs or permit another host's mutation.
+
 ## Starting source
 
 - `crates/koi/src/platform/recipes/mod.rs`
@@ -42,13 +48,13 @@ with rg, update the contract map, and inspect the current owner before creating 
 
 ## Work
 
-1. Resolve this host's existing fleet hat and select exactly one ledger subrow: CachyOS=systemd-plasma, Bluefin=rpm-ostree-gnome, Alpine=openrc-musl, Debian=systemd-headless. Read its brief. Do not mark other rows accepted or invent macOS evidence.
+1. CachyOS selects one dependency-ready recipe subrow for source/integration. Its native verification mapping remains CachyOS=systemd-plasma, Bluefin=rpm-ostree-gnome, Alpine=openrc-musl, Debian=systemd-headless. A peer executes only its addressed request, reads its own brief and publishes only its observed native evidence. Do not invent macOS evidence.
 
-2. Implement the missing portion of R11 using that environment's service/package/session facilities. A GUI installation pairs daemon/workbench at durable paths; headless installation supplies a useful local operator entry. Keep compilers outside an immutable host's deployed image.
+2. CachyOS implements the missing portion of R11 using that environment's service/package/session facilities, then requests native verification of the published source. A GUI installation pairs daemon/workbench at durable paths; headless installation supplies a useful local operator entry. Keep compilers outside an immutable host's deployed image and heavy builds off Debian.
 
 3. Prove install, rerun, boot/login as applicable, close/reopen, restart, upgrade, failed-upgrade rollback, uninstall/reinstall and provider coexistence. Validate real package/service operations, including OpenRC/musl and rpm-ostree reboot/rollback where applicable.
 
-4. Exercise native discovery and a peer service using the intended deployment, restore all run-owned changes and retain one healthy Koi. Report shared bugs at the shared owner and implement only this native recipe's adapter differences.
+4. Exercise native discovery and a peer service using the intended deployment, restore all run-owned changes and retain one healthy Koi. Return bugs and recipe differences to CachyOS for one implementation and an affected native retry; verification is not permission for a peer source fork.
 
 ## Acceptance cases
 
@@ -66,7 +72,10 @@ hosted prerequisites explicitly; a source-only check cannot close that acceptanc
 
 ## Documentation and handoff
 
-Update only this hat's journal plus its R13 subrow/report and the relevant distro guide. Include exact artifact identities and restoration result.
+CachyOS owns the R13 source/integration report, subrow reconciliation and distro
+guide. Each verification host updates its own journal/issues and addressed request.
+Include exact artifact identities and restoration result; no peer acceptance is
+inferred from source ownership.
 
 Update the selected LEDGER.md row and its report with exact source changes, commands,
 results, remaining work and the next concrete action. Cite owned fleet evidence for

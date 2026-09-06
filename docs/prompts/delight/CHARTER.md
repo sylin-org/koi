@@ -6,6 +6,13 @@ The task and linked local sources are sufficient; no prior conversation is requi
 
 ## Authority and current work
 
+Owner update, 2026-09-06 UTC: CachyOS is the sole owner of unfinished source and
+integration work; other hosts provide requested platform-specific verification.
+The ledger and fleet dispatcher implement this transfer. It supersedes earlier
+distributed source assignments, not native ownership, dependencies, acceptance
+requirements or safety rules. Peers report defects instead of independently
+editing product code/recipes. Accepted work and historical evidence stay intact.
+
 The owner requested the epic, then delegated execution to the Linux machines through
 fleet/task.md on 2026-09-04. [The Linux dispatch](../../../fleet/delight-dispatch.md)
 and LEDGER.md now route those assignments. This includes repository work, direct dev

@@ -23,6 +23,12 @@ all contribute to the exit verdict.
 
 ## Authority and handover
 
+Current owner direction, 2026-09-06 UTC: consolidate all unfinished implementation
+and integration under CachyOS. Other machines remain platform-verification hosts,
+invoked only for bounded published cases or eligible R29 native rows. This overrides
+historical distributed source assignments below, not actual native ownership or
+acceptance gates. The ledger records the audited transfer; R06/shared-shell is next.
+
 On 2026-09-04 the owner delegated execution to the Linux machines through
 `fleet/task.md`. The dispatcher and fixed ledger assignments are active for that
 delegation. R01 contract preparation is the first assignment; implementation is

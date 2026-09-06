@@ -68,7 +68,10 @@ or shipped-asset correction.
 **Epic 003 routing:** when coordination names Epic 003, execute
 [delight-dispatch.md](delight-dispatch.md) and the R ledger. That branch includes
 the inherited Epic 002 run's handover, fixed Linux owners, dependency selection,
-claims, peer evidence and publication. It replaces the historical selector below
+claims, peer evidence and publication. Under the owner's 2026-09-06 UTC update,
+CachyOS alone owns unfinished implementation; other hosts select only addressed
+verification requests or eligible R29 native rows. They do not claim new source
+work from older briefs. It replaces the historical selector below
 and qualifies sections 4-5 for source-only work. Do not fall through to PH work.
 This same entry point resumes the next eligible R slice on later invocations.
 
