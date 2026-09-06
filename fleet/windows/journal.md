@@ -1,5 +1,72 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-05 (36) — R06 Windows recovery tail accepted
+
+task: `R06/windows-recovery-tail` | run
+`r06-recovery-ccee0fc-windows-20260905-retry1` | desktop source
+`ccee0fce1bb579e032a0aad2a8603f869b22a2b2` | shared renderer source
+`72cb286f7c4b4c285893693a58fdebcf896a1538` | verdict: **PASS — real
+installed service loss, safe unavailable view, same-service recovery and fresh
+real-row view; exact normal deployment restored**
+
+koi state now: the unchanged accepted R05 daemon is the sole Running AutoStart
+LocalSystem SCM service, PID `34744`, descriptor
+`"C:\Program Files\Koi\koi.exe" --daemon`, SHA-256
+`ca6386df292cfd40c019d30ea36bcab33eea80ea7f50a1c78e375bac8d19cb21`,
+health 200 on 5641. Failure actions remain 5-second/10-second restart with an
+86,400-second reset. The exact installed normal-user 0.1.3 NSIS workbench is sole
+PID `28696`, `--minimized`, SHA-256
+`f1d7a7a750130dac48241cfc5235951d9baeff18d100dedc8217ca8b5135b487`,
+on loopback 5640. Pond remains disabled and 5644 is closed.
+
+evidence and findings:
+
+1. Before mutation, normal-user desktop recovery guard PID `34828` and separately
+   UAC-elevated service guard PID `41840` were live. The service guard's verified
+   ready receipt recorded an Administrator token, existing service PID `3888`, and
+   a 600-second independent fallback that could start only `koi` and required
+   `/healthz` 200. The acknowledgement was published at `5db7148` before stop.
+2. The sole normal workbench PID `22992` exited before the elevated guard stopped
+   the existing service. At `2026-09-06T00:35:53.9925963Z`, SCM reported Stopped,
+   PID 0, both 5640/5641 absent and zero desktop processes. No fixture, shadow
+   endpoint, alternate daemon, data root, user or artificial authentication denial
+   was introduced.
+3. Installed evaluation PID `25544`, launched as the existing desktop user from
+   `C:\Windows`, rendered in one native Tauri/WebView2 window with exact 320 by 650
+   client geometry while the service remained Stopped and 5641 absent. The visible
+   view said `Cannot read the local catalog. Check the installed service and its
+   supported schema.`; a native End input exposed the complete original Koi card.
+   Captures hashed respectively
+   `50e6b407ceb424e6636676979bad8227c4bf642cc6274939d2310c69369858bb`
+   and `f19e1edd91b7dc3f0bdd734ec0d634b26463c97cadecf0ae00a6a1a276324d94`.
+4. That evaluator exited before the requested recovery signal. The already-armed
+   elevated guard restarted the same unchanged SCM service and recorded requested
+   recovery at `2026-09-06T00:37:17.8331083Z`, new PID `34744`, health 200. Fresh
+   installed evaluation PID `25124` then rendered a real network catalog row at
+   snapshot revision 121 in the same exact geometry; visible capture SHA-256 is
+   `fb78a89c98cdc0013633796380ca314b138242a03456d8d0ec1c2320fc9e6533`.
+5. The recovered evaluator exited before the normal `--minimized` workbench launched
+   as PID `28696`. At every desktop phase there was at most one workbench process.
+   Both guards exited without firing a timeout. Final config, local-access policy
+   and installation identity hashes remain respectively
+   `17fe9a664f76bb748da8beeb5c18fabf64da55d1901384772d1e7aecfab2c3ed`,
+   `14d3432b0efd0a52a697bb80adaa16bcd264c2ff79f57ac1156ac513decc9873`
+   and `a3b1c896d2d92c9fa768992570f0ec317e6b6289bf53a2e01ed4576fe36f118a`.
+   Startup and the 15-rule effective Koi display-rule baseline are unchanged;
+   zero R06 scheduled tasks or guard processes remain.
+6. Cleanup deviation: the dry run and removal command named the exact ignored run
+   descendant, but Git collapsed that selection to the ignored parent and reported
+   `Removing .tmp/`. The directory was not inventoried before deletion, so absence
+   of unrelated ignored contents cannot be proved and anything untracked there is
+   not recoverable from Git. No tracked file or installed Koi state was affected.
+   The run-owned helpers, receipts and captures are gone. Future cleanup of an
+   ignored descendant must use its verified absolute literal path rather than
+   `git clean` through an ignored parent.
+
+next: CachyOS may reconcile this completed Windows tail with the preserved positive
+motion/focus/offline/lifecycle proof. R06 still depends separately on the Alpine
+native keyboard facility; this entry does not waive or relabel that failed tail.
+
 ## 2026-09-05 (35) — R06 Windows recovery tail retry acknowledged
 
 task: `R06/windows-recovery-tail` | run
