@@ -50,6 +50,11 @@ and native recovery helpers as historical evidence). Documentation claims:
 `docs/reference/{architecture.md,http-api.md}`, `docs/SURFACES.md`, owned
 `fleet/cachyos-linux/journal.md`, and `fleet/delight-dispatch.md` for final status.
 
+Claim refinement before test edits: the actual ADR path is
+`docs/adr/045-shared-rust-renderer.md`. Add
+`crates/koi-serve/assets/ui-transport.test.mjs` for behavioral token/cancellation/
+logout transport tests. This is adapter-only coverage, not a browser catalog model.
+
 **Pattern:** Follow `koi-serve::catalog` for in-process snapshot intake and the
 selected native asynchronous protocol for Rust-only authenticated HTML. Native
 HTML is script-free; explicit refresh rereads the complete snapshot. The browser
