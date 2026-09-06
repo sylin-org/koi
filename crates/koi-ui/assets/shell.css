@@ -44,4 +44,6 @@ dd { margin-inline-start: 16px; overflow-wrap: anywhere; }
   .home-layout { display: block; }
   #service-details:not(:target) { display: none; }
   .home-layout:has(#service-details:target) .home-results { display: none; }
+  html[data-home-details] #service-details { display: block; }
+  html[data-home-details] .home-results { display: none; }
 }

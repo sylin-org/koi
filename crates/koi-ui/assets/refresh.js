@@ -1,5 +1,11 @@
 // Shared transport lifecycle and DOM mechanics only. No catalog or credentials.
 (() => {
+  function syncFragment() {
+    // Replacing a fragment's element can clear the engine's :target match even
+    // though the URL is unchanged. Derive narrow-panel visibility from that URL.
+    document.documentElement.toggleAttribute('data-home-details', location.hash === '#service-details');
+  }
+  window.addEventListener('hashchange', syncFragment);
   function create({ load, apply, failed }) {
     let timer, pending, generation = 0, failures = 0, stopped = false;
     function stop() {
@@ -67,8 +73,10 @@
     }
     view.replaceChildren(...rendered.body.childNodes);
     view.removeAttribute('data-stale');
+    syncFragment();
     if (focusId) {
       location.hash = focusId;
+      syncFragment();
       document.getElementById(focusId)?.focus();
     } else if (automatic && focused) {
       let next = active.id ? document.getElementById(active.id) : null;
