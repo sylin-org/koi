@@ -210,7 +210,7 @@ the hat directly. Source ownership never substitutes for a physical platform pas
 | Slice | Additional prerequisite | Owner | Status | Readiness | Deliverable | Evidence |
 |---|---|---|---|---|---|---|
 | R06/renderer-decision | - | cachyos-linux | accepted | ready | Maud 0.27.0 / retained Tauri 2.11.5 selected; native tails 0233b43 and 16effd8 reconciled; ADR-045/CONTRACT map fixed | [final acceptance](reports/R06-renderer-decision.md#final-decision-and-acceptance) |
-| R06/shared-shell | R06/renderer-decision | cachyos-linux | queued | pending | Selected reusable shell/assets/data adapter; no remaining production spike variant | - |
+| R06/shared-shell | R06/renderer-decision | cachyos-linux | in_progress | pending | Production shared renderer/native/authenticated-web migration claimed; source and native acceptance pending | [claim](reports/R06-shared-shell.md) |
 | R11/result-contract | - | cachyos-linux | queued | pending | Typed install result, artifact compatibility, durable recipe/receipt ownership | - |
 | R11/restart-and-rollback | R11/result-contract | cachyos-linux | queued | pending | Interrupted install/upgrade recovery, idempotency and old-state preservation | - |
 | R13/systemd-plasma | - | cachyos-linux | queued | pending | Installed systemd/glibc Plasma journey including package/login/rollback | - |
