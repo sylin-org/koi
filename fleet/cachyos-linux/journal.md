@@ -561,3 +561,47 @@ Both loopback health checks pass; no cleanup or credential residue was created.
 Completed motion-source write reservations are released; the next production
 slice needs a fresh claim. Next: owner-assisted Alpine input and elevated Windows
 recovery, then exact-evidence ADR/CONTRACT reconciliation.
+
+## 2026-09-05 21:53 EDT — R06 renderer decision accepted
+
+task: `R06/renderer-decision` | evidence source
+`16effd87b8b8d44eeac8df6ee87dd5486c245e6a`, desktop instruction/recipe source
+`ee5333f1d735b7dd7d267afdde5c68991e490979`, decision claim `f22d4ed` |
+verdict: **accepted/ready for the renderer decision only**.
+
+Windows recovery `0233b43` closes the real missing-service/unavailable/recovered-row
+case on unchanged installed ccee0fc bytes using verified independent elevated
+recovery. Alpine keyboard `16effd8` closes the final focus case with an ordinary
+operator Tab at 320 logical px on its same package, with no permission change or
+input emulation. Both restore normal deployment and preserve their earlier failed
+prerequisite histories. No Linux-readiness exception or accessibility waiver was used.
+
+Selected Maud 0.27.0 shared Rust HTML with the retained Tauri 2.11.5 shell in ADR-045.
+Both alternatives compile and pass the shared behavioral tests; Maud's SSR readers
+are smaller across the three measured targets, while only the retained native route
+has the full exercised package/lifecycle/authentication evidence. No comparative
+desktop runtime superiority is claimed. Rechecked primary framework documentation
+without updating any dependency. Fixed the selected component/asset/intake map in
+CONTRACT's presentation section, added ADR-033's presentation amendment, and marked
+the experiment README for retirement by the coherent production migration.
+
+Preserved Windows's uninventoried ignored `.tmp/` cleanup loss and Alpine's one
+historical-recipe library rebuild as explicit deviations. This decision is not a
+clean whole-candidate/restoration, macOS, R29 or release verdict. Old CachyOS c497b3b
+lifecycle and ccee0fc motion/focus results retain their separate provenance.
+
+Only R06/shared-shell is now dependency-ready for this hat. Parent R06 remains
+in_progress/pending; R07/R11 and G2 are not released. The next slice must freshly
+claim the production crate/adapters, preserve real state and advanced access,
+publish the replacement dependency before changing desktop pins, and retire both
+spike variants/probe mode with replacement tests. Current source/default UI is not
+changed by this documentation decision. Broader fleet reassignment is not inferred
+from discussion of using a single implementation owner.
+
+Checks: diff and documentation-only path inventory, documentation leak/surface
+guards, local evidence links/anchors and referenced commit objects. Reused exact
+recorded native/build evidence; no Rust build/install was needed. Read-only local
+checks still observe one daemon PID **1366166**, one normal workbench PID **1380276**,
+and both loopback health surfaces passing. No host mutation, cleanup, credential or
+peer launch occurred. Release this decision's shared-document reservation after
+publication; the next production slice has its own claim.

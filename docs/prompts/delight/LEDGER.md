@@ -16,7 +16,9 @@ All rows are queued at creation. No implementation or native validation is impli
 - Current dispatch: R02/R03/R04/R05/R20 and R28 are accepted. R05 is complete at Koi
   `e673af6` and desktop `ba39faf`; Windows installed proof and complete hosted CI
   `33974240044` pass. R20 is complete at `3eb1147`; all 13 jobs in hosted CI
-  `33987878995` pass. CachyOS R06 is dependency-ready. Windows has no further
+  `33987878995` pass. R06/renderer-decision is accepted: Maud with the retained Tauri
+  shell; CachyOS next owns R06/shared-shell. R06 parent/R07/R11 are not yet ready.
+  Windows has no further
   dependency-ready source row and next services any ready native-evidence request.
 - Capacity constraint (owner instruction, 2026-09-04): Debian is a very weak thin
   client. Preserve its current R03 claim through its small documentation handoff;
@@ -143,7 +145,7 @@ identity and complete hosted/native evidence, even if infrastructure tasks passe
 | [R03](R03-discovery-record-correctness.md) | R01 | accepted | ready | debian-linux | [reports/R03.md](reports/R03.md) | Complete at source `d48d4df`; contract rows and Windows native proof `189ea32` reconciled |
 | [R04](R04-service-catalog.md) | R01, R03 | accepted | ready | windows | [reports/R04.md](reports/R04.md) | Source `b822811`; Windows installed-service run passes; CI `33949639819` supplies green Ubuntu workspace plus macOS and contract jobs |
 | [R05](R05-catalog-api-and-preferences.md) | R04 | accepted | ready | windows | [reports/R05.md](reports/R05.md) | Koi `e673af6`, desktop `ba39faf`, Windows installed service/workbench run and complete hosted CI `33974240044` pass; complete and R06 unblocked |
-| [R06](R06-rust-ui-and-family-foundation.md) | R01, R05 | queued | pending | cachyos-linux | - | See required subrows below |
+| [R06](R06-rust-ui-and-family-foundation.md) | R01, R05 | in_progress | pending | cachyos-linux | [renderer decision](reports/R06-renderer-decision.md#final-decision-and-acceptance) | Decision accepted; implement/verify shared-shell and retire experiments before parent acceptance |
 | [R07](R07-home-launchpad.md) | R05, R06 | queued | pending | cachyos-linux | - | Wait for dependencies |
 | [R08](R08-devices-and-comparison.md) | R07 | queued | pending | cachyos-linux | - | Wait for dependencies |
 | [R09](R09-settings-about-and-surface-consolidation.md) | R08 | queued | pending | cachyos-linux | - | Wait for dependencies |
@@ -179,7 +181,7 @@ Bluefin; Windows physical cases remain pending for the Windows hat.
 
 | Slice | Additional prerequisite | Owner | Status | Readiness | Deliverable | Evidence |
 |---|---|---|---|---|---|---|
-| R06/renderer-decision | - | cachyos-linux | in_progress | pending | Both native tails completed; final measured ADR/CONTRACT decision claimed, no shared-shell implementation yet | [final claim](reports/R06-renderer-decision.md#final-decision-claim--2026-09-05-2146-edt) |
+| R06/renderer-decision | - | cachyos-linux | accepted | ready | Maud 0.27.0 / retained Tauri 2.11.5 selected; native tails 0233b43 and 16effd8 reconciled; ADR-045/CONTRACT map fixed | [final acceptance](reports/R06-renderer-decision.md#final-decision-and-acceptance) |
 | R06/shared-shell | R06/renderer-decision | cachyos-linux | queued | pending | Selected reusable shell/assets/data adapter; no remaining production spike variant | - |
 | R11/result-contract | - | alpine-linux | queued | pending | Typed install result, artifact compatibility, durable recipe/receipt ownership | - |
 | R11/restart-and-rollback | R11/result-contract | alpine-linux | queued | pending | Interrupted install/upgrade recovery, idempotency and old-state preservation | - |

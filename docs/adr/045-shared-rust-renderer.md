@@ -1,9 +1,41 @@
-# ADR-045: Shared Rust renderer — comparison in progress
+# ADR-045: Shared Rust HTML with Maud and the Tauri shell
 
-Status: **Proposed; no renderer selected**. Date: 2026-09-05.
-R06/renderer-decision owns this comparison. ADR-033's production Tauri workbench
-remains unchanged; ADR-040 local authentication and ADR-042 Pond authority remain
-binding. The product destination remains `crates/koi-ui/` under ADR-044.
+Status: **Accepted for R06/renderer-decision**. Decision: 2026-09-06 UTC.
+The production shared-shell migration is not yet implemented or accepted.
+ADR-033's Tauri lifecycle boundary is retained; its JS-authored presentation direction
+is superseded by the Rust boundary below. ADR-040 local authentication and ADR-042
+Pond authority remain binding. The destination is `crates/koi-ui/` under ADR-044.
+
+## Decision
+
+Use **Maud 0.27.0** for the shared Rust-authored HTML/components and retain the
+existing **Tauri 2.11.5** native shell, its pinned Tao correction, native integrations
+and system webviews. The same pure Rust renderer serves desktop and authenticated
+headless HTML through their existing intake/transport owners. Do not introduce a
+JS-owned catalog, Dioxus desktop runtime or additional daemon/listener.
+
+The choice follows the measured experiment, not Tauri's previous incumbency alone:
+
+- The Maud/Tauri route has packaged live/authenticated/offline, native motion,
+  keyboard, tray/singleton and unavailable/recovery evidence across Windows,
+  CachyOS/glibc and Alpine/musl. The final missing cases closed at Windows `0233b43`
+  and Alpine `16effd8`, on unchanged desktop ccee0fc/shared 72cb286 artifacts.
+- Both alternatives passed the same typed-renderer and hostile-input tests and
+  compiled on all three native targets. Maud's stripped SSR reader was smaller
+  on each; this is supporting size evidence, not a desktop speed/memory benchmark.
+- Dioxus's desktop dependency closure compiled, but no equivalent replacement
+  tray, authentication, packaging or window lifecycle was exercised. Choosing it
+  would require implementing and validating that additional migration. No evidence
+  establishes a portability or runtime benefit that warrants it for this work order.
+- The original family assets and shared GTK motion correction work through the
+  retained native boundary. Their implementation does not need a second framework,
+  new domain state or runtime access to a sibling checkout/CDN.
+
+Application meaning, typed state and platform behavior stay in Rust. Minimal browser
+interactivity may carry user intent and apply rendered output, but cannot reconstruct
+catalog truth, receive desktop credentials, infer authorization or bypass native
+focus/motion behavior. Dynamic content remains escaped; raw markup is limited to
+source-owned assets. The headless renderer must not depend on GTK/Tauri.
 
 ## Alternatives and current evidence
 
@@ -40,7 +72,7 @@ stable patch while search advertised a 0.8 alpha. The experiment pins 0.7.10 and
 its complete lockfile, rather than choosing the alpha or mixing an older top-level
 patch with newer internals.
 
-## Measurements and limits
+## Measurements and limits (experiment chronology)
 
 Host: CachyOS test-01, Rust 1.97.0, glibc, WebKitGTK 4.1 version 2.52.6;
 Chromium 152.0.7977.75. Exact commands and final results are in the R06 report.
@@ -84,19 +116,19 @@ not a default UI replacement or extra server. Git-pinned shared components rende
 the complete document after an authenticated Rust catalog read; only the existing
 main window's exact evaluation root is admitted. Locked source gates and release
 build pass. Its native Arch package and physical acceptance were exercised
-under the report's exact-baseline restoration guard. This remains an experiment,
-not a selection inferred from the SSR-reader size advantage.
+under the report's exact-baseline restoration guard. This was experiment
+integration, not selection inferred from SSR-reader size alone.
 
-CachyOS packaged proof now passes at `c497b3b`: the installed workbench renders
+CachyOS's initial packaged proof passed at `c497b3b`: the installed workbench rendered
 a real catalog row and original card with kernel-enforced external IP denial,
 320 px native client width, visible native keyboard focus, close-to-tray/reveal,
 singleton rejection and a safe missing-service page. The native Arch executable
 is 13,455,424 bytes with 15 direct ELF runtime imports (the existing GTK/WebKit
 family); package SHA and screenshots are in the report. One healthy upgraded
 daemon and one normal-mode packaged workbench remain; identity, settings and
-firewall are unchanged. Reduced-motion behavior is proven in offline Chromium,
-not yet a native OS-preference journey. Windows and Alpine packaged requests now
-name this exact source; their earlier compiler passes do not replace them.
+firewall were unchanged. At that checkpoint reduced motion was proven only in
+offline Chromium. The later native correction and peer results below close that
+gap; the earlier compiler passes did not replace packaged physical evidence.
 
 ## Native motion follow-up
 
@@ -123,37 +155,42 @@ below; the original diagnostic failure is preserved as history.
 
 Alpine `1c3d1c9` proves the installed ccee0fc native motion correction, including
 startup-reduced, real row/card, offline assets, tray/singleton and service-loss/
-recovery. Issue 001 is resolved. Its native keyboard focus remains explicitly
-unverified because neither permitted virtual input nor an operator keypress was
-available. Windows `11ed53f` proves the same source's WebView2 motion, narrow focus,
-offline and window/tray behavior; its service-unavailable/recovery case did not run
-because the elevated restart guard was denied. Neither gap is a reported renderer
-defect, but neither is a passing acceptance case.
+recovery. Issue 001 is resolved. Its later [keyboard tail](../../fleet/alpine-linux/journal.md#2026-09-06-0131-utc--r06-alpine-keyboard-tail-accepted)
+at `16effd8` proves an ordinary operator Tab and visible native navigation focus at
+320 logical px on the same package. No permission change or input emulation occurred.
 
-The [coordinator reconciliation](../prompts/delight/reports/R06-renderer-decision.md#coordinator-reconciliation--2026-09-05)
-preserves the exact artifacts, host-owned verdicts and restoration qualifications.
-Two bounded tails request only Alpine native keyboard focus and Windows guarded
-service recovery on their installed packages. No repeated full build, reinstall,
-new input privilege or peer launch is requested. R06/renderer-decision is
-blocked/pending; the ledger permits missing Windows physical evidence for Linux
-readiness, not missing Linux focus proof. Reporting an unavailable input facility
-does not waive accessibility. The ADR remains proposed and shared-shell stays gated.
+Windows `11ed53f` proves WebView2 motion, narrow focus, offline and window/tray
+behavior. Its [recovery tail](../../fleet/windows/journal.md#2026-09-05-36--r06-windows-recovery-tail-accepted)
+at `0233b43` then used a verified elevated independent guard to stop the unchanged
+service, capture the real unavailable view, restart it and capture a recovered row.
+Normal deployment and identity/configuration were restored. No native case is
+being waived via linux-ready; both former prerequisite failures remain historical.
 
-## Production component map (proposal, not implemented)
+The [final reconciliation](../prompts/delight/reports/R06-renderer-decision.md#final-decision-and-acceptance)
+preserves artifact continuity and the cleanup qualifications: Windows removed an
+uninventoried ignored `.tmp/` parent, so absence of unrelated untracked loss cannot
+be proved; Alpine restored one unrelated library from its historical source recipe,
+not the unavailable original binary. Neither event is evidence of renderer failure
+or permission to repeat that cleanup. This decision accepts the rendering route,
+not a clean whole-candidate/restoration verdict, full product UI or public release.
 
-These destinations are proposed within R01's `crates/koi-ui/` boundary. R06 must
-confirm them in CONTRACT.md only with the selected, measured route.
+## Production component map (selected, not implemented)
 
-| Responsibility | Proposed exact owner |
+These destinations are fixed in CONTRACT.md within R01's `crates/koi-ui/` boundary.
+R06/shared-shell implements them; this decision does not claim the files exist yet.
+
+| Responsibility | Selected exact owner |
 |---|---|
 | Public rendering entry, typed presentation input | `crates/koi-ui/src/lib.rs` |
 | Four navigation destinations | `crates/koi-ui/src/components/navigation.rs` |
 | Catalog row and declared condition copy | `crates/koi-ui/src/components/service_row.rs`, `condition.rs` |
 | Original source card | `crates/koi-ui/src/components/mascot_card.rs` |
 | Family tokens/card CSS and original sprite | `crates/koi-ui/assets/family-v1.css`, `koi.png` |
+| Source card markup and shared layout/focus/motion rules | `crates/koi-ui/assets/card.html`, `shell.css`, `reduced-motion.css` |
 | Home launchpad / device detail | `crates/koi-ui/src/screens/home.rs`, `devices.rs` |
 | Settings / About | `crates/koi-ui/src/screens/settings.rs`, `about.rs` |
 | Native intake/render invocation | `koi-desktop/src/ui.rs`, using existing `local_daemon.rs` |
+| Linux-native motion binding | Existing `koi-desktop/src/native_motion.rs`, consuming shared reduction rules |
 | Authenticated headless HTML adapter | `crates/koi-serve/src/ui.rs`, not a second server |
 
 No service action is enabled by a view heuristic. Domain facades/compose retain
@@ -161,15 +198,24 @@ truth; `koi-client` retains snapshot recovery; `koi-serve` retains authorization
 Pond cannot receive the operator catalog until R09 supplies its public projector.
 No parallel serving path or permanent experiment mode is authorized by this ADR.
 
-## Decision gate / next work
+## Consequences and next work
 
-Before selecting: reconcile the two remaining native tails above. Native reduced
-motion is now proven on all three desktop targets. CachyOS's build, guarded serial
-upgrade, live row and installed/offline integration are recorded above.
-Headless/browser output alone cannot claim WebKit or desktop lifecycle parity.
-Windows-only physical gaps may later use the ledger's narrow readiness exception;
-missing Linux proof cannot. No readiness is granted by this proposed ADR.
+R06/renderer-decision is accepted/ready. Only R06/shared-shell is newly eligible;
+R06 as a whole and its downstream R07/R11 remain pending until that slice passes.
+No renderer dependency or normal-mode UI changes in this documentation commit.
 
-After the decision, move only the selected components/assets into `koi-ui`,
-provide locked cross-repository packaging commands, retire both experiment variants
-and preserve preferences, identity, local authentication and advanced access.
+Move the selected components/assets into `koi-ui` and integrate the real native/
+authenticated-headless adapters. Retire both spike variants, the desktop probe
+flag/protocol/dependency and stale experimental tests as part of that coherent
+cross-repository transition; immutable commits retain experiment reproducibility.
+Do not remove the pinned dependency before publishing its production replacement,
+ship a parallel experimental UI, or carry a renderer-selection feature into product.
+Keep meaningful hostile-input/state/asset/browser and native lifecycle tests, with
+exact replacement commands in the shared-shell report. Preserve preferences,
+identity, local authentication, advanced access and original family provenance.
+
+Platform evidence is limited to the named Windows/WebView2 and Linux/WebKitGTK
+environments. macOS remains physically unverified; immutable/GNOME and full product
+journeys need their later native checks. System webview dependencies remain required
+for desktop, never for headless rendering. Fresh production integration must earn
+its own affected source/hosted/native checks; experiment acceptance is not R29 proof.

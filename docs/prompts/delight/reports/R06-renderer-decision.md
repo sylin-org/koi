@@ -1,7 +1,9 @@
 # R06 / renderer-decision
 
-Status: in_progress / pending. This is the published claim and experiment plan,
-not a renderer selection or native acceptance.
+Status: **accepted / ready for renderer-decision**. Maud 0.27.0 with the retained
+Tauri 2.11.5 shell is selected in ADR-045. See [final acceptance](#final-decision-and-acceptance).
+Earlier sections are chronological claims/results, not current status.
+R06/shared-shell and R06 parent acceptance remain pending.
 
 ## Starting revisions and dependencies
 
@@ -939,3 +941,99 @@ source/artifact references exist and only claimed documentation changed. Reuse t
 recorded source/native gates instead of rebuilding unchanged binaries. Preserve
 Windows's unquantified ignored-directory cleanup loss and Alpine's historical-recipe
 library restoration as explicit deviations, not clean whole-candidate attestations.
+
+## Final decision and acceptance
+
+Decision date: 2026-09-06 UTC. Claim `f22d4ed`; evidence head `16effd8`, desktop
+instruction/recipe head `ee5333f`. **Select Maud 0.27.0 inside the retained Tauri
+2.11.5 shell. R06/renderer-decision is accepted/ready without a Linux-readiness
+exception.** Shared-shell implementation has not begun in this slice.
+
+### Last two cases reconciled
+
+Windows [result 36](../../../../fleet/windows/journal.md#2026-09-05-36--r06-windows-recovery-tail-accepted),
+commit `0233b43d298780f8b44ba3e4984e7ead79290c68`, verifies the existing installed
+desktop SHA `f1d7a7a750130dac48241cfc5235951d9baeff18d100dedc8217ca8b5135b487`
+and unchanged R05 daemon. Before stop it armed both the normal-user desktop guard
+and an independently UAC-elevated service guard with a verified Administrator token
+and 600-second fallback. SCM then reported Stopped/PID 0 and no service listener;
+the installed evaluator visibly rendered unavailable with the intact card. The
+same unchanged service recovered healthy, and a fresh evaluator rendered a real row.
+Normal desktop and original configuration/identity were restored; guards exited.
+This closes the former authority prerequisite, not by running the UI as another user
+or substituting an authentication-denial fixture. The earlier failed row is retained.
+
+Alpine [accepted keyboard result](../../../../fleet/alpine-linux/journal.md#2026-09-06-0131-utc--r06-alpine-keyboard-tail-accepted),
+commit `16effd87b8b8d44eeac8df6ee87dd5486c245e6a`, verifies the same installed
+desktop SHA `ee85161cebc0c4f6bd0d8872f8fd5baa6663e49246964106e1d7d7efc8ddaf5b`.
+An ordinary operator Tab in the active Plasma/Wayland window produced the visible
+blue Devices focus outline at 320 logical px, with full navigation and unclipped
+real-row text. Capture SHA-256:
+`c7a8b6b88642d4e66cfacfe74464695aad589a101fbcd4f289f819fe055e554c`.
+No input permission, privileged injection, JS focus or compositor input synthesis
+was used. The normal workbench returned, the daemon stayed unchanged, and temporary
+geometry/guard state was removed. The initially reaped evaluator/guard produced no
+acceptance evidence; only the subsequent guarded persistent run is counted.
+
+### Decision acceptance matrix
+
+| Decision obligation | Evidence and disposition |
+|---|---|
+| Real catalog row and original card | CachyOS packaged proof plus Windows/Alpine ccee0fc live captures; no fixture substituted |
+| Locked desktop and headless paths | Shared seven-test/strict-Clippy/browser suites; native Windows/glibc/musl compiler/build/package gates; authenticated Rust HTML reader with no GUI dependency |
+| Narrow text, keyboard and native motion | All three named desktop targets now have physical 320 px/focus and on-off-on/startup-reduced evidence; Alpine tail closes the last missing case |
+| Offline assets and native boundaries | Packaged native offline/live/tray/singleton evidence and real unavailable/recovery, with exact per-run artifact identities |
+| Alternative compared | Dioxus 0.7.10 passes shared tests and native dependency builds; full replacement desktop lifecycle/runtime not measured |
+| Provenance and migration map | Versioned family/card/PNG provenance already checked; selected component paths now fixed in CONTRACT/ADR-045 |
+
+All selected decision obligations are covered. CachyOS's c497b3b offline/lifecycle
+run and ccee0fc motion/focus delta remain separately identified; Windows and Alpine
+supply full ccee0fc cases. This is sufficient evidence for the rendering choice,
+not a claim that every old case was rerun on every host or that the future product
+package has already passed. No native target is accepted solely from compilation.
+
+### Why this route
+
+Maud yields the smaller independently stripped SSR reader on each measured target
+(glibc 3,176,424 vs 3,513,064 bytes; Windows 2,963,968 vs 3,325,952; musl 3,277,728
+vs 3,618,112). More importantly, the retained shell's packaged authentication,
+assets and native lifecycle have now been exercised. Dioxus is a viable compiling
+alternative, not a proven-broken framework; it has no measured replacement-native
+benefit here to justify migrating those boundaries. These observations do not
+establish comparative desktop speed, memory, cold-start time or full Dioxus bundle
+size, and cached build durations are not benchmark rankings.
+
+The shared renderer remains Rust-authored and platform-independent above the
+existing shared types. Tauri owns its native shell; `koi-client`/local control owns
+authenticated discovery, `koi-serve` owns transport, and domain facades retain truth.
+The original card, blue accent and source family are preserved. GTK motion remains
+a native binding to the shared CSS, not a JS preference imitation. ADR-045 records
+the rationale and ADR-033's presentation amendment; CONTRACT changes only the
+deferred presentation choice and exact destinations, not a wire/API authority.
+
+### Qualifications and follow-on boundary
+
+Windows's recovery journal reports a cleanup error that removed an uninventoried
+ignored `.tmp/` parent. Its helpers/captures are gone, and unrelated untracked loss
+cannot be quantified or recovered through Git. Installed Koi and tracked source
+were unaffected; the published hashes and host observations are the retained record.
+Alpine's prior unrelated OpenEXR correction restored package versions, with one
+historical-recipe rebuild rather than the unavailable original vendor binary.
+Neither deviation is erased, relabeled exact restoration, or made a precedent.
+This architectural decision does not certify whole-candidate cleanup or R29/R30.
+
+Only R06/shared-shell becomes eligible. It must claim the selected production
+`koi-ui`/native/headless adapters, migrate the actual components/assets and real
+intake, preserve advanced access and stored state, replace the experimental test
+paths, and retire both spike variants/probe mode in a coherent cross-repository
+change. Retiring before the production dependency is published would break the
+current source consumer; leaving an experimental product option after migration
+would violate R06. Immutable history preserves the measured comparison.
+
+R06 parent is in_progress/pending; R07, R11, G2 and release/candidate gates remain
+pending. macOS stays physically unverified. No new build, install, native mutation,
+remote session, credential or third-party workload was needed for this documentation
+decision. Source/runtime/library versions are the tested pins, not fresh upgrades.
+Checks: diff, documentation leak/surface guards, local links/anchors, exact commit
+references and documentation-only change inventory. The source/native gates above
+are reused with provenance; no unrun check is claimed for a new product artifact.

@@ -6,6 +6,13 @@
 **Resides:** `sylin-org/koi-desktop` (separate repository, Ghostlight precedent)
 **Constrained by:** headless daemon doctrine; binary-size discipline of `koi` itself; zero telemetry
 
+**Presentation amendment (2026-09-06 UTC):** [ADR-045](045-shared-rust-renderer.md)
+selects shared Maud-authored Rust HTML for the next UI foundation. It supersedes
+this document's JS-layer presentation direction, not its Tauri/native lifecycle,
+separate artifact, local authentication or headless-daemon boundaries. Migration
+belongs to R06/shared-shell; the installed normal workbench is not changed by the
+architectural decision alone.
+
 ---
 
 ## Context

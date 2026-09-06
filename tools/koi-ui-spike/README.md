@@ -4,7 +4,10 @@ Two Rust renderers consume the **same** `koi-common::service::CatalogSnapshot`:
 Maud 0.27.0 (the view candidate for the existing Tauri shell) and Dioxus 0.7.10
 (the view candidate for a Dioxus desktop replacement and server-rendered web).
 The optional desktop check compiles Dioxus's desktop dependencies; it does not
-launch or package a new workbench. There is no selection yet.
+launch or package a new workbench. ADR-045 now selects Maud with the existing Tauri
+shell; R06/shared-shell must migrate the selected components into `koi-ui` and
+retire both variants and the desktop probe together. This directory is retained
+only for that pending transition, not as a permanent product dependency choice.
 
 This nested workspace has its own lockfile. It does not alter Koi's product
 dependency graph, create a daemon, bind a listener, expose the catalog on Pond,
@@ -72,5 +75,5 @@ Ghostlight file was changed. All required assets are now local to the experiment
 neither sibling nor a CDN is needed at runtime or when rebuilding this probe.
 
 See [R06 report](../../docs/prompts/delight/reports/R06-renderer-decision.md) and
-[proposed ADR](../../docs/adr/045-shared-rust-renderer.md) for measured limits and
-the native work that must precede a renderer selection.
+[accepted renderer ADR](../../docs/adr/045-shared-rust-renderer.md) for measured
+limits, the reconciled native evidence and the required production migration.

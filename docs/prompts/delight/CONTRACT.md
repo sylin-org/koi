@@ -99,7 +99,7 @@ or event bus is introduced.
 | Typed client adapters | `crates/koi-client/src/lib.rs`, split by R25 if touched size requires | CLI, desktop, SDK/MCP | existing owner, extended R05/R17/R19/R21 |
 | Local operator bootstrap | `crates/koi-serve/src/local_ipc/` and `koi-common::local_control` | local CLI/desktop | existing; not duplicated |
 | Public Pond catalog | `koi-serve` allowlisted `PublicCatalogSnapshot` projector | Pond only | proposed, R09 |
-| User language/components | `crates/koi-ui/`; exact renderer/component files fixed once by R06 | desktop/headless/Pond builds as permitted | proposed boundary; R06 decision pending |
+| User language/components | `crates/koi-ui/`; Maud and exact component map in R06 handoff below | retained Tauri desktop/authenticated headless; Pond only after R09 projector | renderer decision accepted, ADR-045; shared-shell implementation pending |
 
 `koi-compose::cores::PersistencePaths` adds exact paths for installation identity,
 preferences, shares, and secure services and passes each owner only its own path.
@@ -622,17 +622,63 @@ evidence exists. R01 deliberately does not assume every browser uses the OS stor
 
 ## R06 presentation handoff
 
-R06 owns exactly one pending architectural decision: the renderer, component/source
-map, asset pipeline, and reproducible build/test commands rooted at `crates/koi-ui/`.
-It must measure Windows, glibc, musl, desktop lifecycle, offline packaging, and headless
-web behavior before choosing. R01 does not choose Dioxus, retain Tauri by default, or
-authorize a JavaScript-owned product state model.
+R06/renderer-decision selects **Maud 0.27.0** shared Rust HTML with the retained
+**Tauri 2.11.5** native shell and its existing pinned platform integrations.
+[ADR-045](../../adr/045-shared-rust-renderer.md) records the measured alternatives,
+native/headless evidence and limits. Desktop source `ccee0fc`, shared source
+`72cb286`, Windows recovery `0233b43` and Alpine keyboard `16effd8` close the
+decision's native cases; this is not shared-shell implementation or R06 parent
+acceptance. The original failed runs and cleanup deviations remain in the report.
 
-Whichever renderer wins, the presentation boundary owns everyday copy and the shared
-Home/Devices/Settings/About components. It consumes typed catalog/actions/errors; it
-does not infer status or embed domain mutations. The original Koi asset, source Sylin
-tokens, keyboard/focus/reduced-motion behavior, and a usable 320px layout remain R06
-acceptance requirements.
+`koi-ui` is the pure presentation owner, consuming existing typed catalog/actions/
+errors from `koi-common`; it has no GTK/Tauri, daemon client, credential, persistence
+or domain-mutation responsibility. Desktop intake uses the existing authenticated
+local client; `koi-serve` owns authenticated headless transport on its existing
+listener. Minimal browser interactivity may carry intent/apply rendered output,
+not reconstruct state or infer authority. No JavaScript-owned product state model,
+new backend, generic event bus or full operator catalog on Pond is authorized.
+Pond still requires R09's separate allowlisted public projection.
+
+The selected source map (destinations, **not yet implemented**) is:
+
+| Responsibility | Exact owner |
+| --- | --- |
+| Public render entry and presentation input | `crates/koi-ui/src/lib.rs` |
+| Four navigation destinations | `crates/koi-ui/src/components/navigation.rs` |
+| Service row and declared condition copy | `crates/koi-ui/src/components/service_row.rs`, `condition.rs` |
+| Original source mascot card | `crates/koi-ui/src/components/mascot_card.rs` |
+| Home and device screen composition | `crates/koi-ui/src/screens/home.rs`, `devices.rs` |
+| Settings and About screen composition | `crates/koi-ui/src/screens/settings.rs`, `about.rs` |
+| Versioned source family base and sprite | `crates/koi-ui/assets/family-v1.css`, `koi.png` |
+| Original card markup and shared layout/focus/motion rules | `crates/koi-ui/assets/card.html`, `shell.css`, `reduced-motion.css` |
+| Native render/data intake | `koi-desktop/src/ui.rs`, reusing existing local-control/client boundary |
+| Linux actual-preference binding | Existing `koi-desktop/src/native_motion.rs`, consuming the shared motion rules |
+| Authenticated headless adaptation | `crates/koi-serve/src/ui.rs`, on the existing server |
+
+The asset pipeline moves the source-owned family extraction and original card from
+the experiment, preserving their recorded desktop/Ghostlight provenance. Keep the
+blue `#60a5fa` accent, narrow/focus corrections and original PNG SHA-256
+`91aea43e2587f53242b9dbc4bf794d8147dcd915a7e356fa3943422900fdd33c`.
+Embed assets at build time; neither checkout-relative runtime reads nor a CDN is
+allowed. Dynamic data stays escaped; only source-controlled card/assets may use
+trusted markup. Keep browser reduced-motion media behavior and the native Linux
+GtkSettings fallback at startup and on changes; do not imitate the OS preference.
+
+R06/shared-shell must claim and implement this boundary, publish a pinned shared
+crate before updating desktop consumers, provide locked source/browser/native
+verification commands, and retire both spike variants plus the probe flag/protocol/
+dependency in that same coherent migration. The original experiment stays reproducible
+at its immutable revisions; it is not a permanent production renderer choice.
+Until replacement tests exist, the seven renderer behaviors, browser smoke and
+existing locked desktop Rust/40-JS-test gates remain required. New integration needs
+the charter's affected workspace and native checks; old experiment evidence cannot
+be relabeled as a production-package pass.
+
+This fills only R01's deferred presentation choice. It changes no wire schema,
+route authority, domain ownership, stored preferences, identity or advanced access.
+R07/R08/R09 consume the selected component paths after their actual dependencies;
+R11 waits for completed R06, not just this decision. macOS remains physically
+unverified; no release or whole-fleet candidate verdict follows from the choice.
 
 ## Assessment finding disposition
 
