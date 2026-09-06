@@ -1,5 +1,50 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-05 (37) — R06 Windows shared shell acknowledged
+
+task: `R06/windows-shared-shell` | run
+`r06-shared-shell-e010086-windows-20260906T033414Z` | desktop source
+`e010086ef1ede16c4ab5dc3c6431fcbf82a9c715` | shared/client source
+`b4c32fa9b524549509b34b01bb24cc06455407ad` | state: **ACKNOWLEDGED —
+exact old package recovery and candidate are retained; no installed-host mutation
+performed yet**
+
+Baseline is exactly one Running AutoStart LocalSystem `koi` service, PID `34744`,
+descriptor `"C:\Program Files\Koi\koi.exe" --daemon`, SHA-256
+`ca6386df292cfd40c019d30ea36bcab33eea80ea7f50a1c78e375bac8d19cb21`,
+health 200 on 5641, and one normal-user 0.1.3 NSIS workbench PID `28696`,
+`--minimized`, SHA-256
+`f1d7a7a750130dac48241cfc5235951d9baeff18d100dedc8217ca8b5135b487`
+on loopback 5640. Pond 5644 is closed. Windows client-area animation is enabled;
+config SHA-256 remains
+`17fe9a664f76bb748da8beeb5c18fabf64da55d1901384772d1e7aecfab2c3ed`.
+
+The private run-owned recovery artifact contains a byte-exact full installed
+directory, WebView profile and existing roaming workbench state plus HKCU Run and
+uninstall registration exports. Its old executable and uninstaller SHA-256 values
+are respectively
+`f1d7a7a750130dac48241cfc5235951d9baeff18d100dedc8217ca8b5135b487`
+and `2ec7e48b8b122fbfbd972c7ad1c2cd642a85587c67f9d486fa1396e604428d18`.
+The exact clean NSIS candidate is 3,128,136 bytes, SHA-256
+`b09550618ced8eacf7599143c0d4a8fcd918c1718462960f3afc87b9fbcf467f`;
+its release executable is 13,115,904 bytes, SHA-256
+`e463ff8009f0edadb15b487c45378b04ccd399a979fb9cb2adcf7fefb52d5b45`.
+
+Pre-mutation source gates pass with `KOI_NO_CREDENTIAL_STORE=1`: exact `d20c3d4`
+`koi-ui` locked tests 7/7; exact desktop formatting, 22 native tests with the one
+declared cross-host ignore, strict locked all-target Clippy, all 42 JavaScript
+tests, and the locked release/NSIS build. The reservation covers only the bounded
+normal-launch shared-shell, physical focus/motion/offline/navigation/refresh,
+singleton/tray and same-service unavailable/recovery procedure. Before package
+replacement, arm and verify independent normal-user package rollback and
+UAC-elevated same-service restart guards. Preserve all configuration, policy,
+startup, watched state and unrelated ignored data; cleanup uses only verified
+absolute literal run paths.
+
+next: publish this acknowledgement, arm both guards, install through the normal-user
+NSIS path, execute the bounded procedure, restore one healthy daemon and one normal
+installed workbench, then release the request with measured evidence.
+
 ## 2026-09-05 (36) — R06 Windows recovery tail accepted
 
 task: `R06/windows-recovery-tail` | run
