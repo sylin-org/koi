@@ -18,11 +18,9 @@ All rows are queued at creation. No implementation or native validation is impli
   `e673af6` and desktop `ba39faf`; Windows installed proof and complete hosted CI
   `33974240044` pass. R20 is complete at `3eb1147`; all 13 jobs in hosted CI
   `33987878995` pass. R06/renderer-decision is accepted: Maud with the retained Tauri
-  shell. R06/shared-shell is implemented with passing local/source and installed
-  CachyOS proof; original hosted CI and Alpine production verification pass.
-  Windows found a Home-return defect; desktop d948015 corrects it, with targeted
-  Windows/Alpine native retries pending (see R06-home-return report).
-  R06 parent/R07/R11 are not yet ready.
+  shell. R06/shared-shell and parent R06 are accepted: original source/hosted/native
+  evidence plus exact desktop d948015 Windows/Alpine Home-return retries pass.
+  R07 is next; R11's R06 dependency is satisfied. G2/later journeys remain pending.
   Other hats next service only ready native-evidence requests or eligible R29 native
   rows. They do not independently claim source work.
 - Capacity constraint (owner instruction, 2026-09-04): Debian is a very weak thin
@@ -57,8 +55,7 @@ Peers run only exact published native requests/eligible R29 cases and publish
 owned evidence or defects. CachyOS implements fixes and requests affected retries;
 no implicit peer source/package-recipe edits. No remote agent is launched and no
 host mutation or credential replication is authorized by this change. Debian stays
-lightweight. R06/shared-shell source is now implemented; CachyOS reconciles hosted
-and the exact production-native requests before advancing its dependents.
+lightweight. R06 is accepted; CachyOS next owns R07 Home launchpad implementation.
 
 ## Coordinator handoff — 2026-09-05 (historical)
 
@@ -176,7 +173,7 @@ identity and complete hosted/native evidence, even if infrastructure tasks passe
 | [R03](R03-discovery-record-correctness.md) | R01 | accepted | ready | debian-linux | [reports/R03.md](reports/R03.md) | Complete at source `d48d4df`; contract rows and Windows native proof `189ea32` reconciled |
 | [R04](R04-service-catalog.md) | R01, R03 | accepted | ready | windows | [reports/R04.md](reports/R04.md) | Source `b822811`; Windows installed-service run passes; CI `33949639819` supplies green Ubuntu workspace plus macOS and contract jobs |
 | [R05](R05-catalog-api-and-preferences.md) | R04 | accepted | ready | windows | [reports/R05.md](reports/R05.md) | Koi `e673af6`, desktop `ba39faf`, Windows installed service/workbench run and complete hosted CI `33974240044` pass; complete and R06 unblocked |
-| [R06](R06-rust-ui-and-family-foundation.md) | R01, R05 | implemented | pending | cachyos-linux | [Home correction](reports/R06-home-return.md#implementation-and-results--2026-09-06-utc) | Original hosted/CachyOS/Alpine pass; Windows Home defect corrected in d948015; exact targeted native retries pending |
+| [R06](R06-rust-ui-and-family-foundation.md) | R01, R05 | accepted | ready | cachyos-linux | [final reconciliation](reports/R06-home-return.md#final-reconciliation-and-r06-acceptance--2026-09-06-utc) | Shared b4c32fa, desktop d948015; original gates plus exact Windows/Alpine correction retries pass; macOS limitation remains explicit |
 | [R07](R07-home-launchpad.md) | R05, R06 | queued | pending | cachyos-linux | - | Wait for dependencies |
 | [R08](R08-devices-and-comparison.md) | R07 | queued | pending | cachyos-linux | - | Wait for dependencies |
 | [R09](R09-settings-about-and-surface-consolidation.md) | R08 | queued | pending | cachyos-linux | - | Wait for dependencies |
@@ -214,7 +211,7 @@ the hat directly. Source ownership never substitutes for a physical platform pas
 | Slice | Additional prerequisite | Owner | Status | Readiness | Deliverable | Evidence |
 |---|---|---|---|---|---|---|
 | R06/renderer-decision | - | cachyos-linux | accepted | ready | Maud 0.27.0 / retained Tauri 2.11.5 selected; native tails 0233b43 and 16effd8 reconciled; ADR-045/CONTRACT map fixed | [final acceptance](reports/R06-renderer-decision.md#final-decision-and-acceptance) |
-| R06/shared-shell | R06/renderer-decision | cachyos-linux | implemented | pending | Production migration complete; Windows Home defect corrected in d948015 with 47 JS / 26 Linux Rust tests passing; new native retries pending | [correction and requests](reports/R06-home-return.md) |
+| R06/shared-shell | R06/renderer-decision | cachyos-linux | accepted | ready | Production renderer/native/authenticated-web migration and retirement complete; original gates and exact correction native retries pass | [final reconciliation](reports/R06-home-return.md#final-reconciliation-and-r06-acceptance--2026-09-06-utc) |
 | R11/result-contract | - | cachyos-linux | queued | pending | Typed install result, artifact compatibility, durable recipe/receipt ownership | - |
 | R11/restart-and-rollback | R11/result-contract | cachyos-linux | queued | pending | Interrupted install/upgrade recovery, idempotency and old-state preservation | - |
 | R13/systemd-plasma | - | cachyos-linux | queued | pending | Installed systemd/glibc Plasma journey including package/login/rollback | - |

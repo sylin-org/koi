@@ -99,7 +99,7 @@ or event bus is introduced.
 | Typed client adapters | `crates/koi-client/src/lib.rs`, split by R25 if touched size requires | CLI, desktop, SDK/MCP | existing owner, extended R05/R17/R19/R21 |
 | Local operator bootstrap | `crates/koi-serve/src/local_ipc/` and `koi-common::local_control` | local CLI/desktop | existing; not duplicated |
 | Public Pond catalog | `koi-serve` allowlisted `PublicCatalogSnapshot` projector | Pond only | proposed, R09 |
-| User language/components | `crates/koi-ui/`; Maud and exact component map in R06 handoff below | retained Tauri desktop/authenticated headless; Pond only after R09 projector | production source implemented, ADR-045; hosted/peer native acceptance pending |
+| User language/components | `crates/koi-ui/`; Maud and exact component map in R06 handoff below | retained Tauri desktop/authenticated headless; Pond only after R09 projector | R06 accepted, ADR-045; Home-return correction d948015 verified on Windows/Alpine |
 
 `koi-compose::cores::PersistencePaths` adds exact paths for installation identity,
 preferences, shares, and secure services and passes each owner only its own path.
@@ -692,7 +692,9 @@ shared/client source above. Later Windows navigation uses the registered
 has a three-second deadline and visible retry/reopen failure while retaining the
 current pane. Original hosted CI/Alpine proof passed, but Windows rejected e010086
 for this transition. See [correction and targeted native retries](reports/R06-home-return.md);
-the new artifact is not accepted until those checks pass.
+both exact retries now pass (Windows 38c6832, Alpine 791f87e), and the report's
+final reconciliation accepts R06. macOS remains physically unverified; later
+journeys and R29 final-candidate evidence remain separate gates.
 
 This fills only R01's deferred presentation choice. It changes no wire schema,
 route authority, domain ownership, stored preferences, identity or advanced access.

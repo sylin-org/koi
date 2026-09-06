@@ -42,7 +42,7 @@ and status authority. Read only the selected prompt's source set after routing.
 
 | Hat | Primary responsibility |
 |---|---|
-| cachyos-linux | Sole unfinished implementation/integration owner; R06/shared-shell implemented, reconcile hosted/exact peer native checks before dependents |
+| cachyos-linux | Sole unfinished implementation/integration owner; R06 accepted, next R07 Home launchpad |
 | debian-linux | Requested lightweight headless/systemd and peer verification only |
 | windows | Requested Windows native builds, packages and physical verification only |
 | bluefin-linux | Requested immutable Fedora/GNOME native and client verification only |

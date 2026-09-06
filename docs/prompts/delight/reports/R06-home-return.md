@@ -172,3 +172,34 @@ branch is current Koi dev; it does not silently replace these product revisions.
 
 Next: reconcile the two new exact native results. R06/R07/R11 remain gated;
 physical macOS remains unverified. CachyOS owns any further source correction.
+
+## Final reconciliation and R06 acceptance — 2026-09-06 UTC
+
+**Accepted.** Windows result 38c6832 and Alpine result 791f87e both verify exact
+desktop d948015 with unchanged shared/client b4c32fa. Their request rows are
+completed, their corrected packages retained, and their unchanged daemons healthy.
+Windows proves three physical 320px returns (immediate, settled, double activation),
+real legacy tabs/refresh, actual tray-menu reveal and singleton. Alpine independently
+proves three same-PID native returns, legacy tabs/refresh and menu/singleton, with
+fresh guard disarmed and full package/configuration restoration recorded.
+
+Windows installed executable SHA-256:
+`7b4e60d551cfb9c5190c22f5e6eeb338cb9c9e165ef381de4a30a9e161a8145b`;
+final workbench/unchanged daemon PIDs 9848/36800. Alpine executable SHA-256:
+`c0c592ae0f03c60c67b688350d4780865761e77f69097eef236b03853e6399ec`;
+workbench/unchanged daemon PIDs 21942/22986 (OpenRC supervisor 22985).
+These are peer-recorded final observations, not a new remote probe.
+
+Latest Koi evidence CI 34014784712 on 791f87e is complete green, as are the exact
+original source run 34006973717 and correction-dispatch run 34013079103. Desktop
+local/Linux/Windows locked native compilation/tests and targeted physical checks
+are explicit above and in the peer journals; no desktop hosted run is invented.
+
+The R06 acceptance matrix combines the original complete source/CachyOS/Alpine/
+Windows cases with the exact targeted correction evidence; unchanged cases are
+not relabeled as a full replay on d948015. Historical Windows rejection remains.
+No requested R06 case is outstanding. macOS remains physically unverified under
+ADR-045's declared limitation, and R29 still requires its own final-candidate gates.
+The R06 renderer decision and shared-shell subrows, and therefore the R06 parent,
+are now accepted/ready. R07 is the next dependency-ready source task; this does
+not accept G2 or the later feature journeys.
