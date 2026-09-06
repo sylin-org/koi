@@ -38,6 +38,58 @@ fn destination(service: &Service) -> Option<BrowserDestination> {
 }
 
 #[test]
+fn discovery_status_is_independent_of_empty_search_and_retained_rows() {
+    use koi_ui::{render_home, Links, View};
+    use scraper::{Html, Selector};
+    for (availability, message) in [
+        (DiscoveryAvailability::Unknown, "status is not reported"),
+        (DiscoveryAvailability::Available, "discovery is observing"),
+        (
+            DiscoveryAvailability::Partial,
+            "discovery is partially unavailable",
+        ),
+        (
+            DiscoveryAvailability::Unavailable,
+            "discovery is unavailable",
+        ),
+    ] {
+        for has_services in [false, true] {
+            let mut catalog = snapshot();
+            catalog.discovery = availability;
+            if !has_services {
+                catalog.services.clear();
+            }
+            let html = render_home(
+                View::Snapshot(&catalog),
+                Links {
+                    refresh: None,
+                    advanced: "/",
+                },
+                &HomeQuery::default(),
+            );
+            let dom = Html::parse_document(&html);
+            let status = dom
+                .select(&Selector::parse("#discovery-status").unwrap())
+                .next()
+                .unwrap()
+                .text()
+                .collect::<String>();
+            assert!(status.contains(message), "{status}");
+            let text = dom.root_element().text().collect::<String>();
+            assert_eq!(
+                text.contains("No services discovered yet"),
+                !has_services && availability == DiscoveryAvailability::Available
+            );
+            assert_eq!(
+                dom.select(&Selector::parse("#home .service-row").unwrap())
+                    .count(),
+                usize::from(has_services)
+            );
+        }
+    }
+}
+
+#[test]
 fn query_links_round_trip_without_turning_text_into_navigation() {
     use koi_ui::home::HomeRequest;
     let id = ServiceId::new("notes&other=<tag>").unwrap();

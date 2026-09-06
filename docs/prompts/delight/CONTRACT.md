@@ -153,6 +153,14 @@ additive fields but rejects a missing required field and an unknown newer schema
 that schema changes interpretation. Stored future schemas open read-only with
 `unsupported_schema`; they are never treated as empty.
 
+`CatalogSnapshot.discovery` is an additive schema-1 `DiscoveryAvailability`:
+`unknown`, `available`, `partial` or `unavailable`. Missing fields from older
+producers decode as `unknown`, never healthy. Composition derives it only from
+the authoritative mDNS browse-source routes and watch availability; it is not
+inferred from service counts and does not describe reachability, other domains,
+or completeness of network discovery. Availability-only changes publish catalog
+revisions even when there are no services. The shared Home renderer owns its copy.
+
 ### Device
 
 A Device is a catalog grouping supported by device-identity evidence. It is not

@@ -3,7 +3,7 @@ use crate::{
     home::{project, BrowserDestination, EmptyState, HomeQuery},
     View,
 };
-use koi_common::service::{CatalogSnapshot, Service};
+use koi_common::service::{CatalogSnapshot, DiscoveryAvailability, Service};
 use maud::{html, Markup};
 
 pub fn render(view: View<'_>, query: &HomeQuery<'_>) -> Markup {
@@ -30,13 +30,27 @@ pub fn render(view: View<'_>, query: &HomeQuery<'_>) -> Markup {
                     p.snapshot-meta { "Snapshot revision " (catalog.revision) " · "
                         time datetime=(catalog.generated_at.to_rfc3339()) { (catalog.generated_at.to_rfc3339()) }
                     }
+                    p #discovery-status role="status" {
+                        @match catalog.discovery {
+                            DiscoveryAvailability::Unknown => { "Local network discovery status is not reported. An empty list does not establish discovery health." },
+                            DiscoveryAvailability::Available => { "Local network discovery is observing. This does not prove service reachability." },
+                            DiscoveryAvailability::Partial => { "Local network discovery is partially unavailable. Some services may be missing; inspect source status in Advanced tools." },
+                            DiscoveryAvailability::Unavailable => { "Local network discovery is unavailable. Saved or other-source services may remain; inspect source status in Advanced tools." },
+                        }
+                    }
                     @let projection = project(catalog, query);
                     div.home-layout {
                         div.home-results {
                             @if let Some(empty) = projection.empty {
                                 p role="status" {
                                     @match empty {
-                                        EmptyState::NoDiscoveries => { "No services in this snapshot. Discovery may still be starting; inspect source status in Advanced tools." },
+                                        EmptyState::NoDiscoveries => {
+                                            @if catalog.discovery == DiscoveryAvailability::Available {
+                                                "No services discovered yet. Local network discovery is observing."
+                                            } @else {
+                                                "No services in this snapshot. See discovery status above; this is not proof that the network is empty."
+                                            }
+                                        },
                                         EmptyState::NoFavorites => { "No favorites yet. Manage favorites in Advanced tools." },
                                         EmptyState::NoMatches => { "No matches. Clear filters to see other services." },
                                     }

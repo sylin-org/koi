@@ -32,7 +32,11 @@ marks retained evidence stale and disables old Open links; retries back off from
 to fifteen seconds and recover automatically. Browser access/schema rejection instead
 clears the view and requires sign-in again. “No matches” means the filter excluded the snapshot's services;
 “Cannot read the local catalog” means an access/service/schema problem, not zero
-discoveries. An empty snapshot alone does not establish discovery-provider health.
+discoveries. The separate local-network discovery status reports whether demanded
+browse routes are observing, partially unavailable, unavailable, or not reported.
+It comes from the daemon, not the number of service rows. Older daemons report no
+status and therefore show unknown, never an invented healthy result. Saved or
+other-source services can remain visible while network discovery is unavailable.
 
 In the browser, the operator token stays in page memory and request headers, never
 Home query links. Forget token or leaving the page clears it. Use HTTPS or a loopback
