@@ -792,3 +792,39 @@ requested but loaded destination unproven (no controllable Chromium tabs); AT-SP
 activation is not pointer proof. R07 stays in_progress/pending: next finish source
 availability and the durable Notes/favorite/browser/pointer journey. No broad
 repeat/fleet dispatch, Alpine recipe change or whole-R07 acceptance claim.
+
+## 2026-09-06 15:10 UTC — R07 authoritative discovery availability published
+
+Task `R07/discovery-availability`, source-only. Starting Koi71b2c86 and desktop
+6dd641b clean/synchronized. The explore skill traced existing mDNS browse-source
+availability and watch closure into composition; no UI-side status inference or
+second domain read. Shared source **17fb591148c8c93f97a8db6322018f6847a456d5** adds
+optional schema-1 `CatalogSnapshot.discovery`: unknown/available/partial/unavailable.
+Old producers decode as unknown. Availability-only transitions publish revisions
+even on an empty catalog; retained rows cannot imply healthy discovery. Home now
+shows independent source status and truthful empty results.
+
+Checks: 19 UI, five common contract, 13 composition catalog and two HTTP/OpenAPI
+tests pass; strict common/compose/UI all-target Clippy, format/diff pass. Co-located
+tests include source loss/recovery, partial/empty results, legacy wire, unknown
+enum rejection, actual asynchronous watch closure, and optional schema documentation.
+Published desktop **24d619f49e2f63f2ba18d35ca14772ce34652883** pins both Koi
+dependencies to17fb591; four Git source substitutions only, no registry drift.
+Locked desktop all-target check and30 Rust tests (one existing ignored) pass.
+Hosted product run34041362775 remains in progress; documentation run34040719676
+passed. Report/contract/usage/surface/ledger updated; no new peer assignment.
+
+Read-only native baseline remains exactly one `/usr/local/bin/koi --daemon`,
+PID **1484173**, SHA-256
+`dc1ebd15b8d1bf2d725c212912d78a5dd9581aa897c505596e8b0a268d9b3975`, health OK;
+one installed `/usr/bin/koi-desktop`, PID **1483793**, SHA-256
+`0e8a88c3f7eb67ae8237b981981fc3fd7e4e73b0a52384085d1f9e6776b46ad0` (6dd641b).
+Actual installed catalog omits discovery, confirming why compatibility is unknown.
+No install, restart, elevation, preferences, credential, provider/firewall change,
+browser navigation or remote host work. A read-only KWin browser-window probe was
+unloaded immediately; it did not establish the pending target-opening evidence.
+
+Next: fresh daemon-aware restoration guard and exact normal installation, then
+durable Notes/favorite plus real browser/pointer journey. The old desktop-only
+guards are not a daemon rollback plan. Source availability is implemented, not
+native-accepted; R07 stays in_progress/pending. See [R07 report](../../docs/prompts/delight/reports/R07.md).
