@@ -876,3 +876,27 @@ repeating successful builds/native checks. Updated the existing R07 report and
 ledger with the CI result and bounded manual procedure. Browser protected-host
 restriction remains binding; no alternate automation path attempted. Await operator
 presence before preparing temporary Notes again. R07 acceptance remains pending.
+
+## 2026-09-06 16:52 UTC — bounded native pointer automation works
+
+`R07/cachyos-pointer-20260906`, unchanged installed daemon17fb591 PID1506880 /
+desktop24d619f PID1506093 (hashes fc5db346 /2db016d9 as recorded above). Explore
+reused the one-shot libevdev helper pattern; added movement/left-click helper and
+read-only KWin cursor/active/topmost observations. Strict C compilation and six
+invalid invocations passed. No production change or rebuild, peer work or elevation.
+
+At actual1100×720, a generated pointer click selected Koi MCP (test-01), focusing
+its details and displaying the actual API endpoint without Open. A second generated
+click on Back focused Home and cleared selection. Each click followed a fresh
+expected-PID/active/topmost/inside-control observation; pointer acceleration required
+measured corrections. AT-SPI and visible captures confirmed both results. This is
+native generated input, not a semantic activation or physical-hardware claim.
+
+Baseline cursor1512,695 restored exactly; frame410,151,1100,748 unchanged. Home/query
+restored; no virtual pointer device or loaded probe remained. Original daemon and
+desktop PIDs unchanged, health OK; desktop-settings hashes matched. No browser
+actions, permissions/credentials, daemon restart, publication or persistence change.
+Helper README states global-input focus-race limitations and protected-browser
+exclusion. See [R07 report](../../docs/prompts/delight/reports/R07.md) and local
+`target/r07-native/pointer-*.png`. Wide pointer feasibility passed; narrow pointer/
+search and protected browser load/save remain pending. Whole R07 remains pending.

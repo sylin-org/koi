@@ -58,3 +58,42 @@ the prior daemon's public installer and ordinary pacman; it is not the desktop-o
 guard. Its only temporary-workload units are the exact dated Notes/announcement
 names in the helper. Preference removal refuses foreign records. Preserve the
 private archive/packages and remove copied executables/timer after settled cleanup.
+
+## Bounded native pointer probe
+
+Compile `pointer-once.c` with the same libevdev flags as `key-once.c`:
+
+```sh
+cc -Wall -Wextra -Werror -O2 tools/koi-ui-native/pointer-once.c $(pkg-config --cflags --libs libevdev) -o target/koi-ui-pointer-once
+```
+
+The interface is `pointer-once PID move DX DY` (each delta -2048 through 2048),
+or `pointer-once PID click` (one left click). Invalid arguments and a PID whose
+executable is not exactly `/usr/bin/koi-desktop` are rejected before device creation.
+Only existing user input permissions are used. Each invocation creates and destroys
+its own device; there is no listener, service, drag, keyboard chord or browser API.
+
+**This low-level helper is not window-confined.** A PID check does not establish
+focus or the destination of a global pointer event. Before movement, activate and
+inspect the sole installed Koi. Before every click, load/run/unload
+`pointer-state.js` through the existing KWin scripting mechanism and require a fresh
+`KOI_POINTER_STATE` observation: expected PID, `active`, `overKoi`, and the cursor
+strictly inside a currently visible, inspected internal control. Check its actual
+URI is the intended `koi-ui://localhost/` navigation, never external Open. Abort on
+an unexpected window, stale observation, changed geometry or user activity. The
+caller must account for the short device-discovery delay and remaining focus race;
+this is not a security boundary or a general unattended desktop agent.
+
+Move and click are deliberately separate. KDE acceleration changes requested
+deltas; observe the resulting cursor instead of calculating a click from the delta.
+On the measured Wayland/WebKit build, AT-SPI SCREEN rectangles were view-relative:
+only use a mapping after confirming it against the native capture/client geometry.
+After clicking, require the expected accessible state transition and inspect the
+native capture. A zero exit status proves event submission, not navigation.
+Restore the captured pointer/geometry and unload probes; verify no temporary input
+device remains. Never apply this helper to evade browser protected-host restrictions.
+
+Measured R07 wide-layout service selection/Back passed on desktop24d619f; see
+`docs/prompts/delight/reports/R07.md`. Narrow pointer and browser load/save remain
+separate unverified cases. The existing semantic AT-SPI action remains useful for
+inspection/setup, but does not count as pointer evidence.
