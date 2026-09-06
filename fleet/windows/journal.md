@@ -1,5 +1,87 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-06 (40) — R06 Windows Home return v2 result
+
+task: `R06/windows-home-return-v2` | run
+`r06-home-d948015-windows-20260906T050553Z` | desktop source
+`d9480158a073586ed7865c711b65954be5c7a9db` | shared/client source
+`b4c32fa9b524549509b34b01bb24cc06455407ad` | verdict: **PASSED —
+the corrected normal NSIS package returns Advanced to a real shared Home on all
+three physical round trips, and the actual tray-menu route is proven**
+
+koi state now: the accepted correction is the sole normal-user 0.1.3 workbench,
+PID `9848`, launched in the normal `--minimized` startup shape from
+`C:\Users\onose\AppData\Local\Koi\koi-desktop.exe`, SHA-256
+`7b4e60d551cfb9c5190c22f5e6eeb338cb9c9e165ef381de4a30a9e161a8145b`,
+on loopback 5640. The unchanged accepted R05 daemon remains the sole Running
+AutoStart LocalSystem SCM service, original PID `36800`, descriptor
+`"C:\Program Files\Koi\koi.exe" --daemon`, SHA-256
+`ca6386df292cfd40c019d30ea36bcab33eea80ea7f50a1c78e375bac8d19cb21`,
+with `/healthz` 200 on 5641. Pond remains disabled and 5644 is closed.
+
+evidence and findings:
+
+1. Exact pre-mutation gates passed with `KOI_NO_CREDENTIAL_STORE=1`: formatting,
+   23 native tests plus one declared ignore, strict locked all-target Clippy, all
+   47 JavaScript tests, and `cargo tauri build --bundles nsis --ci -- --locked`.
+   The normal-user installer is 3,126,474 bytes, SHA-256
+   `1c09acd4e97cba25023727045338b5e72417e23dfc050664cb5f82749bb65e26`;
+   silent installation exited 0. The installed 13,120,000-byte executable has the
+   accepted package hash above; uninstall identity remained 0.1.3 with prior
+   uninstaller SHA-256
+   `2ec7e48b8b122fbfbd972c7ad1c2cd642a85587c67f9d486fa1396e604428d18`.
+2. A normal launch from `C:\Windows` created exactly PID `33068`. At exact 320 by
+   650 client geometry, shared Home rendered real snapshot revision 10128, capture
+   SHA-256
+   `b42017275451eee2743cae20c1b6e672fb8b26dfe9da6449e040f99552ed2eab`.
+   Physical Advanced then immediate Home returned the same PID to real revision
+   10292 (`e0b65b77…6213e` Advanced;
+   `1e4876f1e1fbf3752dcd37c52afabad21a470de1f4f5ea7db3486ddea926acf6`
+   Home). A five-second settled round trip returned real revision 10362
+   (`9efd15e3…b7b3` Advanced;
+   `eab7143f50e3bcbabe58321128fe6cec43adc9cb5ce61a892337b5352f02e973`
+   Home).
+3. A third physical double activation returned once to real revision 10418 in
+   unchanged PID `33068`, capture
+   `982a0e467c31cdea4d934dba7baf7df32082694f547d6c2724573b00c8c2e409`.
+   The post-baseline debug delta contains exactly the initial shell boot plus one
+   boot for each of the three returns, with no extra navigation boot and no stale,
+   Home-open, or listener-cleanup error. Its only startup transient was one busy
+   local-pipe read before the already-captured initial real catalog; every return
+   then logged `snapshot ok`.
+4. Ordinary legacy switching remained live: physical Glance → Discover → Status
+   → Glance rendered real panes in the same PID (captures
+   `1e739349f17778edd969f7689fe2030374209da7ca026bf80b801c96c5c9f04f`,
+   `a6a394345b233102997edab7d00a7f64b9a3d4446927e8863ec301b85021f187`
+   and `81aa90465b5fcf496b0b9bbf099a6b4c929e1c0453b42309d6ed12ef76e4d472`).
+   After Home returned at 320 px, physical Refresh advanced the real snapshot from
+   revision 10530 to 10534; after-capture SHA-256 is
+   `c28abfd64090a86340523a8508f269b17bc4c3764d61d4bd50a52acb9e8988ef`.
+5. Closing the visible window retained PID `33068` and its 5640 listener. Windows'
+   real notification overflow exposed the Koi tray button at its native automation
+   rectangle; physically right-clicking it opened the product menu with native
+   `Open Workbench` and `Quit Koi` items, capture SHA-256
+   `9c58492c8395e22a403353a22c8549b96af678aecab1ab71aca5f90e72698a06`.
+   A physical click on `Open Workbench` restored the same 320 px Home and same PID,
+   capture
+   `1046ebb3da6b8ba9b05c52537101bfc01f48432aecb5a13d1d5f3d25ca1b6a20`.
+   A second normal executable invocation then exited 0 as PID `23612`; only the
+   original PID `33068` and listener remained.
+6. Final normalization restarted only the workbench into sole PID `9848` with
+   `--minimized`; it did not touch the service. Config, local-access policy and
+   installation identity SHA-256 remain respectively
+   `17fe9a664f76bb748da8beeb5c18fabf64da55d1901384772d1e7aecfab2c3ed`,
+   `14d3432b0efd0a52a697bb80adaa16bcd264c2ff79f57ac1156ac513decc9873`
+   and `a3b1c896d2d92c9fa768992570f0ec317e6b6289bf53a2e01ed4576fe36f118a`.
+   HKCU startup still names the installed executable with `--minimized`; the 15
+   effective Koi firewall rules are unchanged. The fresh 45-minute rollback guard
+   was disarmed without firing only after these identities and the healthy final
+   process/service/port shape were verified.
+
+next: Windows accepts this replacement request. CachyOS remains the implementation
+owner; Alpine's independent replacement request remains separate. No service
+recovery, motion, firewall mutation or external-network scenario was repeated.
+
 ## 2026-09-06 (39) — R06 Windows Home return v2 acknowledged
 
 task: `R06/windows-home-return-v2` | run
