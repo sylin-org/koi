@@ -686,6 +686,14 @@ listeners before Home navigation. Settings explicitly preserves the existing
 watched-import route. See the [shared-shell report](reports/R06-shared-shell.md)
 for full source/CachyOS evidence and remaining exact Windows/Alpine/hosted gates.
 
+Home-return correction: desktop d948015 (Alpine recipe d432b9e) retains the exact
+shared/client source above. Later Windows navigation uses the registered
+`http://koi-ui.localhost/` origin; Home is not a legacy pane tab. Listener cleanup
+has a three-second deadline and visible retry/reopen failure while retaining the
+current pane. Original hosted CI/Alpine proof passed, but Windows rejected e010086
+for this transition. See [correction and targeted native retries](reports/R06-home-return.md);
+the new artifact is not accepted until those checks pass.
+
 This fills only R01's deferred presentation choice. It changes no wire schema,
 route authority, domain ownership, stored preferences, identity or advanced access.
 R07/R08/R09 consume the selected component paths after their actual dependencies;

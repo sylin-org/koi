@@ -692,3 +692,49 @@ R06 is **implemented/pending**, not accepted. Hosted run `34006973717` has passe
 its non-native-test gates while Ubuntu/Windows/macOS test jobs are still running.
 Next: reconcile that run and operator-invoked `R06/windows-shared-shell` /
 `R06/alpine-shared-shell`; no remote session was launched. R07/R11 stay gated.
+
+## 2026-09-06 05:04 UTC — R06 Home-return correction published
+
+Task: `R06/shared-shell`, Windows regression from 8ede1d6; sole source owner
+CachyOS. Starting Koi 9422a0b and desktop bd8121c, both clean. Bounded exploration/
+write claim bff231b preceded production edits. The accepted original Alpine run
+9422a0b and rejected/restored Windows run remain intact. Hosted Koi d20c3d4 and
+9422a0b both completed all 13 jobs successfully; prior pending CI is reconciled.
+
+Published desktop product **d9480158a073586ed7865c711b65954be5c7a9db** fixes two
+source defects: generic tabs treated Home's missing data-view as a pane and hid
+all content; later Windows native navigation passed an untranslated custom scheme
+directly to WebView2. Home now stays outside pane switching and navigates the
+registered Windows HTTP origin. Owned listener cleanup is shared, bounded and
+handles throwing/rejected releases, late completion and duplicate activation;
+failure keeps the pane and exposes a visible retry/reopen alert. No storage,
+credential, daemon, shared renderer, Cargo/lock or motion change.
+
+Regression-first Node run: 43 pass / 4 fail, including the actual pane blanking.
+Finished source: all **47 JS** tests pass; locked Rust **26 pass / 1 existing
+ignored**; locked all-target check, strict Clippy, format and diff pass. Final
+tests/Clippy were repeated after HTML/JS settled. New native-mode harness derives
+tabs/views from the real markup and registers actual composition-root handlers.
+It is a source fixture, not Windows or Linux installed-artifact evidence.
+
+Recipe-only desktop **d432b9ed207307f1825f0706473eaef4dbeb227b** pins d948015 as
+Alpine `0.1.3_git20260906-r1`. Downloaded archive SHA-512
+`2f69c378f7d3c9f2d55b7eb2cfe0292a19c11bdbf78b63a4a5dd49f63481f73491d325760665b30dc29fcd78315bc5ddf916ab7f9398115ca0b3d6aa4795b1b9`;
+all 38 files equal the published product tree. bash syntax/diff guards pass.
+Shared/client stay b4c32fa. Both desktop commits are on origin/main.
+
+No installed mutation occurred. Read-only final observation: one healthy daemon
+**PID 1435976**, NRestarts 0, unchanged binary SHA-256
+`dc1ebd15b8d1bf2d725c212912d78a5dd9581aa897c505596e8b0a268d9b3975`;
+one active normal package-owned workbench **PID 1436590**, unchanged e010086
+binary SHA-256 `c874a638d31b48dfba0ec45c6a110799dbf6fdd31f604aad66605fc59a2d407a`.
+No new guard, helper, privileged session, peer launch or host policy change.
+
+[R06-home-return](../../docs/prompts/delight/reports/R06-home-return.md) records
+exact fixes, tests/logs and ready requests `R06/windows-home-return-v2` and
+`R06/alpine-home-return-v2`, expiry 2026-09-08 05:00 UTC. Each requires its own
+operator invocation, fresh current baseline/guard and normal exact package.
+Scope is repeated native navigation plus lifecycle; Windows also owes the actual
+tray-menu route it did not claim previously. No repeated daemon-stop, motion or
+firewall experiment. Debian remains lightweight/unassigned. Native correction
+acceptance and R06 parent remain pending; source completion is not a physical pass.

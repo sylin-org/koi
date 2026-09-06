@@ -19,7 +19,9 @@ All rows are queued at creation. No implementation or native validation is impli
   `33974240044` pass. R20 is complete at `3eb1147`; all 13 jobs in hosted CI
   `33987878995` pass. R06/renderer-decision is accepted: Maud with the retained Tauri
   shell. R06/shared-shell is implemented with passing local/source and installed
-  CachyOS proof; hosted and requested Windows/Alpine production verification remain.
+  CachyOS proof; original hosted CI and Alpine production verification pass.
+  Windows found a Home-return defect; desktop d948015 corrects it, with targeted
+  Windows/Alpine native retries pending (see R06-home-return report).
   R06 parent/R07/R11 are not yet ready.
   Other hats next service only ready native-evidence requests or eligible R29 native
   rows. They do not independently claim source work.
@@ -174,7 +176,7 @@ identity and complete hosted/native evidence, even if infrastructure tasks passe
 | [R03](R03-discovery-record-correctness.md) | R01 | accepted | ready | debian-linux | [reports/R03.md](reports/R03.md) | Complete at source `d48d4df`; contract rows and Windows native proof `189ea32` reconciled |
 | [R04](R04-service-catalog.md) | R01, R03 | accepted | ready | windows | [reports/R04.md](reports/R04.md) | Source `b822811`; Windows installed-service run passes; CI `33949639819` supplies green Ubuntu workspace plus macOS and contract jobs |
 | [R05](R05-catalog-api-and-preferences.md) | R04 | accepted | ready | windows | [reports/R05.md](reports/R05.md) | Koi `e673af6`, desktop `ba39faf`, Windows installed service/workbench run and complete hosted CI `33974240044` pass; complete and R06 unblocked |
-| [R06](R06-rust-ui-and-family-foundation.md) | R01, R05 | implemented | pending | cachyos-linux | [shared-shell](reports/R06-shared-shell.md#implementation-and-verification) | Decision accepted; production source/retirement and CachyOS native proof complete; hosted and Windows/Alpine verification pending |
+| [R06](R06-rust-ui-and-family-foundation.md) | R01, R05 | implemented | pending | cachyos-linux | [Home correction](reports/R06-home-return.md#implementation-and-results--2026-09-06-utc) | Original hosted/CachyOS/Alpine pass; Windows Home defect corrected in d948015; exact targeted native retries pending |
 | [R07](R07-home-launchpad.md) | R05, R06 | queued | pending | cachyos-linux | - | Wait for dependencies |
 | [R08](R08-devices-and-comparison.md) | R07 | queued | pending | cachyos-linux | - | Wait for dependencies |
 | [R09](R09-settings-about-and-surface-consolidation.md) | R08 | queued | pending | cachyos-linux | - | Wait for dependencies |
@@ -212,7 +214,7 @@ the hat directly. Source ownership never substitutes for a physical platform pas
 | Slice | Additional prerequisite | Owner | Status | Readiness | Deliverable | Evidence |
 |---|---|---|---|---|---|---|
 | R06/renderer-decision | - | cachyos-linux | accepted | ready | Maud 0.27.0 / retained Tauri 2.11.5 selected; native tails 0233b43 and 16effd8 reconciled; ADR-045/CONTRACT map fixed | [final acceptance](reports/R06-renderer-decision.md#final-decision-and-acceptance) |
-| R06/shared-shell | R06/renderer-decision | cachyos-linux | implemented | pending | Shared Rust shell, native/authenticated-web adapters and experiment retirement published; local/installed CachyOS checks pass; hosted/peer verification pending | [implementation and verification](reports/R06-shared-shell.md#implementation-and-verification) |
+| R06/shared-shell | R06/renderer-decision | cachyos-linux | implemented | pending | Production migration complete; Windows Home defect corrected in d948015 with 47 JS / 26 Linux Rust tests passing; new native retries pending | [correction and requests](reports/R06-home-return.md) |
 | R11/result-contract | - | cachyos-linux | queued | pending | Typed install result, artifact compatibility, durable recipe/receipt ownership | - |
 | R11/restart-and-rollback | R11/result-contract | cachyos-linux | queued | pending | Interrupted install/upgrade recovery, idempotency and old-state preservation | - |
 | R13/systemd-plasma | - | cachyos-linux | queued | pending | Installed systemd/glibc Plasma journey including package/login/rollback | - |
@@ -253,6 +255,8 @@ fresh run ID and restoration. Each peer writes evidence only in its own journal.
 
 | Request / task | Requesting hat | Peer hat | Mode / report | State | Peer evidence |
 |---|---|---|---|---|---|
+| `R06/windows-home-return-v2` | cachyos-linux | windows | Exact desktop d948015/shared b4c32fa; normal NSIS, repeated physical Advanced → Home and missing tray-menu case; [procedure and expiry](reports/R06-home-return.md#bounded-replacement-native-requests) | requested | Own operator acknowledgement and fresh current-baseline guard required; verification only |
+| `R06/alpine-home-return-v2` | cachyos-linux | alpine-linux | Exact desktop d948015, APKBUILD d432b9e/shared b4c32fa; targeted native navigation/lifecycle regression; [procedure and expiry](reports/R06-home-return.md#bounded-replacement-native-requests) | requested | Preserve accepted e010086 evidence; fresh baseline guard; verification only |
 | `R06/windows-shared-shell` | cachyos-linux | windows | Exact desktop e010086/shared b4c32fa; normal NSIS/shared-shell physical checks with fresh guards; [procedure and expiry](reports/R06-shared-shell.md#bounded-production-native-requests) | failed | [Windows result](../../../fleet/windows/journal.md#2026-09-05-38--r06-windows-shared-shell-result): Advanced opens but its Home control leaves a blank legacy pane instead of returning to the shared shell; exact old package restored; code correction remains with CachyOS |
 | `R06/alpine-shared-shell` | cachyos-linux | alpine-linux | Exact e010086 product, APKBUILD bd8121c/shared b4c32fa; native musl package/shared-shell checks; [procedure and expiry](reports/R06-shared-shell.md#bounded-production-native-requests) | completed | [Alpine accepted result](../../../fleet/alpine-linux/journal.md#2026-09-06-0414-utc--r06-production-shared-shell-accepted-on-alpine); exact musl package, physical focus, motion/offline/lifecycle/recovery and restoration pass; no Alpine reproduction of the Windows Advanced → Home defect |
 | `R03/windows-native-reconciliation` | windows | debian-linux | Reconcile completed issue 004 native proof with [R03](reports/R03.md); no peer mutation | completed | [Windows journal](../../../fleet/windows/journal.md); [issue 004](../../../fleet/windows/issues/004-windows-dnsapi-meta-browse-resource-growth.md) |
