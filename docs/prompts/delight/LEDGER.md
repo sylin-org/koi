@@ -18,7 +18,9 @@ All rows are queued at creation. No implementation or native validation is impli
   `e673af6` and desktop `ba39faf`; Windows installed proof and complete hosted CI
   `33974240044` pass. R20 is complete at `3eb1147`; all 13 jobs in hosted CI
   `33987878995` pass. R06/renderer-decision is accepted: Maud with the retained Tauri
-  shell; CachyOS next owns R06/shared-shell. R06 parent/R07/R11 are not yet ready.
+  shell. R06/shared-shell is implemented with passing local/source and installed
+  CachyOS proof; hosted and requested Windows/Alpine production verification remain.
+  R06 parent/R07/R11 are not yet ready.
   Other hats next service only ready native-evidence requests or eligible R29 native
   rows. They do not independently claim source work.
 - Capacity constraint (owner instruction, 2026-09-04): Debian is a very weak thin
@@ -53,8 +55,8 @@ Peers run only exact published native requests/eligible R29 cases and publish
 owned evidence or defects. CachyOS implements fixes and requests affected retries;
 no implicit peer source/package-recipe edits. No remote agent is launched and no
 host mutation or credential replication is authorized by this change. Debian stays
-lightweight. The next source slice is R06/shared-shell, not another coordination
-or peer-rebuild round.
+lightweight. R06/shared-shell source is now implemented; CachyOS reconciles hosted
+and the exact production-native requests before advancing its dependents.
 
 ## Coordinator handoff — 2026-09-05 (historical)
 
@@ -172,7 +174,7 @@ identity and complete hosted/native evidence, even if infrastructure tasks passe
 | [R03](R03-discovery-record-correctness.md) | R01 | accepted | ready | debian-linux | [reports/R03.md](reports/R03.md) | Complete at source `d48d4df`; contract rows and Windows native proof `189ea32` reconciled |
 | [R04](R04-service-catalog.md) | R01, R03 | accepted | ready | windows | [reports/R04.md](reports/R04.md) | Source `b822811`; Windows installed-service run passes; CI `33949639819` supplies green Ubuntu workspace plus macOS and contract jobs |
 | [R05](R05-catalog-api-and-preferences.md) | R04 | accepted | ready | windows | [reports/R05.md](reports/R05.md) | Koi `e673af6`, desktop `ba39faf`, Windows installed service/workbench run and complete hosted CI `33974240044` pass; complete and R06 unblocked |
-| [R06](R06-rust-ui-and-family-foundation.md) | R01, R05 | in_progress | pending | cachyos-linux | [renderer decision](reports/R06-renderer-decision.md#final-decision-and-acceptance) | Decision accepted; implement/verify shared-shell and retire experiments before parent acceptance |
+| [R06](R06-rust-ui-and-family-foundation.md) | R01, R05 | implemented | pending | cachyos-linux | [shared-shell](reports/R06-shared-shell.md#implementation-and-verification) | Decision accepted; production source/retirement and CachyOS native proof complete; hosted and Windows/Alpine verification pending |
 | [R07](R07-home-launchpad.md) | R05, R06 | queued | pending | cachyos-linux | - | Wait for dependencies |
 | [R08](R08-devices-and-comparison.md) | R07 | queued | pending | cachyos-linux | - | Wait for dependencies |
 | [R09](R09-settings-about-and-surface-consolidation.md) | R08 | queued | pending | cachyos-linux | - | Wait for dependencies |
@@ -210,7 +212,7 @@ the hat directly. Source ownership never substitutes for a physical platform pas
 | Slice | Additional prerequisite | Owner | Status | Readiness | Deliverable | Evidence |
 |---|---|---|---|---|---|---|
 | R06/renderer-decision | - | cachyos-linux | accepted | ready | Maud 0.27.0 / retained Tauri 2.11.5 selected; native tails 0233b43 and 16effd8 reconciled; ADR-045/CONTRACT map fixed | [final acceptance](reports/R06-renderer-decision.md#final-decision-and-acceptance) |
-| R06/shared-shell | R06/renderer-decision | cachyos-linux | in_progress | pending | Production shared renderer/native/authenticated-web migration claimed; source and native acceptance pending | [claim](reports/R06-shared-shell.md) |
+| R06/shared-shell | R06/renderer-decision | cachyos-linux | implemented | pending | Shared Rust shell, native/authenticated-web adapters and experiment retirement published; local/installed CachyOS checks pass; hosted/peer verification pending | [implementation and verification](reports/R06-shared-shell.md#implementation-and-verification) |
 | R11/result-contract | - | cachyos-linux | queued | pending | Typed install result, artifact compatibility, durable recipe/receipt ownership | - |
 | R11/restart-and-rollback | R11/result-contract | cachyos-linux | queued | pending | Interrupted install/upgrade recovery, idempotency and old-state preservation | - |
 | R13/systemd-plasma | - | cachyos-linux | queued | pending | Installed systemd/glibc Plasma journey including package/login/rollback | - |
@@ -251,6 +253,8 @@ fresh run ID and restoration. Each peer writes evidence only in its own journal.
 
 | Request / task | Requesting hat | Peer hat | Mode / report | State | Peer evidence |
 |---|---|---|---|---|---|
+| `R06/windows-shared-shell` | cachyos-linux | windows | Exact desktop e010086/shared b4c32fa; normal NSIS/shared-shell physical checks with fresh guards; [procedure and expiry](reports/R06-shared-shell.md#bounded-production-native-requests) | requested | Own operator invocation/acknowledgement required; verification only |
+| `R06/alpine-shared-shell` | cachyos-linux | alpine-linux | Exact e010086 product, APKBUILD bd8121c/shared b4c32fa; native musl package/shared-shell checks; [procedure and expiry](reports/R06-shared-shell.md#bounded-production-native-requests) | requested | Own operator invocation/acknowledgement required; verification only |
 | `R03/windows-native-reconciliation` | windows | debian-linux | Reconcile completed issue 004 native proof with [R03](reports/R03.md); no peer mutation | completed | [Windows journal](../../../fleet/windows/journal.md); [issue 004](../../../fleet/windows/issues/004-windows-dnsapi-meta-browse-resource-growth.md) |
 | `R06/windows-renderer-compile` | cachyos-linux | windows | Exact `d2f6645` native compiler/dependency probe; no installed-host mutation; [procedure](reports/R06-renderer-decision.md#bounded-peer-compile-requests) | completed | [Windows journal](../../../fleet/windows/journal.md#2026-09-05-29--r06-native-windows-renderer-compiler-probe) |
 | `R06/alpine-renderer-compile` | cachyos-linux | alpine-linux | Exact `d2f6645` musl compiler/dependency probe; no installed-host mutation; [procedure](reports/R06-renderer-decision.md#bounded-peer-compile-requests) | completed | [Alpine journal](../../../fleet/alpine-linux/journal.md#2026-09-05-1806-utc--r06-native-musl-renderer-compiler-probe) |

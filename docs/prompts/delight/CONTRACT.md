@@ -99,7 +99,7 @@ or event bus is introduced.
 | Typed client adapters | `crates/koi-client/src/lib.rs`, split by R25 if touched size requires | CLI, desktop, SDK/MCP | existing owner, extended R05/R17/R19/R21 |
 | Local operator bootstrap | `crates/koi-serve/src/local_ipc/` and `koi-common::local_control` | local CLI/desktop | existing; not duplicated |
 | Public Pond catalog | `koi-serve` allowlisted `PublicCatalogSnapshot` projector | Pond only | proposed, R09 |
-| User language/components | `crates/koi-ui/`; Maud and exact component map in R06 handoff below | retained Tauri desktop/authenticated headless; Pond only after R09 projector | renderer decision accepted, ADR-045; shared-shell implementation pending |
+| User language/components | `crates/koi-ui/`; Maud and exact component map in R06 handoff below | retained Tauri desktop/authenticated headless; Pond only after R09 projector | production source implemented, ADR-045; hosted/peer native acceptance pending |
 
 `koi-compose::cores::PersistencePaths` adds exact paths for installation identity,
 preferences, shares, and secure services and passes each owner only its own path.
@@ -674,6 +674,17 @@ Until replacement tests exist, the seven renderer behaviors, browser smoke and
 existing locked desktop Rust/40-JS-test gates remain required. New integration needs
 the charter's affected workspace and native checks; old experiment evidence cannot
 be relabeled as a production-package pass.
+
+Implementation handoff: shared/client source b4c32fa, normal desktop e010086 and
+retirement/current checks d20c3d4 now implement the map. `/ui` is a data-free
+operator bootstrap; `/v1/ui/shell` requires DAT even on loopback and returns the
+same complete Rust document. No operator view is mounted when auth is absent or
+on Pond. Browser transport is `crates/koi-serve/assets/ui-transport.js`; its tests
+and `crates/koi-ui/tests/{render.rs,browser-smoke.mjs}` replace the retired experiment
+tests. Desktop Advanced keeps its original origin/storage and releases native
+listeners before Home navigation. Settings explicitly preserves the existing
+watched-import route. See the [shared-shell report](reports/R06-shared-shell.md)
+for full source/CachyOS evidence and remaining exact Windows/Alpine/hosted gates.
 
 This fills only R01's deferred presentation choice. It changes no wire schema,
 route authority, domain ownership, stored preferences, identity or advanced access.

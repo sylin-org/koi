@@ -203,19 +203,20 @@ No parallel serving path or permanent experiment mode is authorized by this ADR.
 
 ## Consequences and next work
 
-R06/renderer-decision is accepted/ready. Only R06/shared-shell is newly eligible;
-R06 as a whole and its downstream R07/R11 remain pending until that slice passes.
-No renderer dependency or normal-mode UI changes in this documentation commit.
+R06/renderer-decision is accepted/ready. R06/shared-shell is now implemented:
+shared/client b4c32fa, normal desktop e010086, retired variants/new guards d20c3d4.
+The Alpine recipe at bd8121c pins the same e010086 product. Local workspace,
+desktop and installed CachyOS checks pass; exact peer/hosted validation remains
+pending. R06 as a whole and downstream R07/R11 are not yet ready.
 
-Move the selected components/assets into `koi-ui` and integrate the real native/
-authenticated-headless adapters. Retire both spike variants, the desktop probe
-flag/protocol/dependency and stale experimental tests as part of that coherent
-cross-repository transition; immutable commits retain experiment reproducibility.
-Do not remove the pinned dependency before publishing its production replacement,
-ship a parallel experimental UI, or carry a renderer-selection feature into product.
-Keep meaningful hostile-input/state/asset/browser and native lifecycle tests, with
-exact replacement commands in the shared-shell report. Preserve preferences,
-identity, local authentication, advanced access and original family provenance.
+The production crate was published before updating the desktop pins. Both spike
+variants and the probe flag/protocol/dependency are retired; immutable commits
+retain historical reproducibility. New hostile-input/state/auth/asset/browser and
+native lifecycle guards replace those tests. No experimental product mode remains.
+Advanced uses the existing asset origin so storage and watched import survive;
+native navigation releases its prior event registrations. The authenticated web
+adapter remains separate from Pond. Exact source, commands, artifact hashes and
+remaining acceptance cases are in the shared-shell report.
 
 Platform evidence is limited to the named Windows/WebView2 and Linux/WebKitGTK
 environments. macOS remains physically unverified; immutable/GNOME and full product

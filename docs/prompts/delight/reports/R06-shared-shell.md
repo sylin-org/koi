@@ -86,8 +86,9 @@ agent launch or peer host mutation.
 
 ## Current status
 
-In progress: shared crate/HTTP implementation and desktop migration. Source gates
-and new installed-artifact acceptance remain distinct; no R06 parent acceptance.
+Implemented: shared crate/HTTP adapter, desktop migration and experiment retirement.
+Local source and installed CachyOS checks pass; external acceptance remains pending.
+The progress notes below retain the chronology, not outstanding implementation work.
 
 ## Implementation progress
 
@@ -138,3 +139,166 @@ suite passes all 16 tests. A complete rerun against the finished source is runni
 the original run is not recorded as a pass. Final focused tests: 160 serving and
 7 renderer tests pass; initial full strict Clippy passes. Hosted/new native targets
 remain separately pending.
+
+## Implementation and verification
+
+Status: **implemented / pending external acceptance**, not R06 parent acceptance.
+
+Published source: shared crate/operator adapter `b4c32fa9b524549509b34b01bb24cc06455407ad`;
+desktop product `e010086ef1ede16c4ab5dc3c6431fcbf82a9c715`; experiment retirement,
+CI tripwire and current native helpers `d20c3d4934e0790e1866a8fb5f0367648243d476`.
+Desktop `bd8121ccab51650c0d237f307b9e80450e674c1d` changes only the Alpine recipe:
+`0.1.3_git20260906-r0`, pinned to the same e010086 product. All 38 archive files
+match that Git tree; its SHA-512 is recorded in APKBUILD. No peer recipe edit is
+needed. The retired variants/lockfile/assets are recoverable from immutable Git;
+ignored captures, binaries and historical recovery material were preserved.
+
+Before → after: the experiment is no longer selectable or a dependency. Normal
+native launch uses the pure Rust shell, all catalog rows, typed conditions, dated
+manual refresh, four real section destinations and original embedded card. Native
+Advanced remains at its original asset origin, with a Home return and owned event
+listener cleanup. No storage migration, credential-in-JavaScript or second daemon
+was introduced. Existing watched import remains explicitly reachable in Advanced.
+Headless `/ui` is a data-free login/bootstrap; `/v1/ui/shell` is a complete shared
+HTML document protected by DAT on every peer, including loopback. Browser intent
+transport has no DTO/domain logic and forgets token/display on failure or page exit.
+Pond publication and public projection are unchanged.
+
+### Completed source checks
+
+- `KOI_NO_CREDENTIAL_STORE=1 cargo test --workspace --locked`: pass against final
+  production Rust source, 1,962 passed / 15 existing ignored cases across 61 result
+  groups (including doctests). Ignored cases are not physical acceptance.
+- `cargo check --workspace --all-targets --locked`, full strict all-target Clippy
+  and `cargo fmt --all --check`: pass. Final check/Clippy took 13.33s/2.46s after
+  the full build; initial compilation was substantially longer.
+- Focused serving/UI: 160 + 7 tests pass, including all declared conditions,
+  hostile IDs/names/aliases, no inferred actions, exact device-ID grouping,
+  loading/unavailable/empty separation, DAT GET/HEAD across loopback/remote/unknown
+  peers, noncanonical paths and public-bootstrap isolation. Architecture: 16 pass.
+- `node --test crates/koi-serve/assets/ui-transport.test.mjs`: 5 pass; included in
+  the existing hosted contract job. Desktop `node --test ui/app.test.mjs`: 42 pass.
+- Desktop locked tests: 25 pass / one existing live cross-host ignored case;
+  strict all-target Clippy, formatting and real Arch recipe build/check pass.
+- Offline Chromium smoke passes for loading, unavailable and an actual catalog
+  read through authenticated `/run/koi.sock` access. 320px, no clipped critical
+  text, four >=44px navigation targets, visible keyboard skip focus, two decoded
+  original images, zero external assets and motion stop/resume. Live DOM contains
+  66 row renderings across Home/device details; this is not 66 distinct services.
+- Publish-list (20 crates), lean embedding, surface ledger, documentation leak and
+  whitespace guards pass. The shared headless closure has no GTK/Tauri dependency.
+
+Local logs: `/var/tmp/koi-r06-shared-{workspace-final,focused-final,architecture,
+check-final,clippy-final,desktop-test-locked,desktop-clippy,desktop-node,web-node,
+package,lean}.log`. Exact replacement component commands are in
+`crates/koi-ui/README.md`; native helpers in `tools/koi-ui-native/README.md`.
+
+### CachyOS installed-artifact evidence — 2026-09-06 UTC
+
+Real unchanged Arch recipe in `/var/tmp/koi-r06-shell-build.V0NgeEhw`, exact e010086
+checkout, ordinary package install. No runtime repository-relative asset path.
+
+| Artifact | Bytes | SHA-256 |
+|---|---:|---|
+| `koi-desktop-git-0.1.3.r65.ge010086-1-x86_64.pkg.tar.zst` | 4,334,790 | `38c41423c25709efb4488e432102e0e257528ecab0672d0290fd62e991cb6501` |
+| Installed `/usr/bin/koi-desktop` | 13,442,112 | `c874a638d31b48dfba0ec45c6a110799dbf6fdd31f604aad66605fc59a2d407a` |
+| Unchanged accepted R05 `/usr/local/bin/koi` | 64,844,120 | `dc1ebd15b8d1bf2d725c212912d78a5dd9581aa897c505596e8b0a268d9b3975` |
+
+Fresh root-private `/var/tmp/koi-r06-shell.aYAtcutn` held the exact ccee0fc prior
+package, reviewed helper/checksums and baseline hashes. A verified independent
+25-minute root timer was armed before stopping/upgrading anything. It never fired.
+Acceptance was recorded under its lock after restoration; the timer, executable
+helper and privileged shell are removed. The private prior package remains.
+
+Installed native checks (no diagnostic webview module or preference simulation):
+
+1. Ordinary-user PID 1433577 rendered real catalog rows/card with external IP
+   denied. `bpftool cgroup show` proved ingress 887/egress 886 attached to its
+   transient system unit; loopback remained allowed. No extra daemon/listener.
+2. Actual KWin client geometry was 320×872. Visible native Tab focus passed.
+   Keyboard-selected Advanced loaded the genuine existing controls, and its Home
+   button returned to a fresh Rust snapshot in the same process.
+3. Native animation preference on/off/on in PID 1433577 gave pixel AE
+   `423.293 / 0 / 364.608`. Startup already reduced in new PID 1436098 also gave
+   AE 0, with the original card visibly intact. GSettings was restored to true.
+4. Guarded real service stop gave SCM-independent systemd inactive/PID 0 and a
+   refreshed explicit unavailable page without stale rows. Restart of the same
+   unchanged daemon gave PID 1435976, health OK and refreshed real rows.
+5. Closing removed the window from KWin while the same process/SNI remained.
+   The actual SNI menu's `Open Workbench` item (ID 3, bus peer proven to be PID
+   1436098) reopened it. Direct SNI `Activate` has no handler on this existing
+   Ayatana backend, as in the prior experiment; the real menu route was used.
+   Another installed executable invocation revealed the existing singleton.
+6. Final normal launch: one package-owned workbench PID **1436590**, no flags or
+   IP-denial test unit; one enabled/active daemon PID **1435976**, NRestarts 0.
+   The normal user unit resolves its working directory to `/home/test`, outside
+   the checkout. 5640/5641 are loopback-only; Pond 5644 is closed. All **19**
+   captured daemon-state files remain byte-identical, as do the GTK/Xsettings/KDE
+   config files. Avahi, resolved and UFW remain active/enabled; no firewall policy
+   edit occurred. No temporary input device, KWin script or offline cgroup remains.
+
+Captures are in ignored `target/shared-shell-native/01-live.png` through
+`16-normal.png` (motion pairs include startup-reduced). One failed direct-Activate
+attempt produced an untargeted screenshot `14-tray-revealed.png`; that newly
+generated capture was discarded, not used as evidence. Historical/unknown ignored
+files were not cleaned. Package-manager Snapper pre/post snapshots 61/62 are the
+ordinary installation hooks, not an agent cleanup or unrelated package upgrade.
+
+The daemon was deliberately **not upgraded** in this desktop-only native run.
+The new authenticated headless adapter has source/router and locked-build evidence,
+not a claim that the currently installed R05 daemon serves the new `/ui` routes.
+
+### Remaining acceptance / next action
+
+Hosted Koi CI `34006973717` on d20c3d4 has passed Ubuntu/Windows/macOS tests,
+format, contract tests (including new JS), MSRV, surface, lean, strict Clippy,
+audit, architecture and Windows GNU cross-check jobs. The final cross-host job
+is still running at the publication checkpoint; the whole run is not yet a pass.
+No desktop branch CI run exists; native desktop checks are explicit.
+MacOS desktop remains physically unverified, as in the accepted renderer decision.
+
+R06/shared-shell and its parent are implemented/pending, not accepted/linux-ready.
+Reconcile the hosted run and the two exact native requests below; R07/R11 remain
+gated. The remaining work is verification, not an unfinished renderer variant,
+missing adapter, placeholder action or distributed source assignment.
+
+## Bounded production native requests
+
+`R06/windows-shared-shell` and `R06/alpine-shared-shell`: verification only on the
+addressed host after its own operator invokes `fleet/task.md`. No remote launch,
+source fix, dependency update or package-recipe rewrite. Acknowledge in the ledger
+before own-host mutation, with fresh run ID and exact baseline/recovery artifact.
+Requests expire 2026-09-08 03:00 UTC or immediately on a changed product source;
+after expiry revalidate before mutation. Release the request on result/restoration;
+no other host is reserved while waiting for an operator.
+
+Exact product: desktop **e010086ef1ede16c4ab5dc3c6431fcbf82a9c715**, shared/client
+**b4c32fa9b524549509b34b01bb24cc06455407ad**. For Alpine use APKBUILD from desktop
+**bd8121ccab51650c0d237f307b9e80450e674c1d**, which fetches that exact product.
+Use Koi d20c3d4 for replacement renderer tests (not a nonexistent spike workspace).
+
+1. Preserve/inspect worktrees and installed identity/configuration. Run locked
+   desktop tests/strict all-target Clippy/format and `node --test ui/app.test.mjs`;
+   `cargo test -p koi-ui --locked` from Koi for shared components. Use
+   `KOI_NO_CREDENTIAL_STORE=1` for tests. Do not assign a heavy build to Debian.
+2. Windows: `cargo tauri build --bundles nsis --ci -- --locked`, then the supported
+   normal-user NSIS install, with the exact old package retained. Alpine: detached
+   native `abuild` through the published APKBUILD, verify archive/package and
+   install through APK. Record source/package/executable hashes and runtime versions.
+3. Normal launch, never `--renderer-probe`: real local catalog/card, 320px navigation,
+   visible physical keyboard focus, Advanced → Home and explicit refresh. Prove
+   original embedded assets offline without broad host-policy changes. Check actual
+   native motion on/off/on and startup-reduced, not only a preference-file dump.
+4. Close-to-tray/menu reveal and second invocation must retain a single instance.
+   Service-loss/recovery needs a separately verified independent guard capable of
+   restarting the existing service; on Windows prove actual elevation before stop.
+   Refresh must remove old rows on failure and show a real new snapshot on recovery.
+   Do not replace the accepted daemon or its data root for this UI request.
+5. Restore motion, host policy, test utilities and startup shape; retain the new
+   package only if accepted locally, otherwise restore the exact previous package.
+   Leave one healthy original daemon and one normal package-owned workbench. Preserve
+   settings, watched backups, identities/keys, package world/dependencies and all
+   unowned/unknown ignored data. Never `git clean` a scratch parent.
+6. Publish evidence/defects only in the peer's own namespace and complete/fail the
+   request honestly. Return source defects to CachyOS. Compiler proof is not a
+   substitute for physical input, recovery or restoration.

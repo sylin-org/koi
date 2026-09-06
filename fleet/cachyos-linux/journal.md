@@ -640,3 +640,55 @@ documentation leak/surface guards, changed-link and whitespace checks. Both loca
 repositories were clean before this documentation-only change; no peer worktree
 was accessed. Next implementation is R06/shared-shell under a fresh bounded claim;
 this ownership change is not a blanket file reservation or a new acceptance gate.
+
+## 2026-09-06 02:57 UTC — R06 shared shell implemented; CachyOS package verified
+
+Source: Koi shared/client `b4c32fa`, retirement/guards `d20c3d4`; desktop product
+`e010086`, Alpine recipe-only pin `bd8121c`. Full details and exact commands:
+[R06/shared-shell](../../docs/prompts/delight/reports/R06-shared-shell.md#implementation-and-verification).
+
+Implemented production `koi-ui`, normal native and authenticated operator-web
+adapters, Home/Devices/Settings/About, escaped typed catalog rows and original
+family/card assets. Advanced retains its storage origin and watched import; new
+navigation releases native event listeners. Retired both renderer experiments and
+probe dependency/flag; preserved ignored historical evidence. Sole source ownership
+remains here; Windows/Alpine receive only exact published verification requests.
+
+Gates: final locked workspace test 1,962 pass / 15 existing ignored cases; full
+all-target check/strict Clippy/format pass; focused serving/UI 160+7, architecture
+16, web transport 5 and desktop JS 42 pass. Desktop locked tests 25 pass / one
+existing ignored cross-host case, strict Clippy/format and unchanged native Arch
+recipe pass. Offline Chromium loading/unavailable/real-catalog checks pass. Initial
+workspace run's stale unclassified-crate test executable was corrected/rebuilt;
+the complete final run, not that failed attempt, is the passing evidence.
+
+Installed `koi-desktop-git 0.1.3.r65.ge010086-1`: package SHA-256
+`38c41423c25709efb4488e432102e0e257528ecab0672d0290fd62e991cb6501`, executable
+`c874a638d31b48dfba0ec45c6a110799dbf6fdd31f604aad66605fc59a2d407a` (13,442,112 bytes).
+Real external-IP-denied cgroup had proven ingress/egress BPF programs; native
+320px client, visible keyboard focus, live rows/card, Advanced→Home, motion
+on/off/on and startup-reduced, unavailable/recovery, tray-menu reopen and singleton
+all passed. Reduced motion pixel AE was 0; enabled/resumed pairs differed. The
+unimplemented Ayatana direct Activate method was not counted as a pass; the real
+Open Workbench menu item was exercised. One newly generated untargeted capture was
+discarded; no historical/unknown ignored tree was cleaned.
+
+Fresh root-private `/var/tmp/koi-r06-shell.aYAtcutn` held the exact prior ccee0fc
+package and independently armed 25-minute restore timer. It was accepted/disarmed
+under lock after final checks; executable helper, root shell, offline cgroup,
+temporary input devices and KWin scripts are gone. Prior package remains private.
+All 19 captured daemon-state files and GTK/Xsettings/KDE configuration hashes are
+unchanged; motion is true. No firewall policy edit or unrelated package upgrade.
+
+Koi state now: one normal package-owned user workbench **PID 1436590**, neutral
+`/home/test` working directory, no flags; one unchanged accepted R05 daemon
+**PID 1435976**, enabled/active, NRestarts 0, SHA-256
+`dc1ebd15b8d1bf2d725c212912d78a5dd9581aa897c505596e8b0a268d9b3975`.
+5640/5641 remain loopback, Pond 5644 closed; Avahi/resolved/UFW active/enabled.
+The daemon's one guarded restart was for negative verification, not an upgrade;
+new headless HTML has source/router/build evidence, not installed-R05 route claims.
+
+R06 is **implemented/pending**, not accepted. Hosted run `34006973717` has passed
+its non-native-test gates while Ubuntu/Windows/macOS test jobs are still running.
+Next: reconcile that run and operator-invoked `R06/windows-shared-shell` /
+`R06/alpine-shared-shell`; no remote session was launched. R07/R11 stay gated.
