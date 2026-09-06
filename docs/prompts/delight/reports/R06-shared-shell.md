@@ -108,3 +108,27 @@ reads durable daemon preferences but does not inspect browser storage. Existing
 watched-item import runs when Advanced is opened, and Settings explicitly says so;
 unmatched legacy values and backups stay in that original origin. No stored-state
 schema or persistence write has been introduced by the shell.
+
+## Native validation claim
+
+Desktop `e010086` / shared `b4c32fa` is published. Native locked tests (25 pass,
+one pre-existing cross-host ignored test), strict Clippy, format and 42 Node tests
+pass. Advanced now releases its native event registrations before returning Home,
+including pending registrations; a new behavioral test pins that lifecycle.
+
+Claim `tools/koi-ui-native/{README.md,restore-cachyos.sh,key-once.c,kwin-narrow.js}`
+for the new production artifact's bounded CachyOS check. Follow the existing
+root-private checkpoint and libevdev/KWin patterns, but use a fresh checkpoint
+and the current ccee0fc prior package/hash, never an old recovery archive. The
+guard is desktop-only, also restoring the already-running service and true motion
+preference after an interrupted negative check; it does not restore old daemon
+data. Only Tab/Enter/Home/End navigation keys are admitted, after activating the
+one Koi window. No permission changes, remote host mutations or diagnostic webview
+instrumentation. Build uses the unchanged Arch recipe outside the workspace.
+
+The first full-workspace run used an architecture test executable compiled before
+the new class was added and reported `koi-ui` unclassified. The current architecture
+suite passes all 16 tests. A complete rerun against the finished source is running;
+the original run is not recorded as a pass. Final focused tests: 160 serving and
+7 renderer tests pass; initial full strict Clippy passes. Hosted/new native targets
+remain separately pending.
