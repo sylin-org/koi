@@ -20,9 +20,13 @@ absent, ambiguous or unsafe destinations show connection details instead of an
 invented dashboard. Discovery does not prove reachability, permission or browser
 TLS trust. An absent favorite remains a saved reference, not an available service.
 
-This iteration reads dated snapshots. **Refresh snapshot** rereads while preserving
-submitted search, favorite filter and selection. Automatic updates/reconnect are
-not implemented yet. “No matches” means the filter excluded the snapshot's services;
+Home reads authoritative snapshots automatically, five seconds after each successful
+read. It preserves submitted search, favorite filter and selection, plus an unsent
+search draft, focus and expanded details during background updates. **Refresh snapshot**
+is an optional immediate read, not a recovery requirement. Temporary connection loss
+marks retained evidence stale and disables old Open links; retries back off from one
+to fifteen seconds and recover automatically. Browser access/schema rejection instead
+clears the view and requires sign-in again. “No matches” means the filter excluded the snapshot's services;
 “Cannot read the local catalog” means an access/service/schema problem, not zero
 discoveries. An empty snapshot alone does not establish discovery-provider health.
 

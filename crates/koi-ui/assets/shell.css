@@ -37,6 +37,8 @@ code, time, summary, span { overflow-wrap: anywhere; }
 .service-select { min-width: 0; padding: 8px 0; }
 .service-select[aria-current] { text-decoration-thickness: 3px; }
 .attention { margin-top: 20px; }
+[data-stale] .snapshot-meta::before { content: "Stale evidence · "; }
+a[aria-disabled="true"] { color: var(--ink-3); cursor: not-allowed; }
 dd { margin-inline-start: 16px; overflow-wrap: anywhere; }
 @media (max-width: 650px) {
   .home-layout { display: block; }

@@ -8,6 +8,7 @@ use maud::{html, PreEscaped};
 
 /// Native adapters may apply these same rules when their webview ignores media queries.
 pub const REDUCED_MOTION_CSS: &str = include_str!("../assets/reduced-motion.css");
+pub const REFRESH_JS: &str = include_str!("../assets/refresh.js");
 pub const DOCUMENT_CSP: &str = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 
 /// A failed or pending read is never an empty authoritative catalog.

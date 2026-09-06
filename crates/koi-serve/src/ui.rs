@@ -14,6 +14,7 @@ use koi_ui::{Links, View};
 pub const SHELL: &str = "/v1/ui/shell";
 pub const LOGIN: &str = "/ui";
 const TRANSPORT: &str = "/ui/transport.js";
+const REFRESH: &str = "/ui/refresh.js";
 const BROWSER_CSP: &str = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 /// Mount only when the host configured DAT authentication. An unauthenticated
@@ -22,6 +23,7 @@ pub(crate) fn routes(catalog: Arc<ServiceCatalogRuntime>) -> Router {
     Router::new()
         .route(LOGIN, get(login))
         .route(TRANSPORT, get(transport))
+        .route(REFRESH, get(refresh))
         .route(SHELL, get(snapshot))
         .with_state(catalog)
 }
@@ -36,6 +38,14 @@ async fn transport() -> Response {
     response(
         "text/javascript; charset=utf-8",
         include_str!("../assets/ui-transport.js").into(),
+        BROWSER_CSP,
+    )
+}
+
+async fn refresh() -> Response {
+    response(
+        "text/javascript; charset=utf-8",
+        koi_ui::REFRESH_JS.into(),
         BROWSER_CSP,
     )
 }
@@ -198,6 +208,17 @@ mod tests {
         assert!(body.contains("type=\"password\""));
         assert!(!body.contains("Snapshot revision"));
         assert!(!body.contains("secret-token"));
+        assert!(body.contains(REFRESH));
+        let refresh_reply = app()
+            .oneshot(Request::builder().uri(REFRESH).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(refresh_reply.status(), StatusCode::OK);
+        assert_eq!(refresh_reply.headers()["cache-control"], "no-store");
+        let refresh_body = to_bytes(refresh_reply.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(refresh_body.as_ref(), koi_ui::REFRESH_JS.as_bytes());
         for route in ["/v1/ui", "/ui/unknown", "/v1/ui/shell/unknown"] {
             assert_eq!(
                 app()

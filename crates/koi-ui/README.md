@@ -7,7 +7,9 @@ the authenticated browser transport. Adapters apply `DOCUMENT_CSP` as a response
 header and never pass catalog-derived URLs as `Links`.
 
 Home offers submitted search, favorite filtering, stable-ID selection, service
-details and validated Open links, with a snapshot timestamp and explicit refresh.
+details and validated Open links, with a snapshot timestamp. The browser/native
+adapters poll complete snapshots every five seconds and retry temporary loss with
+bounded backoff; the renderer itself remains pure and script-free.
 Devices groups by exact catalog device ID, with native HTML disclosure controls.
 Settings preserves access to existing advanced controls; About uses the original
 card. R07–R09 own the subsequent action-oriented journeys, not a second renderer.
@@ -23,7 +25,10 @@ connection details, not an inferred dashboard. `HomeRequest` parses bounded
 presentation intent; `render_home` applies it without a second catalog model.
 The browser transports form/link intent with its existing DAT header; native uses
 GET navigation and keeps service destinations outside the privileged webview.
-Automatic feed recovery remains R07 work. Behavioral coverage is `tests/home.rs`
+`REFRESH_JS` embeds shared scheduling/DOM mechanics, not a catalog model. Adapters
+mount it only on their existing UI origins. It preserves drafts/focus/disclosures,
+fences old responses and disables stale Open links until a successful read.
+Behavioral coverage is `tests/home.rs`
 and the browser transport tests; see [Home usage](../../docs/tutorials/home.md).
 
 Assets are embedded: the unchanged original sprite SHA-256 is
@@ -40,6 +45,7 @@ cargo run -p koi-ui --example components --locked -- loading > target/ui-loading
 cargo run -p koi-ui --example components --locked -- unavailable > target/ui-unavailable.html
 node crates/koi-ui/tests/browser-smoke.mjs target/ui-loading.html
 node crates/koi-ui/tests/browser-smoke.mjs target/ui-unavailable.html
+node crates/koi-ui/tests/refresh-dom.mjs
 ```
 
 The `snapshot` example mode consumes a schema-1 catalog JSON on stdin; it fails

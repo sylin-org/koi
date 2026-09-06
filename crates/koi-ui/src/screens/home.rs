@@ -12,6 +12,7 @@ pub fn render(view: View<'_>, query: &HomeQuery<'_>) -> Markup {
             h1 #home-title { "Home" }
             p { "Find a service by name, device, address or category." }
             p #open-status role="status" {}
+            p #catalog-status role="status" { "Dated snapshot; automatic updates depend on the active adapter." }
             form #home-search action="?" method="get" role="search" {
                 label for="service-search" { "Search services" }
                 input #service-search type="search" name="search" value=(query.search) maxlength="1000";
@@ -28,7 +29,6 @@ pub fn render(view: View<'_>, query: &HomeQuery<'_>) -> Markup {
                 View::Snapshot(catalog) => {
                     p.snapshot-meta { "Snapshot revision " (catalog.revision) " · "
                         time datetime=(catalog.generated_at.to_rfc3339()) { (catalog.generated_at.to_rfc3339()) }
-                        " · Read again to see later changes."
                     }
                     @let projection = project(catalog, query);
                     div.home-layout {
@@ -100,7 +100,7 @@ fn details(catalog: &CatalogSnapshot, service: &Service) -> Markup {
         p { "A discovered link does not prove reachability, permission or this client's TLS trust." }
         @if service.checks.is_empty() { p { "No service-level checks recorded." } }
         @for check in &service.checks { (check_evidence(check)) }
-        details {
+        details #service-technical-details {
             summary { "Technical details and sources" }
             p { "Service ID: " code { (service.id) } }
             p { "Device ID: " code { (service.device_id) } }

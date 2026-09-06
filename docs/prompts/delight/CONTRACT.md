@@ -709,8 +709,15 @@ The existing authenticated shell route accepts only `search`, `selected` and
 `favorites=1` query fields; unknown/duplicate/oversized intent is rejected. Browser
 transport carries intent and inserts Rust HTML; native GET navigation reads the same
 typed intent and its window navigation boundary opens service links externally.
-No query carries credentials, no domain schema changes, and no automatic feed
-recovery or native journey acceptance is implied by this source slice.
+No query carries credentials and no domain schema changes. R07 automatic refresh
+uses shared `koi-ui/assets/refresh.js` for bounded transport/DOM mechanics and the
+same complete Rust-rendered snapshot path. Browser bootstrap serves it at
+`/ui/refresh.js`; native serves `/refresh.js` only on its exact main-window UI
+origin. Native credentials remain in Rust. Polls run after completion, normally
+five seconds apart, with ten-second request deadlines and retry delays capped at
+fifteen seconds. Stale views cannot reuse Open links; browser credential/protocol
+rejection clears data and stops retries. No browser-side DTO model or second SSE
+subscription is introduced. Native journey acceptance remains separately pending.
 
 ## Assessment finding disposition
 
