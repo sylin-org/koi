@@ -5,6 +5,13 @@ facades, which own their state, events, and invariants. Engines and platform API
 stay behind provider ports. The composition root selects providers, wires
 cross-domain reactions, and owns the one process lifecycle.
 
+`koi-ui` is the pure shared Rust/Maud presentation boundary. It consumes only
+`koi-common` catalog types and embedded family assets; it imports no client,
+domain, GTK or Tauri code. The desktop's `src/ui.rs` owns authenticated local
+intake and its existing native window; `koi-serve::ui` owns the authenticated
+operator web adapter on the existing listener. Neither owns catalog truth or
+storage. Advanced dashboard/workbench tools remain reachable during R07–R09.
+
 ```
 ┌────────────────────────┐       ┌────────────────────────┐
 │ HTTP / SSE / MCP       │       │ Authenticated IPC     │

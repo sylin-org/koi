@@ -1,0 +1,20 @@
+[package]
+name = "koi-ui"
+description = "Shared Rust-authored Koi presentation and embedded family assets"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+
+[dependencies]
+koi-common.workspace = true
+maud = "=0.27.0"
+base64.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+scraper = "=0.24.0"

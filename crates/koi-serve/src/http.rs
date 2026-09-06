@@ -161,6 +161,9 @@ pub async fn serve(
         .route(paths::PROMETHEUS_SD, get(prometheus_sd_handler))
         .route(paths::MCP_SERVER_CARD, get(mcp_server_card_handler));
     app = app.merge(crate::catalog::routes(Arc::clone(&cores.catalog)));
+    if auth.is_some() {
+        app = app.merge(crate::ui::routes(Arc::clone(&cores.catalog)));
+    }
     if let Some(preferences) = &cores.preferences {
         app = app.merge(crate::preferences::routes(
             Arc::clone(preferences),
@@ -715,6 +718,7 @@ pub(crate) async fn dat_auth_middleware(
     // returning a static document, so it must carry the token on every request.
     let is_events_stream = path == paths::EVENTS;
     let is_catalog_events = path == paths::CATALOG_EVENTS;
+    let is_operator_html = path == crate::ui::SHELL;
     let is_preferences = path == paths::PREFERENCES || path.starts_with("/v1/preferences/");
     // Pond desire is operator state. Even its GET is intentionally absent from
     // the broad read exemption; the public projection lives on Pond's own router.
@@ -767,6 +771,7 @@ pub(crate) async fn dat_auth_middleware(
         && !is_posture
         && !is_events_stream
         && !is_catalog_events
+        && !is_operator_html
         && !is_preferences
         && !is_pond_control
         && !is_udp

@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 enum Class {
     Kernel,
     Foundation,
+    Presentation,
     Domain,
     Composition,
 }
@@ -31,6 +32,7 @@ fn classify(pkg: &str) -> Option<Class> {
     Some(match pkg {
         "koi-common" => Class::Kernel,
         "koi-config" | "koi-crypto" => Class::Foundation,
+        "koi-ui" => Class::Presentation,
         // Domains + the lean blocking client (must not re-acquire a domain dependency).
         "koi-mdns" | "koi-dns" | "koi-health" | "koi-proxy" | "koi-udp" | "koi-runtime"
         | "koi-certmesh" | "koi-trust" | "koi-preferences" | "koi-client" => Class::Domain,
@@ -556,6 +558,7 @@ fn dependency_graph_respects_the_layering_rules() {
             let allowed = match class {
                 Class::Kernel => false, // the kernel depends on no koi-* crate
                 Class::Foundation => dep == "koi-common",
+                Class::Presentation => dep == "koi-common",
                 Class::Domain => dep == "koi-common" || FOUNDATION.contains(&dep.as_str()),
                 Class::Composition => true,
             };

@@ -53,7 +53,25 @@ Interactive API docs are available at `GET /docs` (Scalar UI).
 | GET    | `/openapi.json`      | OpenAPI specification                      |
 | GET    | `/docs`              | Interactive API documentation              |
 
-### Catalog and durable preferences
+### Shared operator interface
+
+`GET /ui` loads the operator login page and `GET /ui/transport.js` its small
+same-origin transport. Neither contains operator data. `GET /v1/ui/shell`
+returns a complete Rust-rendered catalog document with embedded assets; **GET
+and HEAD require `x-koi-token` even on loopback**. All three routes are mounted
+only when the host configured DAT authentication. Responses are `no-store`,
+frame-denied and use a restrictive content security policy.
+
+The browser sends a manually supplied token only in that header, never a URL,
+cookie or persistent store. It refuses remote cleartext HTTP: use HTTPS via a
+trusted transport or a loopback SSH tunnel. Refresh replaces the entire dated
+snapshot; failures remove the prior display. Forget token and page exit clear
+the token and displayed data. Advanced tools remain at `/`; the existing native
+workbench retains its richer controls. No service is started or shared by opening
+this view. These routes are absent from Pond; its existing `PUT|DELETE /v1/ui`
+publication contract is unchanged.
+
+### Catalog and durable preferences (JSON)
 
 `GET /v1/catalog` returns one coherent value. `epoch` changes when the daemon
 restarts; `revision` is meaningful only within that epoch. The SSE route sends the

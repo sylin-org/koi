@@ -1,0 +1,4 @@
+/* Shared browser/native reduction. The native owner adds/removes this exact
+   stylesheet; no domain state, JS or platform-specific copy is involved. */
+*, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+.tcg:hover { transform: none !important; }

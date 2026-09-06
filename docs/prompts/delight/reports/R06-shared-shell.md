@@ -86,8 +86,8 @@ agent launch or peer host mutation.
 
 ## Current status
 
-In progress: exploration/claim only. Next: implement pure shared components and
-HTTP adapter, verify/publish replacement, then migrate desktop and retire experiments.
+In progress: shared crate/HTTP implementation and desktop migration. Source gates
+and new installed-artifact acceptance remain distinct; no R06 parent acceptance.
 
 ## Implementation progress
 

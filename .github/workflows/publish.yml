@@ -46,6 +46,7 @@ jobs:
 
           CRATES=(
             koi-common      # Layer 0: no internal deps
+            koi-ui          # Pure presentation (common types, Maud, embedded assets)
             koi-config      # Layer 1: depends on koi-common
             koi-crypto      # Layer 1: cryptographic primitives
             koi-trust       # Layer 1: OS trust-store aggregate

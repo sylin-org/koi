@@ -4,6 +4,7 @@ members = [
     "crates/koi",
     "crates/koi-client",
     "crates/koi-dashboard",
+    "crates/koi-ui",
     "crates/koi-compose",
     "crates/koi-serve",
     "crates/koi-embedded",
@@ -36,6 +37,7 @@ homepage = "https://sylin.org/koi"
 # Internal crates - version is required for crates.io publish; path is used locally
 koi-common = { path = "crates/koi-common", version = "=1.0.0-dev.0" }
 koi-client = { path = "crates/koi-client", version = "=1.0.0-dev.0" }
+koi-ui = { path = "crates/koi-ui", version = "=1.0.0-dev.0" }
 # default-features = false at the workspace level so a consumer's member-level
 # `default-features = false` is actually honored (Cargo ignores it otherwise). This is
 # what lets a lean consumer shed the optional heavy backends (bollard / keyring / qr);

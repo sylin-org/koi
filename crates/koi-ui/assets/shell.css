@@ -1,0 +1,31 @@
+/* Shared accessibility/layout overrides, after the exact family base.
+   Preserve source colors/card geometry; critical copy uses readable ink tokens. */
+html { min-width: 0; width: auto; height: auto; overflow: auto; }
+body { min-width: 0; width: auto; height: auto; overflow: visible; font-size: 15px; }
+.lamp-core { background: var(--faint); box-shadow: none; }
+.lampband { display: flex; flex-wrap: wrap; min-height: var(--band); gap: 10px; padding: 8px; }
+nav { display: flex; flex-wrap: wrap; gap: 4px; }
+nav .tab { display: inline-flex; align-items: center; min-height: 44px; height: auto; color: var(--ink-2); text-decoration: none; font-size: 14px; }
+a:focus-visible { outline: 2px solid var(--al); outline-offset: 3px; }
+.skip { position: absolute; left: 8px; top: -100px; background: var(--bg); color: var(--ink); padding: 12px; z-index: 10; }
+.skip:focus { top: 8px; }
+main { max-width: 1180px; padding: 8px; margin: auto; }
+section { padding: 16px 0; scroll-margin-top: 12px; }
+p { color: var(--ink-2); overflow-wrap: anywhere; }
+.service-row { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; padding: 12px; border: 1px solid var(--line-2); border-radius: 7px; }
+.service-row strong { color: var(--ink); overflow-wrap: anywhere; min-width: 0; }
+.service-row span { color: var(--ink-2); }
+.tcg { cursor: default; max-width: 100%; }
+.tcg .card-title .role, .tcg .card-foot .flavor { color: var(--ink-3); }
+.toolbar, .operator-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 8px; }
+.button, button, summary { min-height: 44px; padding: 12px; color: var(--ink); cursor: pointer; }
+.button, button { display: inline-flex; align-items: center; background: var(--panel); border: 1px solid var(--line-2); border-radius: 7px; font: inherit; }
+a { color: var(--al); }
+button:focus-visible, summary:focus-visible, input:focus-visible, main:focus-visible { outline: 2px solid var(--al); outline-offset: 3px; }
+input { max-width: 100%; min-width: 0; font: inherit; padding: 10px; color: var(--ink); background: var(--bg); border: 1px solid var(--line-2); }
+.service-list { display: grid; gap: 8px; }
+.device { border: 1px solid var(--line-2); border-radius: 7px; margin: 8px 0; padding: 8px; overflow-wrap: anywhere; }
+.device .service-row { margin-top: 8px; }
+.snapshot-meta { font-size: 13px; }
+code, time, summary, span { overflow-wrap: anywhere; }
+[hidden] { display: none !important; }

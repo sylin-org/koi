@@ -13,6 +13,7 @@ keywords = ["koi", "serving", "http", "transport", "networking"]
 categories = ["network-programming"]
 
 [dependencies]
+koi-ui.workspace = true
 # Serving crate: depends on the composition root (koi-compose) for the constructed
 # `Cores` + capability/status/bridge projections, the presentation crate (koi-dashboard)
 # for the dashboard/browser routes, every domain it mounts routes for, and koi-mcp for

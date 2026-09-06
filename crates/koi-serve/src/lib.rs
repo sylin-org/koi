@@ -45,6 +45,7 @@ pub mod preferences;
 pub mod prometheus_sd;
 pub mod serve;
 pub mod trust_plane;
+pub mod ui;
 #[cfg(windows)]
 pub mod windows_firewall;
 
