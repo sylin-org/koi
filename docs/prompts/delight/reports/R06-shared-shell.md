@@ -125,6 +125,8 @@ preference after an interrupted negative check; it does not restore old daemon
 data. Only Tab/Enter/Home/End navigation keys are admitted, after activating the
 one Koi window. No permission changes, remote host mutations or diagnostic webview
 instrumentation. Build uses the unchanged Arch recipe outside the workspace.
+Claim `.github/workflows/ci.yml` to run the new browser-transport Node tests in the
+existing contract job; renderer Rust tests already run with the workspace suite.
 
 The first full-workspace run used an architecture test executable compiled before
 the new class was added and reported `koi-ui` unclassified. The current architecture
