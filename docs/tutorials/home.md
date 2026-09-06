@@ -13,6 +13,10 @@ Existing favorite/alias editing and watched-item import remain in Advanced tools
 Select a service name to inspect its device, endpoint, check observer/time and
 source details. Details sit alongside the list on a wide window; on a narrow
 window they take focus, with **Back to services** returning to the list.
+Automatic updates keep that narrow details route visible. If the selected identity
+leaves the catalog, Home says so instead of choosing a same-named replacement.
+Unmanaged discovery identities may change after a daemon restart; the service can
+then be selected again when rediscovered.
 
 **Open** uses the displayed HTTP(S) destination, including its real port and path.
 The native workbench opens it through your system's browser association. API-only,

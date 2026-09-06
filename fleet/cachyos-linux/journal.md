@@ -738,3 +738,57 @@ Scope is repeated native navigation plus lifecycle; Windows also owes the actual
 tray-menu route it did not claim previously. No repeated daemon-stop, motion or
 firewall experiment. Debian remains lightweight/unassigned. Native correction
 acceptance and R06 parent remain pending; source completion is not a physical pass.
+
+## 2026-09-06 14:55 UTC — R07 native refresh correction implemented and verified
+
+Task `R07/Home`; sole source owner CachyOS, no peer mutation/assignment. Starting
+Koi 39ab557 / desktop 4a7f998 clean and synchronized. Run
+`R07/cachyos-native-20260906` installed exact desktop 4a7f998 through the Arch recipe
+under fresh root timer/checkpoint `/var/tmp/koi-r07.eRZtYPSq`. Search, selection and
+automatic snapshots worked, but at 320px refresh hid selected details because DOM
+replacement lost CSS `:target`. Rejected that candidate and exercised exact package
+rollback to e010086, binary c874a638, workbench PID 1477985. Baseline hashes/policy
+matched; no daemon binary replacement, motion/provider/firewall or credential edits.
+
+Published fix **Koi 46206b00511fddea33de2ad58a9a2651747d78ec**, desktop
+**6dd641b981ee9abf971e456958db59d80e9742db**: shared DOM/CSS derives narrow-panel
+visibility from current URL fragment after refresh and hashchange, without a new
+selection model or history mutation. Actual 320px Chromium DOM regression covers
+selection through replacement and Back, preserving existing draft/caret/focus,
+checkbox/disclosure and stale-action checks. That test, 10 transport tests, 18
+koi-ui Rust tests, desktop locked all-target check and 30 Rust tests (one existing
+ignored), C strict compilation, bash syntax and diff checks pass. Desktop lockfile
+changes only four Koi Git sources, no registry drift. Hosted product run
+34040271457 remains in progress; documentation run 34039313627 passed.
+
+Fresh guarded retry `R07/cachyos-native-20260906-v2` installed normal package
+`koi-desktop-git 0.1.3.r72.g6dd641b-1` from clean detached source via unchanged
+recipe. Artifact `/var/tmp/koi-r07-build.KXFj6GY0/koi-desktop-git-0.1.3.r72.g6dd641b-1-x86_64.pkg.tar.zst`,
+SHA-256 `c44cb85f8b7f9384bdc92daa33b7fbbbffed976ac769bb36c0387d3389cf8395`.
+Installed `/usr/bin/koi-desktop`, SHA-256
+`0e8a88c3f7eb67ae8237b981981fc3fd7e4e73b0a52384085d1f9e6776b46ad0`,
+one PID **1483793** from neutral `/`. Actual 320×872 selected details stayed visible
+through revisions 810/820/840; Back, keyboard no-match and Clear filters passed.
+14:51:31–14:51:48 UTC unchanged-daemon stop/start showed bounded retry/stale
+messaging, readable selected details, Open accessible URI removed and focused
+unsent draft retained. Snapshot 74 at 14:52:02 proves automatic read recovery.
+The selection safely became missing; later same-named discovery has a different
+epoch-derived catalog ID, so this is not durable favorite/reselection proof.
+
+Final intended installation retains corrected desktop. Exactly one unchanged
+daemon `/usr/local/bin/koi --daemon`, PID **1484173**, SHA-256
+`dc1ebd15b8d1bf2d725c212912d78a5dd9581aa897c505596e8b0a268d9b3975`, enabled/active,
+health OK, NRestarts 0; operator5641 loopback, Pond5644 closed. All 19 daemon-state
+hashes, three desktop-settings hashes, provider/service policy, UFW and absent
+`/etc/koi/config.toml` match fresh baseline; animations remained explicit true.
+Normal frame410,151,1100,748/client1100×720 restored; query cleared/Home visible.
+Checkpoint `/var/tmp/koi-r07.Kf6sbwzl` accepted under lock after health/hash/process
+checks. Both timers gone, both copied root executables removed, KWin scripts
+unloaded, privileged session closed; private prior packages/evidence retained.
+
+[R07 report](../../docs/prompts/delight/reports/R07.md) has full evidence and local
+captures/AT-SPI transcripts under `target/r07-native`. Native browser handoff was
+requested but loaded destination unproven (no controllable Chromium tabs); AT-SPI
+activation is not pointer proof. R07 stays in_progress/pending: next finish source
+availability and the durable Notes/favorite/browser/pointer journey. No broad
+repeat/fleet dispatch, Alpine recipe change or whole-R07 acceptance claim.
