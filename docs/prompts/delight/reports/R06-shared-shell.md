@@ -127,6 +127,10 @@ one Koi window. No permission changes, remote host mutations or diagnostic webvi
 instrumentation. Build uses the unchanged Arch recipe outside the workspace.
 Claim `.github/workflows/ci.yml` to run the new browser-transport Node tests in the
 existing contract job; renderer Rust tests already run with the workspace suite.
+Final packaging audit claims `koi-desktop/packaging/alpine/APKBUILD`: unlike the
+Arch Git recipe, it pins the old ccee0fc archive. Update only its version/release,
+immutable product commit and verified source checksum to e010086, so the peer's
+unchanged musl build procedure tests the production shell rather than the probe.
 
 The first full-workspace run used an architecture test executable compiled before
 the new class was added and reported `koi-ui` unclassified. The current architecture
