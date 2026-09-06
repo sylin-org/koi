@@ -863,3 +863,16 @@ Source CI34041362775 remains in progress. [R07 report](../../docs/prompts/deligh
 records artifact hashes and `target/r07-native/full-*` evidence. R07 remains pending;
 next needs a bounded manual browser/pointer session with freshly prepared workload,
 not repeated broad tests. No peer assignment or Alpine recipe change.
+
+## 2026-09-06 — R07 hosted prerequisite closed; manual interaction remains
+
+Read-only reconciliation confirmed exact shared17fb591 run34041362775 completed
+successfully with all14 jobs green, including native hosted OS test jobs and
+cross-host exchange. Evidence/helper commit095b998 run34042720588 also passed.
+Installed service remains active/health OK; both repositories started clean and
+synchronized. No install, restart, workload/publication, input or credential change.
+The explore skill kept verification scoped to the outstanding evidence instead of
+repeating successful builds/native checks. Updated the existing R07 report and
+ledger with the CI result and bounded manual procedure. Browser protected-host
+restriction remains binding; no alternate automation path attempted. Await operator
+presence before preparing temporary Notes again. R07 acceptance remains pending.
