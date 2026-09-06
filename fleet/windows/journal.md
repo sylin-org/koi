@@ -1,5 +1,33 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-05 (35) — R06 Windows recovery tail retry acknowledged
+
+task: `R06/windows-recovery-tail` | run
+`r06-recovery-ccee0fc-windows-20260905-retry1` | instruction head
+`9039f5157c63a43d60ecb284a200dd1ba30f9839` | state: **ACKNOWLEDGED —
+both independent restoration guards verified before mutation**
+
+The normal-user desktop recovery guard is PID `34828`. The separately UAC-elevated
+service guard is PID `41840`; its ready receipt records an active Administrator token,
+the existing Running `koi` service at PID `3888`, and a 600-second timed fallback that
+starts only that service and requires `/healthz` 200. It can also accept the bounded
+requested recovery signal. Neither guard contains a credential or changes product,
+service configuration, policy, firewall, network or persisted state.
+
+Baseline remains exact: desktop source `ccee0fce1bb579e032a0aad2a8603f869b22a2b2`,
+shared renderer `72cb286f7c4b4c285893693a58fdebcf896a1538`, installed workbench
+SHA-256 `f1d7a7a750130dac48241cfc5235951d9baeff18d100dedc8217ca8b5135b487`
+as sole normal PID `22992`; accepted R05 daemon SHA-256
+`ca6386df292cfd40c019d30ea36bcab33eea80ea7f50a1c78e375bac8d19cb21`
+as the sole AutoStart LocalSystem service PID `3888`, health 200. Only 5640/5641
+listen; Pond 5644 is closed. Config, local-access policy, startup and the 15-rule
+effective Koi display-rule baseline match journal entry 34.
+
+scope: perform only the requested serial normal-workbench quit, existing-service
+stop, exact installed evaluator unavailable capture, same-service start/health,
+fresh recovered-row capture and normal `--minimized` workbench restoration. The
+earlier positive renderer evidence and earlier prerequisite failure remain historical.
+
 ## 2026-09-05 (34) — R06 Windows recovery tail prerequisite unavailable
 
 task: `R06/windows-recovery-tail` | intended run
