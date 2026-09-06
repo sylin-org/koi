@@ -900,3 +900,30 @@ Helper README states global-input focus-race limitations and protected-browser
 exclusion. See [R07 report](../../docs/prompts/delight/reports/R07.md) and local
 `target/r07-native/pointer-*.png`. Wide pointer feasibility passed; narrow pointer/
 search and protected browser load/save remain pending. Whole R07 remains pending.
+
+## 2026-09-06 18:04 UTC — narrow native pointer cases passed
+
+`R07/cachyos-narrow-pointer-20260906`, unchanged daemon17fb591 PID1506880 and
+desktop24d619f PID1506093, hashes fc5db346 /2db016d9 unchanged. Explore reused the
+verified one-shot pointer/key helpers and KWin/AT-SPI observations; no source build
+or installation. Fresh user restoration timer was active before resizing.
+
+At measured320×872, pointer focus plus native keyboard `test-01 api`, pointer Search,
+pointer API-service selection and Back all passed. The detail route showed the
+actual connection endpoint without Open; Back retained the query. Pointer focus
+and keyboard appended ` zzz`; pointer Search showed No matches while discovery
+remained observing, then pointer Clear emptied the query and restored services.
+Seven generated clicks were gated by inspected internal control bounds and fresh
+expected-PID/active/topmost/cursor observations. Native accessibility state and
+captures confirmed each result. No browser action or semantic click substitution.
+
+Restoration script restored exact frame410,151,1100,748/client1100×720 and
+cursor1512,695, Home/empty query. Timer stopped; no loaded probes or temporary input
+devices remained. Original PIDs/hashes and health preserved; desktop-settings hashes
+matched. No daemon interruption, publication/preferences, credential/ACL, provider,
+firewall or peer change. A post-cleanup AT-SPI traversal encountered a stale object
+during refresh; a fresh traversal/capture was used instead, with no input retry.
+Local captures `target/r07-native/narrow-pointer-*.png`; see the
+[R07 report](../../docs/prompts/delight/reports/R07.md). Helper commitf508e1c hosted
+run34046879066 passed. Remaining R07 interaction evidence is protected browser
+target load/save and authenticated browser Home, not native pointer feasibility.

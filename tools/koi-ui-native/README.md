@@ -93,7 +93,7 @@ native capture. A zero exit status proves event submission, not navigation.
 Restore the captured pointer/geometry and unload probes; verify no temporary input
 device remains. Never apply this helper to evade browser protected-host restrictions.
 
-Measured R07 wide-layout service selection/Back passed on desktop24d619f; see
-`docs/prompts/delight/reports/R07.md`. Narrow pointer and browser load/save remain
-separate unverified cases. The existing semantic AT-SPI action remains useful for
+Measured R07 wide-layout service selection/Back and320px search/select/Back/
+no-match/clear passed on desktop24d619f; see `docs/prompts/delight/reports/R07.md`.
+Browser load/save remains unverified. The existing semantic AT-SPI action remains useful for
 inspection/setup, but does not count as pointer evidence.
