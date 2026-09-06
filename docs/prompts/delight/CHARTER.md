@@ -105,13 +105,20 @@ the exact missing checkout. Do not read gitignored personal/machine notes implic
 
 ## One iteration, one bounded slice
 
+Owner update, 2026-09-06: prefer a usable vertical slice over infrastructure-only
+milestones. For R07, deliver search → select → open before expanding supporting
+machinery. Foundations are justified by a concrete dependency or safety boundary,
+not as a substitute for the user journey. Preserve useful work already completed.
+
 1. Inspect git status in every repository you will touch. Preserve concurrent work;
    do not stash, reset, clean or overwrite it to obtain a clean tree.
 2. Read the epic, this charter, LEDGER.md and the selected prompt. Check dependencies
    against ledger evidence and current code, including its narrow Linux readiness
    rule. R01 must be accepted (including handover) before product work.
 3. Select only this hat's assigned dependency-ready task/subrow; table order governs
-   slices. Claim exact write paths before shared edits and honor peer reservations.
+   slices. Record intended write paths and honor peer reservations. A sole source
+   owner can include this short plan in the implementation commit; a separate claim
+   push is required only for an actual overlapping writer or cross-host reservation.
    Never mark the entire task accepted because one OS passed.
 4. Read the bounded source set, nearby tests/constants and applicable ADRs. Follow
    the installed explore skill if available for production code. Record an exact
@@ -135,13 +142,36 @@ avoid reporting a missing prerequisite.
 
 ## Check levels and evidence
 
-For production Rust changes, run focused tests during implementation and these final
-native repository gates unless a more specific current repository rule adds a gate:
+Owner-approved proportional verification policy, 2026-09-06; this supersedes
+blanket per-iteration full-suite/native-rebuild wording in older prompts and briefs.
 
-    cargo check --workspace --all-targets --locked
-    cargo test --workspace --locked
-    cargo clippy --workspace --all-targets --locked -- -D warnings
-    cargo fmt --all --check
+- During development: run the changed crate/component's behavioral tests and the
+  relevant failure case, plus formatting and focused strict lint/check as needed.
+  For a UI handler change, test interaction, not just a regex matching its source.
+- At a coherent feature milestone: require one complete relevant product CI result.
+  CI retains the OS matrix, full workspace tests, strict lint, MSRV, architecture,
+  lean embedding, security audit and cross-host checks for product/tooling changes.
+  Do not duplicate that whole matrix locally unless investigating a failure, CI is
+  unavailable, or the changed risk specifically requires it. Broad local commands
+  remain available; they are no longer a checklist for every edit or checkpoint.
+- Native installed tests: use them for platform integration changes and completed
+  user journeys. Scope a retry to the changed behavior and its plausible regressions.
+  Do not reinstall packages, toggle motion, stop daemons or repeat firewall/recovery
+  tests for an unrelated pure-renderer change. Preserve fresh rollback guards for
+  every actual mutation. Source checks never count as a physical pass.
+- Documentation, claims and journal updates: run relevant doc/link/example/diff
+  checks, without Rust builds, OS matrices or packaging. CI's Change scope job
+  permits only known documentation paths to omit product jobs; mixed or unknown
+  changes and failed comparisons keep the full pipeline. A manual CI dispatch
+  explicitly requests full validation. A docs-only green run is not product proof.
+- Release/frozen-candidate acceptance (R29/R30): retain the complete exact-artifact
+  matrix, required native/user evidence and rollback/security checks. This policy
+  changes iteration frequency, not release standards or the meaning of accepted.
+
+Push coherent work at a useful handoff/milestone, not every planning refinement.
+Record what changed, what was tested and the next action once in the owned report;
+link that evidence from the ledger instead of duplicating it across many documents.
+Do not rerun successful checks merely because a journal or summary was updated.
 
 Before tests, follow existing test-environment isolation rules and inspect tests
 that may invoke credential/firewall/native facilities. Use test-specific controls
@@ -149,10 +179,11 @@ already in CI (including KOI_NO_CREDENTIAL_STORE=1 where applicable); never loos
 the product to make tests pass. Keep an isolated build target if installed binaries
 are locked; that build is not physical acceptance until installed through the real path.
 
-For the current desktop, run cargo test --locked, strict native Clippy and
-node --test ui/app.test.mjs until R06 replaces the frontend test path. Its component
-map must provide exact replacement commands. Keep architecture, lifecycle,
-authorization, startup and asset boundaries covered across the migration.
+For desktop work, select the affected Rust tests and/or Node interaction tests;
+run the full small desktop suite at its feature handoff. The current commands are
+`cargo test --locked`, strict Clippy and `node --test ui/app.test.mjs`; they need
+not all run for a JS-only or documentation-only edit. Keep architecture, lifecycle,
+authorization, startup and asset boundaries covered where the change affects them.
 
 Client/version baseline checks (run when relevant, all in R29):
 

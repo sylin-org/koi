@@ -174,7 +174,7 @@ identity and complete hosted/native evidence, even if infrastructure tasks passe
 | [R04](R04-service-catalog.md) | R01, R03 | accepted | ready | windows | [reports/R04.md](reports/R04.md) | Source `b822811`; Windows installed-service run passes; CI `33949639819` supplies green Ubuntu workspace plus macOS and contract jobs |
 | [R05](R05-catalog-api-and-preferences.md) | R04 | accepted | ready | windows | [reports/R05.md](reports/R05.md) | Koi `e673af6`, desktop `ba39faf`, Windows installed service/workbench run and complete hosted CI `33974240044` pass; complete and R06 unblocked |
 | [R06](R06-rust-ui-and-family-foundation.md) | R01, R05 | accepted | ready | cachyos-linux | [final reconciliation](reports/R06-home-return.md#final-reconciliation-and-r06-acceptance--2026-09-06-utc) | Shared b4c32fa, desktop d948015; original gates plus exact Windows/Alpine correction retries pass; macOS limitation remains explicit |
-| [R07](R07-home-launchpad.md) | R05, R06 | in_progress | pending | cachyos-linux | [R07](reports/R07.md) | Shared search/selection and safe destination/native opening foundation claimed; live UI/reconnect and acceptance follow |
+| [R07](R07-home-launchpad.md) | R05, R06 | in_progress | pending | cachyos-linux | [R07](reports/R07.md) | Shared/native foundation published; next usable search → select → open slice under proportional verification; live UI/reconnect and acceptance pending |
 | [R08](R08-devices-and-comparison.md) | R07 | queued | pending | cachyos-linux | - | Wait for dependencies |
 | [R09](R09-settings-about-and-surface-consolidation.md) | R08 | queued | pending | cachyos-linux | - | Wait for dependencies |
 | [R10](R10-meaningful-activity.md) | R07 | queued | pending | cachyos-linux | - | Wait for dependencies |

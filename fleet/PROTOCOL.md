@@ -7,6 +7,13 @@ it resolves this machine to `fleet/briefs/<hat>.md`. The campaign's home is
 
 ## The loop (every session)
 
+For active Epic 003, the owner's 2026-09-06 proportional-verification policy in
+`docs/prompts/delight/CHARTER.md` qualifies the generic build/deploy loop below.
+Use focused local checks, one broad CI result per coherent product milestone,
+and native installation only for an affected platform behavior or user journey.
+Documentation/claims do not require product builds or deployment. Exact identity,
+fresh restoration guards for actual mutations and truthful evidence remain binding.
+
 1. `cd` to your repo path (in your brief) and inspect the worktree. Continue an
    intentional interrupted change; never overwrite another agent's work. Otherwise
    `git switch dev` → `git pull --ff-only origin dev` → record the commit you are

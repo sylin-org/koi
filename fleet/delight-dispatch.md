@@ -136,11 +136,11 @@ Fixed owners prevent duplicate implementations; claims prevent overlapping chang
    source revisions, exact intended write paths (including sibling repo names),
    tests, any shared contract change and required peers. This is a plan, not evidence
    that work passed. Set only your selected ledger row to `in_progress`.
-2. Commit that claim/report, rebase and push to `origin/dev` before implementation.
-   After the push, fetch/recheck other live claims. Overlapping write paths or a
-   shared contract have one writer: the earlier published claim proceeds; the later
-   claimant records the dependency and releases its conflicting claim. Nonoverlapping
-   work may proceed concurrently. Scope expansion requires the same recheck.
+2. With CachyOS as sole source owner, record the short plan locally and publish it
+   with coherent implementation/evidence; no separate claim-only push is required.
+   Publish a reservation first only when another actual writer or host must act
+   on it. Check for real overlapping work before edits; the earlier published
+   reservation wins, and the later claimant releases its conflicting paths.
 3. Treat workspace manifests/lockfiles, shared CSS/components, CONTRACT.md, common
    API shapes and cross-repo build changes as shared writes. Disjoint ledger rows
    and owned report/journal files alone are not an implementation conflict.
@@ -152,7 +152,9 @@ Fixed owners prevent duplicate implementations; claims prevent overlapping chang
 
 No per-agent forks, patch harvesting, force-pushes or global lock daemon. Continue
 to use the existing dev branch protocol. Product code, documentation and its
-evidence land together; a claim commit is explicitly not task completion.
+evidence land together; a claim commit is explicitly not task completion. Apply
+the charter's owner-approved proportional checks: focused local verification,
+product CI at feature milestones, and targeted native tests for affected journeys.
 
 ## Peer evidence and native deployments
 
