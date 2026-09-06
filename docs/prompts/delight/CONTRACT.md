@@ -639,7 +639,8 @@ not reconstruct state or infer authority. No JavaScript-owned product state mode
 new backend, generic event bus or full operator catalog on Pond is authorized.
 Pond still requires R09's separate allowlisted public projection.
 
-The selected source map (destinations, **not yet implemented**) is:
+The production source map (shared crate/web source `b4c32fa`; native migration
+and acceptance tracked in the shared-shell report) is:
 
 | Responsibility | Exact owner |
 | --- | --- |

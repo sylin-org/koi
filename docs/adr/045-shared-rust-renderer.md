@@ -1,7 +1,9 @@
 # ADR-045: Shared Rust HTML with Maud and the Tauri shell
 
 Status: **Accepted for R06/renderer-decision**. Decision: 2026-09-06 UTC.
-The production shared-shell migration is not yet implemented or accepted.
+The production shared crate and authenticated web adapter are implemented at
+`b4c32fa`; desktop migration and affected native acceptance are tracked separately
+in [R06/shared-shell](../prompts/delight/reports/R06-shared-shell.md).
 ADR-033's Tauri lifecycle boundary is retained; its JS-authored presentation direction
 is superseded by the Rust boundary below. ADR-040 local authentication and ADR-042
 Pond authority remain binding. The destination is `crates/koi-ui/` under ADR-044.
@@ -174,10 +176,11 @@ not the unavailable original binary. Neither event is evidence of renderer failu
 or permission to repeat that cleanup. This decision accepts the rendering route,
 not a clean whole-candidate/restoration verdict, full product UI or public release.
 
-## Production component map (selected, not implemented)
+## Production component map
 
 These destinations are fixed in CONTRACT.md within R01's `crates/koi-ui/` boundary.
-R06/shared-shell implements them; this decision does not claim the files exist yet.
+R06/shared-shell implements them; the renderer-decision's historical native proof
+does not by itself accept the replacement package.
 
 | Responsibility | Selected exact owner |
 |---|---|
