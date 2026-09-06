@@ -942,3 +942,12 @@ Native fields: **not exercised for this change**; installed artifacts remain the
 previous baseline. No CertMesh, trust, firewall, user-profile or peer mutation.
 R07 is not accepted; next native work uses a fresh bounded restoration guard for
 new browser controls and Notes/Open/load/save. Existing green native cases stand.
+
+Published Koi `c5c3d50` and desktop `f9d2bed563b1cdf76c46706b39ff62cee19cf8bd` (both client/UI pins at
+exact c5c3d50). [Product CI 34064900997](https://github.com/sylin-org/koi/actions/runs/34064900997)
+passed all 14 jobs, including all OS suites and cross-host CertMesh exchange.
+Final desktop gates: 31 Rust tests (one historical ignored), 51 Node tests, strict
+Clippy, Windows GNU all-target check, format/diff. Fresh read-only observation
+confirmed original PID730/PID1629 and original binary hashes, health OK, loopback5641
+only; private browser5645, Pond5644 and Notes18707 closed. Completed owned browser
+fixtures were removed. Installed browser/phone acceptance remains pending.

@@ -77,8 +77,9 @@ atomic schema-1 repository; it retains those sessions across ordinary restarts.
 Stale client key records are removed on disconnect and expiry/rejection. Limits:
 32 pending invitations, 64 sessions, bounded short-lived challenges. Unknown/future
 repository schemas fail closed and are never overwritten. Revocation/disable is
-persisted before success; disable clears invitations and sessions. Identity changes
-cannot revive an old trust-anchor grant.
+persisted before success; disable clears invitations and sessions. A grant works only with the trust anchor it was paired with. Restoring that
+original anchor can resume an unexpired grant; Disconnect or Disable provides
+durable revocation independently of subsequent identity recovery.
 
 All browser routes enforce exact Host and Origin and use no permissive CORS.
 Sensitive responses are no-store, no-referrer, frame-denied and restrictive CSP.

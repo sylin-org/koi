@@ -223,6 +223,8 @@ loopback origin at the transport and DAT, including GET. Durable state uses an
 atomic owner-private `state/browser-access.json`; unknown schemas fail closed.
 Ordinary daemon restarts preserve browser sessions. Disable/revocation is durable;
 phone sessions additionally bind to the current CertMesh trust anchor. Private
-identity loss suspends access; changing the trust anchor requires pairing again.
+identity loss suspends access; a different trust anchor requires pairing again.
+Restoring the original anchor can resume an unexpired grant. Disconnect or Disable
+revokes it independently of identity recovery.
 See [ADR-046](../adr/046-browser-invitations-and-sessions.md) and the
 [HTTP contract](http-api.md#browser-access).
