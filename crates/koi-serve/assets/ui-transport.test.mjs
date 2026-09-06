@@ -22,12 +22,13 @@ function harness({ hostname = '127.0.0.1', protocol = 'http:' } = {}) {
   vm.runInNewContext(source, {
     document: { getElementById: node }, location: { hostname, protocol },
     window: { addEventListener: (name, handler) => events.set(name, handler) },
-    AbortController, setTimeout, clearTimeout,
+    AbortController, setTimeout, clearTimeout, URL, URLSearchParams,
+    FormData: class { constructor(form) { return form.fields; } },
     DOMParser: class { parseFromString(html) { return { body: { childNodes: [html] } }; } },
     fetch: (url, options) => new Promise((resolve, reject) => requests.push({ url, options, resolve, reject })),
   });
-  const fire = async (id, event) => {
-    node(id).events.get(event)?.({ preventDefault() {} });
+  const fire = async (id, event, detail = {}) => {
+    node(id).events.get(event)?.({ preventDefault() {}, ...detail });
     await new Promise(resolve => setImmediate(resolve));
   };
   const submit = async (token = 'private-test-token') => {
@@ -55,6 +56,27 @@ test('token travels only in an exact same-origin header; refresh applies Rust ou
   assert.deepEqual(h.node('operator-view').children, []);
   await h.reply(1, { body: '<main>New Rust output</main>' });
   assert.deepEqual(h.node('operator-view').children, ['<main>New Rust output</main>']);
+});
+
+test('search, selection, clear and refresh carry intent without decoding the catalog', async () => {
+  const h = harness();
+  await h.submit();
+  await h.reply(0);
+  await h.fire('operator-view', 'submit', { target: { id: 'home-search', fields: [['search', 'Office web'], ['favorites', '1']] } });
+  assert.equal(h.requests[1].url, '/v1/ui/shell?search=Office+web&favorites=1');
+  await h.reply(1);
+  const target = href => ({ closest: () => ({ getAttribute: () => href }) });
+  await h.fire('operator-view', 'click', { target: target('?search=Office+web&favorites=1&selected=notes#service-details') });
+  assert.equal(h.requests[2].url, '/v1/ui/shell?search=Office+web&favorites=1&selected=notes');
+  await h.reply(2);
+  await h.fire('operator-refresh', 'click');
+  assert.equal(h.requests[3].url, h.requests[2].url);
+  await h.reply(3);
+  await h.fire('operator-view', 'click', { target: target('?search=&selected=notes#service-details') });
+  assert.equal(h.requests[4].url, '/v1/ui/shell?search=&selected=notes');
+  await h.reply(4);
+  await h.fire('operator-view', 'click', { target: target('https://attacker.invalid/?search=x') });
+  assert.equal(h.requests.length, 5, 'cannot send the token to a catalog-supplied destination');
 });
 
 test('remote cleartext HTTP cannot transmit a token', async () => {

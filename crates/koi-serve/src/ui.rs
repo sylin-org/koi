@@ -2,7 +2,7 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::State,
+    extract::{RawQuery, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::get,
@@ -40,17 +40,24 @@ async fn transport() -> Response {
     )
 }
 
-async fn snapshot(State(catalog): State<Arc<ServiceCatalogRuntime>>) -> Response {
+async fn snapshot(
+    State(catalog): State<Arc<ServiceCatalogRuntime>>,
+    RawQuery(query): RawQuery,
+) -> Response {
+    let Ok(intent) = koi_ui::home::HomeRequest::parse(query.as_deref().unwrap_or("")) else {
+        return (StatusCode::BAD_REQUEST, "Invalid Home query").into_response();
+    };
     // Capture once, no join of domain reads, no presentation-owned live state.
     let snapshot = catalog.status();
     response(
         "text/html; charset=utf-8",
-        koi_ui::render(
+        koi_ui::render_home(
             View::Snapshot(&snapshot),
             Links {
                 refresh: None,
                 advanced: "/",
             },
+            &intent.query(),
         ),
         koi_ui::DOCUMENT_CSP,
     )
@@ -206,6 +213,49 @@ mod tests {
                     .status(),
                 StatusCode::NOT_FOUND
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn home_intent_is_rendered_only_after_authentication_and_rejects_unknown_fields() {
+        for (query, expected) in [
+            (
+                "search=Office+web&selected=notes&favorites=1",
+                StatusCode::OK,
+            ),
+            ("search=a&search=b", StatusCode::BAD_REQUEST),
+            ("token=secret-token", StatusCode::BAD_REQUEST),
+        ] {
+            for authenticated in [false, true] {
+                let mut request = Request::builder().uri(format!("{SHELL}?{query}"));
+                if authenticated {
+                    request = request.header("x-koi-token", "secret-token");
+                }
+                let reply = app()
+                    .oneshot(request.body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    reply.status(),
+                    if authenticated {
+                        expected
+                    } else {
+                        StatusCode::UNAUTHORIZED
+                    }
+                );
+                if authenticated && expected == StatusCode::OK {
+                    let body = String::from_utf8(
+                        to_bytes(reply.into_body(), usize::MAX)
+                            .await
+                            .unwrap()
+                            .to_vec(),
+                    )
+                    .unwrap();
+                    assert!(body.contains("value=\"Office web\""));
+                    assert!(body.contains("The selected service is no longer"));
+                    assert!(!body.contains("secret-token"));
+                }
+            }
         }
     }
 

@@ -38,6 +38,140 @@ fn destination(service: &Service) -> Option<BrowserDestination> {
 }
 
 #[test]
+fn query_links_round_trip_without_turning_text_into_navigation() {
+    use koi_ui::home::HomeRequest;
+    let id = ServiceId::new("notes&other=<tag>").unwrap();
+    let query = HomeQuery {
+        search: "Office & café #web",
+        selected: Some(&id),
+        favorites_only: true,
+    };
+    let href = query.href(query.selected);
+    let parsed =
+        HomeRequest::parse(href.strip_prefix('?').unwrap().split('#').next().unwrap()).unwrap();
+    assert_eq!(parsed.search, query.search);
+    assert_eq!(parsed.selected.as_ref(), query.selected);
+    assert!(parsed.favorites_only);
+    for invalid in [
+        "selected=",
+        "selected=UPPER",
+        "search=a&search=b",
+        "favorites=0",
+        "token=secret",
+        "path=/etc/passwd",
+    ] {
+        assert!(HomeRequest::parse(invalid).is_err(), "{invalid}");
+    }
+    assert!(HomeRequest::parse(&"x".repeat(4097)).is_err());
+}
+
+#[test]
+fn rendered_search_select_open_and_clear_use_the_real_shared_projection() {
+    use koi_ui::{home::HomeRequest, render_home, Links, View};
+    use scraper::{Html, Selector};
+    let catalog = snapshot();
+    let links = Links {
+        refresh: None,
+        advanced: "/",
+    };
+    let render = |query: &HomeQuery<'_>| {
+        Html::parse_document(&render_home(View::Snapshot(&catalog), links, query))
+    };
+    let rows = Selector::parse("#home .service-row").unwrap();
+    let initial = render(&HomeQuery {
+        search: "Office web",
+        ..Default::default()
+    });
+    let row = initial
+        .select(&rows)
+        .next()
+        .expect("Notes is found by device/category");
+    let select = row
+        .select(&Selector::parse("a[data-home-link]").unwrap())
+        .next()
+        .unwrap();
+    let href = select.value().attr("href").unwrap();
+    let intent = HomeRequest::parse(href[1..].split('#').next().unwrap()).unwrap();
+    let selected = render(&intent.query());
+    let details = selected
+        .select(&Selector::parse("#service-details").unwrap())
+        .next()
+        .unwrap();
+    let open = details
+        .select(&Selector::parse("a[data-external]").unwrap())
+        .next()
+        .unwrap();
+    assert_eq!(
+        open.value().attr("href"),
+        Some("https://notes.local:8443/notes?sort=recent&view=all#today")
+    );
+    assert!(details.text().collect::<String>().contains("Office Mac"));
+    let no_match = render(&HomeQuery {
+        search: "missing",
+        selected: intent.selected.as_ref(),
+        favorites_only: false,
+    });
+    assert_eq!(no_match.select(&rows).count(), 0);
+    assert!(no_match
+        .root_element()
+        .text()
+        .collect::<String>()
+        .contains("No matches"));
+    assert!(
+        no_match
+            .select(&Selector::parse("#service-details a[data-external]").unwrap())
+            .next()
+            .is_some(),
+        "selection survives filtering"
+    );
+    assert_eq!(render(&HomeQuery::default()).select(&rows).count(), 1);
+}
+
+#[test]
+fn rendered_api_absence_and_hostile_details_never_create_an_open_action() {
+    use koi_ui::{render_home, Links, View};
+    use scraper::{Html, Selector};
+    for (kind, condition) in [
+        (ServiceKind::Api, ServiceCondition::Found),
+        (ServiceKind::Web, ServiceCondition::Absent),
+    ] {
+        let mut catalog = snapshot();
+        catalog.services[0].kind = kind;
+        catalog.services[0].condition = condition;
+        catalog.services[0].display_name = "<script>hostile()</script>".into();
+        catalog.services[0].alias = None;
+        catalog.services[0].endpoints[0].path = Some("/\"><img src=x onerror=evil()>".into());
+        let query = HomeQuery {
+            selected: Some(&catalog.services[0].id),
+            ..Default::default()
+        };
+        let dom = Html::parse_document(&render_home(
+            View::Snapshot(&catalog),
+            Links {
+                refresh: None,
+                advanced: "/",
+            },
+            &query,
+        ));
+        assert_eq!(
+            dom.select(&Selector::parse("script, [onerror], [data-external]").unwrap())
+                .count(),
+            0
+        );
+        assert!(dom
+            .root_element()
+            .text()
+            .collect::<String>()
+            .contains("<script>hostile()</script>"));
+        assert!(dom
+            .root_element()
+            .text()
+            .collect::<String>()
+            .contains("Connection endpoint"));
+    }
+}
+
+#[test]
 fn search_matches_name_alias_device_address_category_and_all_query_words() {
     let snapshot = snapshot();
     for search in [

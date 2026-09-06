@@ -702,6 +702,16 @@ R07/R08/R09 consume the selected component paths after their actual dependencies
 R11 waits for completed R06, not just this decision. macOS remains physically
 unverified; no release or whole-fleet candidate verdict follows from the choice.
 
+R07 search/select/open extends the existing Home map: `koi-ui/src/home.rs` owns
+bounded presentation intent and pure projection/destinations; `screens/home.rs` and
+`components/service_row.rs` render controls, stable-ID links and service details.
+The existing authenticated shell route accepts only `search`, `selected` and
+`favorites=1` query fields; unknown/duplicate/oversized intent is rejected. Browser
+transport carries intent and inserts Rust HTML; native GET navigation reads the same
+typed intent and its window navigation boundary opens service links externally.
+No query carries credentials, no domain schema changes, and no automatic feed
+recovery or native journey acceptance is implied by this source slice.
+
 ## Assessment finding disposition
 
 | Finding | Contract disposition | Implementing owner/task |

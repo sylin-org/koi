@@ -5,6 +5,7 @@ use std::io::Read;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mode = std::env::args().nth(1).unwrap_or_else(|| "loading".into());
+    let intent = koi_ui::home::HomeRequest::parse(&std::env::args().nth(2).unwrap_or_default())?;
     let catalog;
     let view = match mode.as_str() {
         "loading" => View::Loading,
@@ -19,12 +20,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     println!(
         "{}",
-        koi_ui::render(
+        koi_ui::render_home(
             view,
             Links {
                 refresh: Some("./"),
                 advanced: "/"
-            }
+            },
+            &intent.query(),
         )
     );
     Ok(())

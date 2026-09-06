@@ -29,3 +29,17 @@ input { max-width: 100%; min-width: 0; font: inherit; padding: 10px; color: var(
 .snapshot-meta { font-size: 13px; }
 code, time, summary, span { overflow-wrap: anywhere; }
 [hidden] { display: none !important; }
+#home-search { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.home-layout { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 24px; }
+.home-results, #service-details { min-width: 0; }
+#service-details { padding: 16px; border: 1px solid var(--line-2); border-radius: 7px; overflow-wrap: anywhere; }
+#service-details:focus { outline: 2px solid var(--al); }
+.service-select { min-width: 0; padding: 8px 0; }
+.service-select[aria-current] { text-decoration-thickness: 3px; }
+.attention { margin-top: 20px; }
+dd { margin-inline-start: 16px; overflow-wrap: anywhere; }
+@media (max-width: 650px) {
+  .home-layout { display: block; }
+  #service-details:not(:target) { display: none; }
+  .home-layout:has(#service-details:target) .home-results { display: none; }
+}

@@ -104,8 +104,14 @@ fn all_rows_render_without_inferred_actions_or_loss_of_favorites() {
     );
     assert!(html.contains("Favorite"));
     assert!(html.contains("Local only"));
-    assert!(!html.contains("<button"));
-    assert!(!html.contains("<form"));
+    assert!(dom
+        .select(&Selector::parse("[data-external]").unwrap())
+        .next()
+        .is_none());
+    assert!(dom
+        .select(&Selector::parse("#home-search").unwrap())
+        .next()
+        .is_some());
     assert!(!html.contains("javascript:"));
 }
 

@@ -8,7 +8,7 @@ use maud::{html, PreEscaped};
 
 /// Native adapters may apply these same rules when their webview ignores media queries.
 pub const REDUCED_MOTION_CSS: &str = include_str!("../assets/reduced-motion.css");
-pub const DOCUMENT_CSP: &str = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+pub const DOCUMENT_CSP: &str = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 
 /// A failed or pending read is never an empty authoritative catalog.
 #[derive(Clone, Copy)]
@@ -36,6 +36,10 @@ pub fn stylesheet() -> String {
 
 /// Render a complete, script-free document; all dynamic catalog text is escaped.
 pub fn render(view: View<'_>, links: Links<'_>) -> String {
+    render_home(view, links, &home::HomeQuery::default())
+}
+
+pub fn render_home(view: View<'_>, links: Links<'_>, query: &home::HomeQuery<'_>) -> String {
     html! {
         (maud::DOCTYPE)
         html lang="en" {
@@ -45,7 +49,7 @@ pub fn render(view: View<'_>, links: Links<'_>) -> String {
                 title { "Koi" }
                 style { (PreEscaped(stylesheet())) }
             }
-            body { (PreEscaped(fragment(view, links))) }
+            body { (PreEscaped(fragment_home(view, links, query))) }
         }
     }
     .into_string()
@@ -53,6 +57,10 @@ pub fn render(view: View<'_>, links: Links<'_>) -> String {
 
 /// The browser transport only inserts this output; it does not interpret the DTO.
 pub fn fragment(view: View<'_>, links: Links<'_>) -> String {
+    fragment_home(view, links, &home::HomeQuery::default())
+}
+
+fn fragment_home(view: View<'_>, links: Links<'_>, query: &home::HomeQuery<'_>) -> String {
     html! {
         (components::navigation::render())
         main #content tabindex="-1" {
@@ -62,7 +70,7 @@ pub fn fragment(view: View<'_>, links: Links<'_>) -> String {
                 }
                 a.button href=(links.advanced) { "Advanced tools" }
             }
-            (screens::home::render(view))
+            (screens::home::render(view, query))
             (screens::devices::render(view))
             (screens::settings::render(view, links))
             (screens::about::render())

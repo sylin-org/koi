@@ -14,6 +14,69 @@ pub struct HomeQuery<'a> {
     pub favorites_only: bool,
 }
 
+/// Bounded, adapter-independent presentation intent, never catalog/domain state.
+#[derive(Default, Debug)]
+pub struct HomeRequest {
+    pub search: String,
+    pub selected: Option<ServiceId>,
+    pub favorites_only: bool,
+}
+
+impl HomeRequest {
+    pub fn parse(query: &str) -> Result<Self, &'static str> {
+        if query.len() > 4096 {
+            return Err("Home query is too long");
+        }
+        let mut request = Self::default();
+        let mut seen = std::collections::BTreeSet::new();
+        for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+            if !seen.insert(key.to_string()) {
+                return Err("Duplicate Home query field");
+            }
+            match key.as_ref() {
+                "search" => request.search = value.into_owned(),
+                "selected" => {
+                    request.selected =
+                        Some(ServiceId::new(value.into_owned()).map_err(|_| "Invalid selection")?);
+                }
+                "favorites" if value == "1" => request.favorites_only = true,
+                _ => return Err("Unknown Home query field"),
+            }
+        }
+        Ok(request)
+    }
+
+    pub fn query(&self) -> HomeQuery<'_> {
+        HomeQuery {
+            search: &self.search,
+            selected: self.selected.as_ref(),
+            favorites_only: self.favorites_only,
+        }
+    }
+}
+
+impl HomeQuery<'_> {
+    pub fn href(&self, selected: Option<&ServiceId>) -> String {
+        let mut query = url::form_urlencoded::Serializer::new(String::new());
+        query.append_pair("search", self.search);
+        if self.favorites_only {
+            query.append_pair("favorites", "1");
+        }
+        if let Some(id) = selected {
+            query.append_pair("selected", id.as_str());
+        }
+        format!(
+            "?{}#{}",
+            query.finish(),
+            if selected.is_some() {
+                "service-details"
+            } else {
+                "home"
+            }
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmptyState {
     NoDiscoveries,

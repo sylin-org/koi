@@ -6,7 +6,8 @@ operator web view. Depends on `koi-common` types, not clients, domains, GTK or T
 the authenticated browser transport. Adapters apply `DOCUMENT_CSP` as a response
 header and never pass catalog-derived URLs as `Links`.
 
-Home shows the complete declared catalog with timestamp and explicit refresh.
+Home offers submitted search, favorite filtering, stable-ID selection, service
+details and validated Open links, with a snapshot timestamp and explicit refresh.
 Devices groups by exact catalog device ID, with native HTML disclosure controls.
 Settings preserves access to existing advanced controls; About uses the original
 card. R07–R09 own the subsequent action-oriented journeys, not a second renderer.
@@ -18,9 +19,12 @@ freshness. Adapters must report loading/unavailable/reconnecting independently.
 `BrowserDestination::for_service` only narrows declared Open/browser eligibility;
 `parse` validates an already supplied HTTP(S) URL at a native opening boundary.
 Neither proves reachability, TLS trust or authorization. API-only services need
-connection details, not an inferred dashboard. These helpers do not yet change
-the R06 rendered Home or provide live interactive controls; that is remaining R07
-work. Behavioral coverage is `tests/home.rs`.
+connection details, not an inferred dashboard. `HomeRequest` parses bounded
+presentation intent; `render_home` applies it without a second catalog model.
+The browser transports form/link intent with its existing DAT header; native uses
+GET navigation and keeps service destinations outside the privileged webview.
+Automatic feed recovery remains R07 work. Behavioral coverage is `tests/home.rs`
+and the browser transport tests; see [Home usage](../../docs/tutorials/home.md).
 
 Assets are embedded: the unchanged original sprite SHA-256 is
 `91aea43e2587f53242b9dbc4bf794d8147dcd915a7e356fa3943422900fdd33c`.
