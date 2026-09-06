@@ -1,5 +1,48 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-06 (39) — R06 Windows Home return v2 acknowledged
+
+task: `R06/windows-home-return-v2` | run
+`r06-home-d948015-windows-20260906T050553Z` | desktop source
+`d9480158a073586ed7865c711b65954be5c7a9db` | shared/client source
+`b4c32fa9b524549509b34b01bb24cc06455407ad` | state: **ACKNOWLEDGED —
+fresh exact-package rollback is armed; no installed-host mutation performed yet**
+
+The current baseline is one normal-user installed workbench PID `39084`, launched
+with `--minimized`, executable SHA-256
+`f1d7a7a750130dac48241cfc5235951d9baeff18d100dedc8217ca8b5135b487`
+and uninstaller SHA-256
+`2ec7e48b8b122fbfbd972c7ad1c2cd642a85587c67f9d486fa1396e604428d18`.
+The unchanged accepted R05 daemon is the sole Running AutoStart LocalSystem SCM
+service, PID `36800`, SHA-256
+`ca6386df292cfd40c019d30ea36bcab33eea80ea7f50a1c78e375bac8d19cb21`,
+healthy on 5641. The workbench alone owns loopback 5640; Pond 5644 is closed.
+Config, local-access policy and installation identity SHA-256 remain respectively
+`17fe9a664f76bb748da8beeb5c18fabf64da55d1901384772d1e7aecfab2c3ed`,
+`14d3432b0efd0a52a697bb80adaa16bcd264c2ff79f57ac1156ac513decc9873`
+and `a3b1c896d2d92c9fa768992570f0ec317e6b6289bf53a2e01ed4576fe36f118a`.
+
+Fresh private recovery contains the complete installed directory, WebView profile,
+roaming workbench state and HKCU Run/uninstall exports: 380 files / 57,852,458
+bytes, manifest SHA-256
+`19a7c76336bb2183b8df7b86032eef7ddebe0e11a16ec342e1546e304cf1f876`.
+Normal-user rollback guard PID `23188` recorded ready at
+`2026-09-06T05:11:56.7534740Z` with script SHA-256
+`40667f3337d52fe61b548f9f29e7993dbc2a82f50a730770f94af3b93d5832e4`
+and a 45-minute fallback to that exact baseline.
+
+Exact pre-mutation formatting, 23 native tests plus one declared ignore, strict
+locked all-target Clippy and all 47 JavaScript tests passed with
+`KOI_NO_CREDENTIAL_STORE=1`. The locked NSIS build also passed. Its normal-user
+installer is 3,126,474 bytes, SHA-256
+`1c09acd4e97cba25023727045338b5e72417e23dfc050664cb5f82749bb65e26`;
+the release executable is 13,120,000 bytes, SHA-256
+`de575cb42fac26432dbe63958c5c0977728ac3c97ccc1cdba2753db57c50b811`.
+The bounded verification will now cover three physical Advanced → Home round
+trips at 320 px, immediate/settled/repeated activation, legacy tabs and refresh,
+the actual tray-menu Open Workbench route, singleton behavior and final unchanged
+host identity. It will not repeat service recovery, motion or network checks.
+
 ## 2026-09-05 (38) — R06 Windows shared shell result
 
 task: `R06/windows-shared-shell` | run
