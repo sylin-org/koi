@@ -1,5 +1,6 @@
 //! Pure shared presentation. Transport, credentials and domain state stay outside.
 pub mod components;
+pub mod home;
 pub mod screens;
 
 pub use koi_common::service::CatalogSnapshot;

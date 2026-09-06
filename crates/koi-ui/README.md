@@ -11,6 +11,17 @@ Devices groups by exact catalog device ID, with native HTML disclosure controls.
 Settings preserves access to existing advanced controls; About uses the original
 card. R07–R09 own the subsequent action-oriented journeys, not a second renderer.
 
+The R07 foundation lives in `home`: `project` borrows one catalog and applies
+search, favorite grouping, stable-ID ordering/selection and bounded attention.
+`EmptyState` describes filtered catalog contents, not discovery health or transport
+freshness. Adapters must report loading/unavailable/reconnecting independently.
+`BrowserDestination::for_service` only narrows declared Open/browser eligibility;
+`parse` validates an already supplied HTTP(S) URL at a native opening boundary.
+Neither proves reachability, TLS trust or authorization. API-only services need
+connection details, not an inferred dashboard. These helpers do not yet change
+the R06 rendered Home or provide live interactive controls; that is remaining R07
+work. Behavioral coverage is `tests/home.rs`.
+
 Assets are embedded: the unchanged original sprite SHA-256 is
 `91aea43e2587f53242b9dbc4bf794d8147dcd915a7e356fa3943422900fdd33c`.
 `family-v1.css` and `card.html` retain the R06 extraction from desktop `ba39faf`,

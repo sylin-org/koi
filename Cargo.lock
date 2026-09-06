@@ -2660,6 +2660,7 @@ dependencies = [
  "maud",
  "scraper",
  "serde_json",
+ "url",
 ]
 
 [[package]]
