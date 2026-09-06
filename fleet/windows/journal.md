@@ -1,5 +1,95 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-05 (38) — R06 Windows shared shell result
+
+task: `R06/windows-shared-shell` | run
+`r06-shared-shell-e010086-windows-20260906T033414Z` | desktop source
+`e010086ef1ede16c4ab5dc3c6431fcbf82a9c715` | shared/client source
+`b4c32fa9b524549509b34b01bb24cc06455407ad` | verdict: **FAILED —
+Advanced opens, but its visible Home control blanks the legacy pane instead of
+returning the same window to the shared Rust shell; exact old package restored**
+
+koi state now: the unchanged accepted R05 daemon is the sole Running AutoStart
+LocalSystem SCM service, new recovery PID `36800`, descriptor
+`"C:\Program Files\Koi\koi.exe" --daemon`, SHA-256
+`ca6386df292cfd40c019d30ea36bcab33eea80ea7f50a1c78e375bac8d19cb21`,
+health 200 on 5641. The rejected candidate was removed and the prior exact
+normal-user 0.1.3 NSIS workbench restored byte-for-byte as sole PID `39084`,
+`--minimized`, SHA-256
+`f1d7a7a750130dac48241cfc5235951d9baeff18d100dedc8217ca8b5135b487`,
+on loopback 5640. Pond remains disabled and 5644 is closed.
+
+evidence and findings:
+
+1. Exact pre-mutation gates passed with `KOI_NO_CREDENTIAL_STORE=1`: `d20c3d4`
+   shared-shell locked tests 7/7; exact desktop formatting, 22 native tests with
+   one declared cross-host ignore, strict locked all-target Clippy, all 42
+   JavaScript tests, and `cargo tauri build --bundles nsis --ci -- --locked`.
+   The clean NSIS artifact is 3,128,136 bytes, SHA-256
+   `b09550618ced8eacf7599143c0d4a8fcd918c1718462960f3afc87b9fbcf467f`.
+   Supported silent normal-user installation exited 0; the installed candidate
+   was 13,115,904 bytes, SHA-256
+   `5d49d0ea09fbd340c9a25ad37051184db5529ed2a4a9b37df7208ed035495fc1`.
+   The exercised WebView2 runtime is 152.0.4191.62.
+2. A normal launch from `C:\Windows` rendered one native WebView2 window and a
+   real catalog at exact 320 by 650 client geometry. Initial revision 22005
+   capture SHA-256 is
+   `1745b9e1dbcdb86c25f0f0054ea763a59272704354b4dd7ec4490aa69e114cee`;
+   a physical Tab exposed the visible skip-link focus outline, capture
+   `55baaf632ff73f6a640adda9a62af14172880980b01c0ca2dcc68434ec8db93a`.
+   A physical Refresh snapshot click reread real revision 22069, capture
+   `16385515ce3c61e74160d124dc525746218b6b5bb27ba21601a1b9b5204529a4`.
+3. The complete original About card remained intact. With the actual Windows
+   client-area animation preference enabled, two card captures differed
+   (`80efa242…1276e39`, `a8f6f091…239a67e`); after disabling it the pair was
+   byte-identical at
+   `0f4e4cd345d00d6431a57e2fc896a28349c1dda2f35d75ecf6e67291e0bed7d6`;
+   after re-enable the pair differed again (`b414182b…1e84fd`,
+   `8b4e244a…3f0e422`). A fresh normal launch while reduction was already active,
+   with process-scoped WebView2 background-network and external-host denial,
+   kept the intact card pair byte-identical at
+   `41f1d9f9d77d8d285dd000aa398ffb0367280a2b7929b94afcec5d95e2946026`
+   and held only its 127.0.0.1:5640 listener.
+4. Physical keyboard activation opened Advanced in the same PID and rendered its
+   real At a glance view; capture SHA-256
+   `841074a87ac13c9eacc4ef9a4b7c05131231a88fa868a605ede32a02323234d6`.
+   Clicking the now-visible Home control did not navigate. The generic tab handler
+   selected Home and removed every `.view`, leaving the same live PID with only
+   the advanced header and an empty body; focused failure capture SHA-256
+   `c6fba41667117f2dd7e1c568e7ca0644df4c964539d362f335016d72b34dc871`.
+   The failure reproduced on a fresh normal process; reopening the package is a
+   workaround, not the required Advanced -> Home transition. The implementation
+   owner should reconcile the async Home listener/disposal path with the generic
+   `.tab` click handler and reissue an exact-source request.
+5. The separately verified UAC-elevated service guard PID `10792` recorded an
+   Administrator token, original service PID `34744` and 3,600-second fallback.
+   Elevated helper PID `19052` stopped only `koi`; service state became Stopped,
+   PID 0 and 5641 closed. A physical refresh in unchanged desktop PID `42040`
+   removed all prior service rows and rendered the honest unavailable view,
+   capture `d7d224cc4f83c09fd5f531a707b27fd5a3b7303384e1c9c5dc2c7e28e69a30e3`.
+   The armed guard restarted the unchanged service as PID `36800`, required
+   health 200, and a second physical refresh rendered fresh real revision 162,
+   capture `fb098fbd7811f6068a3004a4bdd264d2511c30dfcd88a4163fbdbac346159c47`.
+6. Close-to-tray retained the one candidate PID and its 5640 listener; a second
+   ordinary invocation exited 0, revealed that same PID and created no second
+   desktop. Direct tray-menu selection was not separately claimed after the
+   blocking Home defect had already failed the acceptance contract.
+7. The 45-minute normal-user rollback remained live through evaluation. Manual
+   exact restoration copied back the full old installed directory, WebView profile
+   and roaming state and restored HKCU Run/uninstall registration before the guard
+   was disarmed. Final Windows animation is enabled with exact
+   `UserPreferencesMask` `9E1E078012000000`. Config, local-access policy and
+   installation identity SHA-256 remain respectively
+   `17fe9a664f76bb748da8beeb5c18fabf64da55d1901384772d1e7aecfab2c3ed`,
+   `14d3432b0efd0a52a697bb80adaa16bcd264c2ff79f57ac1156ac513decc9873`
+   and `a3b1c896d2d92c9fa768992570f0ec317e6b6289bf53a2e01ed4576fe36f118a`.
+   Startup, uninstall identity and the 15-rule effective Koi firewall baseline are
+   unchanged; both guards exited and no service task was created.
+
+next: CachyOS owns the code correction and any replacement peer request. Windows
+must not relabel the positive subcases as acceptance or reinstall this rejected
+candidate. The exact old daemon/workbench remain available as unchanged peers.
+
 ## 2026-09-05 (37) — R06 Windows shared shell acknowledged
 
 task: `R06/windows-shared-shell` | run
