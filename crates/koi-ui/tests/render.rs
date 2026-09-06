@@ -6,6 +6,7 @@ fn links() -> Links<'static> {
     Links {
         refresh: Some("./"),
         advanced: "/advanced",
+        browser_access: None,
     }
 }
 

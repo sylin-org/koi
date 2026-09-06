@@ -103,6 +103,12 @@ jobs:
           PYTHONPATH: packages/python/src
         run: python -m unittest discover -s packages/python/tests -v
 
+      # Hosted Ubuntu includes Chrome. Keep the sandbox and use an isolated profile.
+      - name: Browser invitation and session journey
+        env:
+          KOI_TEST_BROWSER: google-chrome
+        run: cargo test --locked -p koi-serve chromium_browser_exchange_reload_and_disconnect -- --ignored --nocapture
+
       - name: Current embedded frontend contracts
         run: cargo test --locked -p koi-dashboard
 

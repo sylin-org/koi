@@ -14,6 +14,8 @@ categories = ["network-programming"]
 
 [dependencies]
 koi-ui.workspace = true
+koi-crypto.workspace = true
+url.workspace = true
 # Serving crate: depends on the composition root (koi-compose) for the constructed
 # `Cores` + capability/status/bridge projections, the presentation crate (koi-dashboard)
 # for the dashboard/browser routes, every domain it mounts routes for, and koi-mcp for
@@ -64,6 +66,7 @@ libc.workspace = true
 windows-sys.workspace = true
 
 [dev-dependencies]
+p256.workspace = true
 tower = { version = "0.5", features = ["util"] }
 rcgen.workspace = true
 # A real MCP client (over a bound TCP listener) for the in-process /v1/mcp transport test.

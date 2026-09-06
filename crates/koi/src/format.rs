@@ -436,6 +436,60 @@ fn txt_inline(txt: &HashMap<String, String>) -> String {
 
 // ── Tests ───────────────────────────────────────────────────────────
 
+pub fn print_browser_opened() {
+    println!("Opening Koi in your browser.");
+}
+pub fn print_browser_access(status: &koi_common::browser_access::BrowserAccessStatus) {
+    println!(
+        "Browser access: {}",
+        if status.settings.enabled { "on" } else { "off" }
+    );
+    println!(
+        "Private phone access: {}",
+        if status.phone_ready {
+            "HTTPS listening"
+        } else if status.settings.phone {
+            "waiting"
+        } else {
+            "off"
+        }
+    );
+    if let Some(reason) = &status.reason {
+        println!("{reason}");
+    }
+    for session in &status.sessions {
+        println!(
+            "  {}  {}  {}",
+            session.id,
+            session.label,
+            if session.remembered {
+                "remembered"
+            } else {
+                "temporary"
+            }
+        );
+    }
+    if status.settings.phone {
+        println!("The phone must resolve this computer's name and trust its CertMesh issuer. Host firewall rules are unchanged.");
+    }
+}
+pub fn print_browser_invitation(
+    invitation: &koi_common::browser_access::BrowserInvitation,
+    phone: bool,
+) {
+    println!(
+        "{}",
+        if phone {
+            "Open Koi on your phone"
+        } else {
+            "Open Koi in your browser"
+        }
+    );
+    println!("{}", koi_crypto::totp::qr_code_unicode_raw(&invitation.url));
+    println!("{}", invitation.url);
+    println!("Works once. Expires in two minutes. Open the link, then choose Connect.");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

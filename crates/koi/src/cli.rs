@@ -227,8 +227,13 @@ pub enum Command {
     },
     /// Show version information
     Version,
-    /// Open the dashboard in a web browser
+    /// Open Home in the local browser with automatic authorization
     Launch,
+    /// Browser invitations, private phone access and connected browsers
+    Web {
+        #[command(subcommand)]
+        command: WebSubcommand,
+    },
     /// Show status of all capabilities
     Status,
     /// Share the read-only Pond surface on the LAN
@@ -254,6 +259,29 @@ pub enum Command {
     /// Destroy all Koi data and start fresh
     #[command(name = "factory-reset")]
     FactoryReset,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum WebSubcommand {
+    /// Show browser access and connected browsers
+    Status,
+    /// Enable local browser access, optionally private HTTPS phone access
+    Enable {
+        #[arg(long)]
+        phone: bool,
+    },
+    /// Disable browser access and revoke all connected browsers
+    Disable,
+    /// Show a one-use link and QR (requires browser access enabled)
+    Invite {
+        #[arg(long)]
+        phone: bool,
+        /// Intentionally allow the invitation in redirected output
+        #[arg(long)]
+        force: bool,
+    },
+    /// Revoke one browser's access
+    Disconnect { id: String },
 }
 
 #[derive(Args, Debug)]

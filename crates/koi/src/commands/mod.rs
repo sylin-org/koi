@@ -21,6 +21,7 @@ pub mod status;
 pub mod token;
 pub mod trust;
 pub mod udp;
+pub mod web;
 
 use std::collections::HashMap;
 use std::future::Future;

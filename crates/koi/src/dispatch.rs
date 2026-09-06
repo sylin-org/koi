@@ -369,6 +369,7 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
             | Command::Uninstall
             | Command::Version
             | Command::Launch
+            | Command::Web { .. }
             | Command::FactoryReset => Ok(()),
         };
     }

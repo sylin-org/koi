@@ -767,3 +767,19 @@ Current next action: Bluefin claims R02, Debian claims R03 including issue 004,
 and Alpine claims R28 through `fleet/task.md` and the ledger. CachyOS R06 waits for
 R05. Windows's inherited cleanup is complete; future Windows physical proof awaits
 its operator dispatch. No second six-hour soak is scheduled.
+
+### R07 browser access extension — ADR-046, 2026-09-06
+
+`koi-common/src/browser_access.rs` owns schema-1 settings/status, invitations and
+session exchange values. `koi-serve/src/browser_access.rs` owns persistence,
+authorization and scoped routes; `browser_tls.rs` supervises private server-auth
+HTTPS from the existing CertMesh identity port. `koi-crypto/src/browser.rs` owns
+random authority and P-256 proof verification. Client methods stay in
+`koi-client/src/browser_access.rs`; `koi/src/commands/web.rs` owns CLI/opening.
+`koi-ui/src/browser_access.rs` renders connection and management controls. Sibling
+`koi-desktop/src/browser_access.rs` adapts authenticated local control, validated
+opening and QR rendering. Its `ui/browser-access-status.js` observes daemon status;
+`koi-serve/assets/browser-access.js` transports browser proofs and refresh intent.
+Neither script owns catalog truth. Private phone access requires enabled browser
+access and usable CertMesh; public Pond is separate. Source tests do not accept
+physical phone/native R07 cases. Exact evidence is in [R07](reports/R07.md).

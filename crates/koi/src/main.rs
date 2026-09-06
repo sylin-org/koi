@@ -170,16 +170,8 @@ fn main() -> anyhow::Result<()> {
                 }
                 return Ok(());
             }
-            Command::Launch => {
-                let port = cli.port;
-                let url = format!("http://localhost:{port}");
-                println!("Opening dashboard at {url}");
-                if let Err(e) = open::that(&url) {
-                    eprintln!("Failed to open browser: {e}");
-                    eprintln!("Open manually: {url}");
-                }
-                return Ok(());
-            }
+            Command::Launch => return commands::web::launch(&cli),
+            Command::Web { command } => return commands::web::run(&cli, command),
             Command::FactoryReset => {
                 return commands::factory_reset::run(cli.json, cli.yes, &config.data_dir);
             }

@@ -59,3 +59,10 @@ Pond never exposes the main operator router. Its public router allowlists only:
 Pond configuration and bundle publication remain on the main adapter at `/v1/pond`
 and `/v1/ui`, behind DAT authentication. The public-route allowlist is exercised by
 the `koi-serve` Pond router tests.
+
+ADR-046 adds `/v1/browser-access` and its invitation/session control routes: every
+method requires DAT plus an actual loopback peer. The `/ui` connection page and
+assets expose no catalog. `/ui/connect` redeems a one-use invitation;
+`/ui/session/shell` and `/ui/disconnect` require a browser key proof. The optional
+CertMesh HTTPS browser listener has no operator or MCP routes. These browser proofs
+cannot authorize existing DAT routes. See [the exchange contract](http-api.md#browser-access).

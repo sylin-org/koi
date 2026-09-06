@@ -3,6 +3,8 @@
 //! Uses blocking `ureq` - no async runtime dependency on the client path.
 //! All paths use `/v1/mdns/` prefix for mDNS domain routes.
 
+pub mod browser_access;
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;

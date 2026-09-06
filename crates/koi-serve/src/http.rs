@@ -110,6 +110,7 @@ pub struct HttpConfig {
     /// In-process Pond desired-state adapter. `Some` mounts only its authenticated
     /// publish/control routes here; its read-only LAN router owns a separate socket.
     pub pond: Option<crate::pond::PondRuntime>,
+    pub browser_access: Option<crate::browser_access::BrowserAccess>,
 }
 
 /// Serve a previously bound HTTP listener until `cancel` fires.
@@ -137,6 +138,7 @@ pub async fn serve(
         api_docs,
         daemon,
         pond,
+        browser_access,
     } = cfg;
     let webhook_sinks = webhooks.len();
 
@@ -161,7 +163,10 @@ pub async fn serve(
         .route(paths::PROMETHEUS_SD, get(prometheus_sd_handler))
         .route(paths::MCP_SERVER_CARD, get(mcp_server_card_handler));
     app = app.merge(crate::catalog::routes(Arc::clone(&cores.catalog)));
-    if auth.is_some() {
+    if let Some(access) = &browser_access {
+        app = app.merge(crate::browser_access::operator_routes(access.clone()));
+        app = app.merge(crate::ui::shell_routes(Arc::clone(&cores.catalog)));
+    } else if auth.is_some() {
         app = app.merge(crate::ui::routes(Arc::clone(&cores.catalog)));
     }
     if let Some(preferences) = &cores.preferences {
@@ -387,6 +392,23 @@ pub async fn serve(
             is_loopback_origin(origin.to_str().unwrap_or(""))
         }));
     app = app.layer(cors);
+    // Public exchange has its own strict origin/signed-session boundary; never
+    // inherit the operator router's broad localhost CORS or DAT exemptions.
+    if let Some(access) = browser_access {
+        let origin = access
+            .status()
+            .local_url
+            .trim_end_matches("/ui")
+            .to_string();
+        app = app.merge(crate::browser_access::public_routes(
+            crate::browser_access::BrowserSurface {
+                access,
+                origin,
+                catalog: cores.catalog.clone(),
+                local: true,
+            },
+        ));
+    }
 
     tracing::info!("HTTP adapter listening on {local_addr}");
 
@@ -481,7 +503,11 @@ struct NetworkInterface {
         crate::catalog::events,
         crate::preferences::status,
         crate::preferences::set_service,
-        crate::preferences::set_candidate
+        crate::preferences::set_candidate,
+        crate::browser_access::operator_status,
+        crate::browser_access::operator_settings,
+        crate::browser_access::operator_invite,
+        crate::browser_access::operator_revoke
     ),
     components(schemas(
         UnifiedStatusResponse,
@@ -719,6 +745,7 @@ pub(crate) async fn dat_auth_middleware(
     let is_events_stream = path == paths::EVENTS;
     let is_catalog_events = path == paths::CATALOG_EVENTS;
     let is_operator_html = path == crate::ui::SHELL;
+    let is_browser_access = path.starts_with(koi_common::browser_access::OPERATOR_PATH);
     let is_preferences = path == paths::PREFERENCES || path.starts_with("/v1/preferences/");
     // Pond desire is operator state. Even its GET is intentionally absent from
     // the broad read exemption; the public projection lives on Pond's own router.
@@ -773,6 +800,7 @@ pub(crate) async fn dat_auth_middleware(
         && !is_catalog_events
         && !is_operator_html
         && !is_preferences
+        && !is_browser_access
         && !is_pond_control
         && !is_udp
         && protected_ok;

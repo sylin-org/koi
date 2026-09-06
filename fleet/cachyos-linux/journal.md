@@ -927,3 +927,18 @@ Local captures `target/r07-native/narrow-pointer-*.png`; see the
 [R07 report](../../docs/prompts/delight/reports/R07.md). Helper commitf508e1c hosted
 run34046879066 passed. Remaining R07 interaction evidence is protected browser
 target load/save and authenticated browser Home, not native pointer feasibility.
+
+
+## R07/browser-invitations — 2026-09-06 source implementation
+
+Operator approved ADR + implementation for local browser handoff and one-use UI/CLI
+QR exchange, gated by usable CertMesh for private phone access. ADR-046, common
+wire, serving persistence/proof/TLS, typed client, CLI, shared UI and sibling native
+controls are implemented. Existing Rust Home remains the catalog presentation owner.
+Focused serving tests plus real isolated Chromium/Rust exchange passed temporary and
+remembered connection, non-extractable key, reload/return and scoped disconnect.
+Details and final publication/check evidence live in the [R07 report](../../docs/prompts/delight/reports/R07.md).
+Native fields: **not exercised for this change**; installed artifacts remain the
+previous baseline. No CertMesh, trust, firewall, user-profile or peer mutation.
+R07 is not accepted; next native work uses a fresh bounded restoration guard for
+new browser controls and Notes/Open/load/save. Existing green native cases stand.

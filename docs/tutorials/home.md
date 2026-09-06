@@ -38,7 +38,30 @@ It comes from the daemon, not the number of service rows. Older daemons report n
 status and therefore show unknown, never an invented healthy result. Saved or
 other-source services can remain visible while network discovery is unavailable.
 
-In the browser, the operator token stays in page memory and request headers, never
-Home query links. Forget token or leaving the page clears it. Use HTTPS or a loopback
-tunnel, not remote cleartext HTTP. Opening a service in the current browser tab
-leaves Home; returning requires authenticating again.
+In the native app, choose **Browser access**, enable **Allow browser access**, and
+choose **Open in browser**. From a local terminal, `koi launch` enables local browser
+access and opens Home with an automatic, temporary connection. No token copying is
+needed, and loopback access does not require CertMesh.
+
+To connect a phone privately, also enable **Allow private phone access with
+CertMesh**. Once HTTPS is ready, choose **Connect a device · show QR**. The CLI
+provides the same flow with `koi web enable --phone`, `koi web status`, and
+`koi web invite --phone`. Scan the QR, name the browser, optionally select
+**Remember this browser for 30 days**, and tap **Connect**. The code works once,
+expires after two minutes, and scanning/preview alone does not consume it.
+Temporary access lasts for the tab, up to 12 hours. Both choices survive reload
+and returning from an opened service, subject to browser storage/session restoration.
+
+Private phone access needs a usable CertMesh certificate, name resolution, normal
+certificate trust on the phone, and a reachable HTTPS port (normally 5645). Koi
+reports missing prerequisites; it does not add a firewall rule or bypass a browser
+certificate warning. Identity loss closes private access without switching to
+HTTP. Public read-only Pond sharing remains a separate, explicitly enabled option.
+
+Browser sessions can view and open services, not change Koi settings. Choose
+**Disconnect this browser**, or disconnect a named browser in the native app.
+`koi web status` lists identifiers for `koi web disconnect <id>`.
+`koi web disable` revokes all sessions and closes private browser HTTPS.
+The [browser access ADR](../adr/046-browser-invitations-and-sessions.md) records
+storage, session scope and security boundaries. Physical phone and installed
+platform acceptance are tracked separately in R07.

@@ -28,6 +28,12 @@ pub(crate) fn routes(catalog: Arc<ServiceCatalogRuntime>) -> Router {
         .with_state(catalog)
 }
 
+pub(crate) fn shell_routes(catalog: Arc<ServiceCatalogRuntime>) -> Router {
+    Router::new()
+        .route(SHELL, get(snapshot))
+        .with_state(catalog)
+}
+
 async fn login() -> Response {
     let document =
         include_str!("../assets/ui-login.html").replace("{{style}}", &koi_ui::stylesheet());
@@ -66,6 +72,7 @@ async fn snapshot(
             Links {
                 refresh: None,
                 advanced: "/",
+                browser_access: None,
             },
             &intent.query(),
         ),
@@ -160,6 +167,7 @@ mod tests {
             Links {
                 refresh: None,
                 advanced: "/",
+                browser_access: None,
             },
         );
         let reply = app_with(catalog)

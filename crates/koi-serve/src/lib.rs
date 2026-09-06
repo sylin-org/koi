@@ -29,6 +29,8 @@
 //!   `_certmesh._tcp` discovery announce.
 
 pub mod acme;
+pub mod browser_access;
+mod browser_tls;
 pub mod catalog;
 pub mod dashboard;
 pub mod dispatch;

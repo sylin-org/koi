@@ -225,7 +225,12 @@ privileges. See the [trust guide](../guides/trust.md).
 
 ```
 koi status                                        # unified capability status
-koi launch                                        # open the dashboard in a web browser
+koi launch                                        # open Home with automatic local browser connection
+koi web status                                    # access settings, readiness and connected browsers
+koi web enable [--phone]                           # enable browser access; private HTTPS needs CertMesh
+koi web invite [--phone] [--force]                 # one-use link/QR; --force allows redirected output
+koi web disconnect <id>                           # revoke one browser from web status
+koi web disable                                   # revoke all browsers and close private HTTPS
 koi token show                                    # print the daemon access token (tty only)
 koi token write /run/koi/token                    # write the token to a 0600 file for containers
 koi factory-reset                                 # DESTRUCTIVE: wipe the entire data directory

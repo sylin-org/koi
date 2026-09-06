@@ -1,5 +1,6 @@
 pub mod api;
 pub mod blocking;
+pub mod browser_access;
 pub mod capability;
 pub mod ceremony;
 pub mod diagnosis;
