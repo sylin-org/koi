@@ -54,6 +54,9 @@ Claim refinement before test edits: the actual ADR path is
 `docs/adr/045-shared-rust-renderer.md`. Add
 `crates/koi-serve/assets/ui-transport.test.mjs` for behavioral token/cancellation/
 logout transport tests. This is adapter-only coverage, not a browser catalog model.
+Also claim `crates/koi-common/tests/architecture.rs`: every new workspace crate
+requires classification. Add a kernel-only presentation class for `koi-ui`, not
+permission for domains to import presentation or for UI to import domain state.
 
 **Pattern:** Follow `koi-serve::catalog` for in-process snapshot intake and the
 selected native asynchronous protocol for Rust-only authenticated HTML. Native
@@ -85,3 +88,23 @@ agent launch or peer host mutation.
 
 In progress: exploration/claim only. Next: implement pure shared components and
 HTTP adapter, verify/publish replacement, then migrate desktop and retire experiments.
+
+## Implementation progress
+
+Pure components and headless adapter implemented. Initial focused run found a
+test error: it compared the runtime's seeded snapshot with an invented default
+epoch/time. The corrected test captures the real runtime status before rendering;
+no product fallback was added. Focused rerun: 159 serving and 7 renderer tests pass.
+Five browser-transport tests pass (header-only credentials, remote-HTTP refusal,
+failed-read clearing, logout/pagehide late-response fencing, latest-read ownership).
+Offline Chromium loading/unavailable checks cover 320px, focus, original images,
+no external assets and native-fallback motion on/off/on. These are component tests,
+not installed native acceptance. Initial locked workspace check passes; full test
+and strict Clippy gates are running. Desktop source integration is in progress;
+41 retained/extended JavaScript tests pass, before its dependency pin/build.
+
+Native Advanced retains its exact existing Tauri asset origin. The shared shell
+reads durable daemon preferences but does not inspect browser storage. Existing
+watched-item import runs when Advanced is opened, and Settings explicitly says so;
+unmatched legacy values and backups stay in that original origin. No stored-state
+schema or persistence write has been introduced by the shell.
