@@ -179,7 +179,7 @@ Bluefin; Windows physical cases remain pending for the Windows hat.
 
 | Slice | Additional prerequisite | Owner | Status | Readiness | Deliverable | Evidence |
 |---|---|---|---|---|---|---|
-| R06/renderer-decision | - | cachyos-linux | blocked | pending | Motion correction proven on all three desktop targets; awaiting Alpine native keyboard input and Windows elevated service-recovery proof; no Linux-readiness waiver | [reconciliation](reports/R06-renderer-decision.md#coordinator-reconciliation--2026-09-05) |
+| R06/renderer-decision | - | cachyos-linux | in_progress | pending | Both native tails completed; final measured ADR/CONTRACT decision claimed, no shared-shell implementation yet | [final claim](reports/R06-renderer-decision.md#final-decision-claim--2026-09-05-2146-edt) |
 | R06/shared-shell | R06/renderer-decision | cachyos-linux | queued | pending | Selected reusable shell/assets/data adapter; no remaining production spike variant | - |
 | R11/result-contract | - | alpine-linux | queued | pending | Typed install result, artifact compatibility, durable recipe/receipt ownership | - |
 | R11/restart-and-rollback | R11/result-contract | alpine-linux | queued | pending | Interrupted install/upgrade recovery, idempotency and old-state preservation | - |

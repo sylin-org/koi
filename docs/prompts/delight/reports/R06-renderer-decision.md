@@ -907,3 +907,35 @@ and the remaining cases, then finish the measured ADR/CONTRACT decision. If Alpi
 focus passes first, re-evaluate the narrow Linux readiness exception with the
 Windows recovery case explicitly inherited. No current readiness is granted by
 this future action; Debian receives no build work.
+
+## Final decision claim — 2026-09-05 21:46 EDT
+
+Starting Koi `16effd87b8b8d44eeac8df6ee87dd5486c245e6a`, sibling desktop
+`ee5333f1d735b7dd7d267afdde5c68991e490979`; both worktrees clean. Windows tail
+`0233b43` and Alpine tail `16effd8` now supply the two missing physical cases on
+unchanged ccee0fc packages. Resume only `R06/renderer-decision`; R01/R05 remain
+accepted prerequisites. This claim is not acceptance or shared-shell implementation.
+
+Exact writes: this report, `docs/prompts/delight/LEDGER.md` (selected/aggregate
+R06 rows and current dispatch), `docs/prompts/delight/CONTRACT.md` (presentation
+owner row and R06 handoff only), ADR-045, an ADR-033 presentation-supersession note,
+`tools/koi-ui-spike/README.md` (decision/retirement status only), and the owned
+CachyOS journal. No manifest, lock, source/assets, native package, peer namespace,
+host state or unrelated contract section is reserved. No other current task has
+an active overlapping implementation claim; fetch/recheck after publication.
+
+Plan: reconcile exact peer artifact continuity, positive/negative cases and cleanup
+qualifications; select Maud 0.27.0 with the pinned Tauri 2.11.5 shell in ADR-045;
+fix the existing proposed component/asset map in the presentation contract; explain
+why smaller SSR readers do not prove desktop runtime superiority. Rechecked official
+Tauri process-model, Maud escaping and Dioxus 0.7 setup documentation; the measured
+versions remain pinned, with no new dependency selection or product change.
+Promote only the decision slice once documentation checks pass. The shared-shell
+slice must implement the selected production boundary and retire both experiment
+variants before R06 parent acceptance; no advanced access or stored state may be lost.
+
+Verification: diff/relative-link/anchor, doc-leak and surface checks; confirm the
+source/artifact references exist and only claimed documentation changed. Reuse the
+recorded source/native gates instead of rebuilding unchanged binaries. Preserve
+Windows's unquantified ignored-directory cleanup loss and Alpine's historical-recipe
+library restoration as explicit deviations, not clean whole-candidate attestations.
