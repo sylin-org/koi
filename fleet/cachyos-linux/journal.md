@@ -828,3 +828,38 @@ Next: fresh daemon-aware restoration guard and exact normal installation, then
 durable Notes/favorite plus real browser/pointer journey. The old desktop-only
 guards are not a daemon rollback plan. Source availability is implemented, not
 native-accepted; R07 stays in_progress/pending. See [R07 report](../../docs/prompts/delight/reports/R07.md).
+
+## 2026-09-06 — R07 installed discovery and durable favorite recovery
+
+`R07/cachyos-full-20260906` built exact shared17fb591 and desktop24d619f from
+clean detached source and installed via the public daemon installer and ordinary
+Arch package path. Fresh daemon-aware root-private checkpoint/timer protected the
+upgrade; helper syntax passed, but full rollback was not invoked. No peer work.
+
+Installed Home reports authoritative discovery available. Real Notes publication
+with stable ID `svc_r07_notes_20260906`, keyboard search, semantic selection and
+API-created favorite passed. At320×872, focused unsent draft and selection survived
+withdrawal and daemon stop15:24:18/start15:24:37 UTC. Automatic snapshot124 at15:25:08
+retained the favorite as Absent with no Open. Same-ID republication restored Found
+and Open using the new endpoint without losing favorite/draft/focus. This proves
+durable preference rendering/recovery, not UI preference editing.
+
+Browser tool refused the local address as protected; no workaround attempted.
+No manual load/save result received. Native accessibility mouse probes caused no
+observed navigation, so pointer proof remains pending. Notes/announcement units and
+publications were cleaned, favorite removed through API, validated empty run-created
+preferences moved into the private checkpoint, and normal Home/geometry restored.
+
+Retained daemon binary `fc5db34667429bf1c814f01b1baf5956dbe0ce76b30dc7f156cc9f68b4a8714e`,
+PID1506880, enabled/active/healthy; desktop package0.1.3.r73.g24d619f-1, binary
+`2db016d9122678b655fc887738c82908bf3ddbbfd3896f9a5b56a7f849fb3d2d`, PID1506093.
+All19 baseline state hashes, three desktop-settings hashes and service/provider/UFW
+policy matched; config remains absent, operator loopback5641, Pond5644/Notes18707
+closed. Checkpoint `/var/tmp/koi-r07-full.12PjdOrJ` accepted under lock; timer stopped,
+root helper removed, private binary copies made non-executable, probes unloaded,
+privileged session closed. Exact packages/private recovery evidence retained.
+
+Source CI34041362775 remains in progress. [R07 report](../../docs/prompts/delight/reports/R07.md)
+records artifact hashes and `target/r07-native/full-*` evidence. R07 remains pending;
+next needs a bounded manual browser/pointer session with freshly prepared workload,
+not repeated broad tests. No peer assignment or Alpine recipe change.

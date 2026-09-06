@@ -47,3 +47,14 @@ Accept/disarm under its lock only after checking identity/configuration, exact
 process counts and health. On rollback verify the `restored` marker and those same
 facts. Remove the root executable helper/transient timer after either outcome;
 retain the private package and baseline evidence.
+
+`restore-r07-full-cachyos.sh` covers the later measured daemon dc1ebd15 / desktop
+0e8a88c3 pair. It requires a fresh private `/var/tmp/koi-r07-full.XXXXXXXX` with
+`prior-koi`, `prior.pkg.tar.zst`, `baseline.tar` (only `/var/lib/koi` and the Koi
+system unit), `state.sha256`, `policy.sha256`, and the root-owned helper, protected
+by `checkpoint.sha256`. Capture `preferences-absent` only after proving the file
+absent. Arm/inspect a root timer before installation. This guard restores through
+the prior daemon's public installer and ordinary pacman; it is not the desktop-only
+guard. Its only temporary-workload units are the exact dated Notes/announcement
+names in the helper. Preference removal refuses foreign records. Preserve the
+private archive/packages and remove copied executables/timer after settled cleanup.
