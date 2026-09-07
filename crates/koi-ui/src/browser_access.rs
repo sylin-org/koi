@@ -22,7 +22,7 @@ fn page(
                     script defer src="/ui/access.js" {}
                 }
             }
-            body { main #browser-access data-sessions=[status.map(|s| s.sessions.len())] data-ready=[status.map(|s| s.phone_ready)] { (content) } }
+            body { main #browser-access data-status=[status.map(|s| serde_json::to_string(s).expect("browser status serializes"))] { (content) } }
         }
     }
     .into_string()
