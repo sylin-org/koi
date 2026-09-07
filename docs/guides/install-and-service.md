@@ -89,7 +89,6 @@ Every supported service recipe registers Koi to **start on boot** and starts it 
 
 ```
 koi status            # what each module is doing
-koi launch            # open the web dashboard in your browser
 ```
 
 You can also ask the native service manager directly:

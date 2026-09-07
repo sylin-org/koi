@@ -684,11 +684,10 @@ the charter's affected workspace and native checks; old experiment evidence cann
 be relabeled as a production-package pass.
 
 Implementation handoff: shared/client source b4c32fa, normal desktop e010086 and
-retirement/current checks d20c3d4 now implement the map. `/ui` is a data-free
-operator bootstrap; `/v1/ui/shell` requires DAT even on loopback and returns the
-same complete Rust document. No operator view is mounted when auth is absent or
-on Pond. Browser transport is `crates/koi-serve/assets/ui-transport.js`; its tests
-and `crates/koi-ui/tests/{render.rs,browser-smoke.mjs}` replace the retired experiment
+retirement/current checks d20c3d4 implemented the map. The later owner-directed
+browser removal parks `/ui` and its transport. `/v1/ui/shell` remains an
+authenticated rendering API requiring DAT even on loopback. Native Home uses
+`crates/koi-ui/tests/{render.rs,browser-smoke.mjs}` for shared rendering
 tests. Desktop Advanced keeps its original origin/storage and releases native
 listeners before Home navigation. Settings explicitly preserves the existing
 watched-import route. See the [shared-shell report](reports/R06-shared-shell.md)
@@ -768,18 +767,10 @@ and Alpine claims R28 through `fleet/task.md` and the ledger. CachyOS R06 waits 
 R05. Windows's inherited cleanup is complete; future Windows physical proof awaits
 its operator dispatch. No second six-hour soak is scheduled.
 
-### R07 browser access extension — ADR-046, 2026-09-06
+### R07 browser access extension — parked 2026-09-07
 
-`koi-common/src/browser_access.rs` owns schema-1 settings/status, invitations and
-session exchange values. `koi-serve/src/browser_access.rs` owns persistence,
-authorization and scoped routes; `browser_tls.rs` supervises private server-auth
-HTTPS from the existing CertMesh identity port. `koi-crypto/src/browser.rs` owns
-random authority and P-256 proof verification. Client methods stay in
-`koi-client/src/browser_access.rs`; `koi/src/commands/web.rs` owns CLI/opening.
-`koi-ui/src/browser_access.rs` renders connection and management controls. Sibling
-`koi-desktop/src/browser_access.rs` adapts authenticated local control, validated
-opening and QR rendering. Its `ui/browser-access-status.js` observes daemon status;
-`koi-serve/assets/browser-access.js` transports browser proofs and refresh intent.
-Neither script owns catalog truth. Private phone access requires enabled browser
-access and usable CertMesh; public Pond is separate. Source tests do not accept
-physical phone/native R07 cases. Exact evidence is in [R07](reports/R07.md).
+The owner removed browser access from the product and parked ADR-046. Its UI/CLI,
+exchange DTOs, crypto/session persistence, routes and private HTTPS supervisor are
+removed, including the earlier token-entry browser page. Native Home and service
+external opening continue. Physical phone acceptance is no longer an R07 gate.
+The historical design remains in ADR-046; no replacement transport is scheduled.

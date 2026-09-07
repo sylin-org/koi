@@ -1082,7 +1082,7 @@ fn firewall_admits_lan_reachability(state: PondFirewallState) -> bool {
     matches!(state, PondFirewallState::Open | PondFirewallState::Inactive)
 }
 
-pub(crate) async fn assess_firewall(port: u16, interface: &str) -> PondFirewallStatus {
+async fn assess_firewall(port: u16, interface: &str) -> PondFirewallStatus {
     let interface = interface.to_string();
     // Start the budget before entering Tokio's blocking queue. A saturated pool must consume
     // the deadline rather than postponing it and outliving reconciler shutdown.

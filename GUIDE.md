@@ -100,7 +100,7 @@ The daemon exposes:
 - **HTTP API** on `127.0.0.1:5641` — loopback only; see the
   [security model](docs/reference/security-model.md) for the bind and auth details
 - **Web dashboard** at `http://localhost:5641/` and an **mDNS network browser**
-  at `/mdns-browser` (`koi launch` opens it)
+  at `/mdns-browser`
 - **Interactive API docs** at `/docs` (OpenAPI/Scalar)
 - **IPC** via Named Pipe (`\\.\pipe\koi` on Windows) or Unix socket
   (`$XDG_RUNTIME_DIR/koi.sock`) — mDNS operations over NDJSON

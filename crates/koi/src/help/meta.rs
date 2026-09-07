@@ -289,10 +289,6 @@ pub fn curated_examples(category: KoiCategory) -> &'static [Example] {
     match category {
         KoiCategory::Core => &[
             Example {
-                command: "koi launch",
-                description: "Open the dashboard",
-            },
-            Example {
                 command: "koi status",
                 description: "Quick look at all capabilities",
             },
@@ -583,51 +579,6 @@ output.",
             path: koi_serve::http::paths::UNIFIED_STATUS,
         }],
         confirmation: None,
-    },
-    CommandMeta {
-        name: "web status", summary: "Show browser access and connected browsers",
-        long_description: "Read local and private phone readiness and revocable session identifiers.",
-        category: KoiCategory::Core, tags: &[], scope: KoiScope::Public,
-        examples: &[Example { command: "koi web status", description: "Show browser access and connected browsers" }],
-        see_also: &["launch"], api: &[ApiEndpoint { method: "GET", path: "/v1/browser-access" }], confirmation: None,
-    },
-    CommandMeta {
-        name: "web enable", summary: "Enable browser access",
-        long_description: "Enable loopback browser access. Add --phone to request private HTTPS, which waits for a usable CertMesh identity, a free port and network/firewall readiness.",
-        category: KoiCategory::Core, tags: &[], scope: KoiScope::Public,
-        examples: &[Example { command: "koi web enable --phone", description: "Enable browser access" }],
-        see_also: &["launch"], api: &[ApiEndpoint { method: "PUT", path: "/v1/browser-access" }], confirmation: None,
-    },
-    CommandMeta {
-        name: "web disable", summary: "Disable browser access and disconnect browsers",
-        long_description: "Persistently revoke all browser sessions and invitations and close private HTTPS. Public Pond sharing is separately controlled.",
-        category: KoiCategory::Core, tags: &[], scope: KoiScope::Public,
-        examples: &[Example { command: "koi web disable", description: "Disable browser access and disconnect browsers" }],
-        see_also: &["launch"], api: &[ApiEndpoint { method: "PUT", path: "/v1/browser-access" }], confirmation: None,
-    },
-    CommandMeta {
-        name: "web invite", summary: "Show a one-use browser link and QR",
-        long_description: "The code expires in two minutes and is consumed only on Connect. Add --phone for private HTTPS on a device that resolves the name and trusts CertMesh. Redirected output requires --force because the invitation grants access.",
-        category: KoiCategory::Core, tags: &[], scope: KoiScope::Public,
-        examples: &[Example { command: "koi web invite --phone", description: "Show a one-use browser link and QR" }],
-        see_also: &["launch"], api: &[ApiEndpoint { method: "POST", path: "/v1/browser-access/invitations" }], confirmation: None,
-    },
-    CommandMeta {
-        name: "web disconnect", summary: "Disconnect one browser",
-        long_description: "Revoke a session using its identifier from koi web status. The identifier alone cannot authorize requests.",
-        category: KoiCategory::Core, tags: &[], scope: KoiScope::Public,
-        examples: &[Example { command: "koi web disconnect example", description: "Disconnect one browser" }],
-        see_also: &["launch"], api: &[ApiEndpoint { method: "DELETE", path: "/v1/browser-access/sessions/{id}" }], confirmation: None,
-    },
-    CommandMeta {
-        name: "launch",
-        summary: "Open Home in your browser",
-        long_description: "Opens Home through the running local daemon's authenticated handoff. Enables local browser access if needed and connects a temporary browser session automatically. CertMesh is not required for loopback. No daemon token is copied or printed.",
-        category: KoiCategory::Core,
-        tags: &[KoiTag::CliOnly],
-        scope: KoiScope::Public,
-        examples: &[Example { command: "koi launch", description: "Open Home in the default browser" }],
-        see_also: &["web status", "web invite"], api: &[], confirmation: None,
     },
     CommandMeta {
         name: "status",

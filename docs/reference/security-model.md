@@ -198,33 +198,3 @@ CA key at rest (envelope encryption — see
 ceremony + rate limiting). It does not defend against: a hostile process already
 running as your user, a hostile LAN device intercepting *reads* of mDNS (mDNS is
 public by design), or a compromised machine that holds an issued certificate.
-
-## Browser invitations and sessions (ADR-046)
-
-Browser access is off by default. Authenticated local control enables it and mints
-two-minute, single-use invitation links/QR codes. Loopback `http://127.0.0.1:<port>/ui`
-uses an automatic native/CLI handoff without requiring CertMesh. Private remote
-browser access additionally needs the phone setting and a usable CertMesh identity;
-its optional HTTPS listener never mounts operator APIs or falls back to public HTTP.
-The phone must independently resolve the certificate name and trust its issuer.
-No firewall rule or client trust change is made by enabling this feature.
-
-The invitation fragment is removed before connecting. Only a same-origin JSON POST
-redeems it, binding a session to a browser-generated, non-extractable WebCrypto
-P-256 key. Protected requests sign one-use server challenges, method and exact
-path/query. The public session identifier is not a bearer token. Temporary pointers
-use sessionStorage (12-hour maximum); remembered pointers use localStorage only
-with explicit selection (30-day maximum). IndexedDB retains the non-extractable key.
-This does not defend against active same-origin script compromise.
-
-Sessions grant Home reads and their own disconnect, never daemon administration.
-Settings, invitation creation and listing/revoking other browsers require both
-loopback origin at the transport and DAT, including GET. Durable state uses an
-atomic owner-private `state/browser-access.json`; unknown schemas fail closed.
-Ordinary daemon restarts preserve browser sessions. Disable/revocation is durable;
-phone sessions additionally bind to the current CertMesh trust anchor. Private
-identity loss suspends access; a different trust anchor requires pairing again.
-Restoring the original anchor can resume an unexpired grant. Disconnect or Disable
-revokes it independently of identity recovery.
-See [ADR-046](../adr/046-browser-invitations-and-sessions.md) and the
-[HTTP contract](http-api.md#browser-access).

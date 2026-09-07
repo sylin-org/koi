@@ -24,8 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             view,
             Links {
                 refresh: Some("./"),
-                advanced: "/",
-                browser_access: None,
+                advanced: "/"
             },
             &intent.query(),
         )

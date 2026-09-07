@@ -37,7 +37,6 @@ koi mdns discover              # what's on this network?
 koi dns add grafana 10.0.0.42  # give it a friendly name
 koi certmesh create            # mint a private CA (guided)
 koi status                     # one view of everything
-koi launch                     # open the dashboard
 ```
 
 Or over HTTP, from any language or script:

@@ -114,13 +114,7 @@ browse generation removes its source-scoped projection.
 
 `koi mdns discover` is a CLI tool: you ask a question, you get an answer (a one-shot scan or a stream you read until you stop it). The **network browser** is the opposite end of the same idea - a live, always-current HTML page that explores _every_ service type on the LAN at once, grouped by type, updating in place as services come and go.
 
-Open it in your default browser:
-
-```
-koi launch
-```
-
-This opens the dashboard at `http://localhost:5641`; the mDNS card has a **Browse network →** link to the browser page. You can also navigate straight to it:
+The legacy diagnostics page is served at:
 
 ```
 GET /mdns-browser

@@ -1,12 +1,10 @@
 # Browser access that follows the user's intent
 
-> Historical exploration. The operator subsequently approved ADR + implementation;
-> [ADR-046](../adr/046-browser-invitations-and-sessions.md) is the accepted contract.
-> Ideas below that differ from it are not product promises.
+> Parked by the owner on 2026-09-07; implementation removed.
+> [ADR-046](../adr/046-browser-invitations-and-sessions.md) preserves the historical design.
+> The exploration below is historical, not scheduled work or a product promise.
 
-Date: 2026-09-06. Status: exploration proposal, not an accepted architecture or
-implemented behavior. User direction: explore delightful authorization exchange;
-manual token entry is not the assumed next product step. R07 remains pending.
+Original exploration date: 2026-09-06.
 
 ## Experience contract
 

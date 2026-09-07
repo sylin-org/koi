@@ -54,7 +54,6 @@ Three commands tell you what's happening:
 ```
 koi version          # what binary is running
 koi status           # what all the subsystems are doing
-koi launch           # open the web dashboard in your browser
 ```
 
 `status` gives you a single-glance dashboard. On a fresh install it looks like this:

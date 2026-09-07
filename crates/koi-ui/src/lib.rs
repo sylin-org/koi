@@ -1,5 +1,4 @@
 //! Pure shared presentation. Transport, credentials and domain state stay outside.
-pub mod browser_access;
 pub mod components;
 pub mod home;
 pub mod screens;
@@ -26,7 +25,6 @@ pub struct Links<'a> {
     /// None when the outer transport owns a refresh control (authenticated browser).
     pub refresh: Option<&'a str>,
     pub advanced: &'a str,
-    pub browser_access: Option<&'a str>,
 }
 
 pub fn stylesheet() -> String {
@@ -71,8 +69,7 @@ fn fragment_home(view: View<'_>, links: Links<'_>, query: &home::HomeQuery<'_>) 
                 @if let Some(refresh) = links.refresh {
                     a.button href=(refresh) { "Refresh snapshot" }
                 }
-                @if !links.advanced.is_empty() { a.button href=(links.advanced) { "Advanced tools" } }
-                @if let Some(url) = links.browser_access { a.button href=(url) { "Browser access" } }
+                a.button href=(links.advanced) { "Advanced tools" }
             }
             (screens::home::render(view, query))
             (screens::devices::render(view))

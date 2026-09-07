@@ -9,10 +9,10 @@ pub fn render(view: View<'_>, links: Links<'_>) -> Markup {
             @if let View::Snapshot(catalog) = view {
                 p { (catalog.services.iter().filter(|service| service.favorite).count()) " favorites in this snapshot." }
             }
-            @if !links.advanced.is_empty() { p { "Use " a href=(links.advanced) { "Advanced tools" }
-                " for existing controls and diagnostics. Desktop startup controls remain in its About view." } }
+            p { "Use " a href=(links.advanced) { "Advanced tools" }
+                " for existing controls and diagnostics. Desktop startup controls remain in its About view." }
             p { "Motion follows your system's reduced-motion preference." }
-            @if !links.advanced.is_empty() { p { "Upgrading from watched items? Open Advanced tools to run the existing import. Unmatched items stay there for review." } }
+            p { "Upgrading from watched items? Open Advanced tools to run the existing import. Unmatched items stay there for review." }
         }
     }
 }

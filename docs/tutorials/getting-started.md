@@ -161,21 +161,12 @@ If the daemon cannot be reached, Koi preserves the rows but marks each one
 
 ---
 
-## 4. Open the dashboard
+## 4. Open the desktop workbench
 
-With the daemon running, open the web dashboard:
-
-```bash
-koi launch
-```
-
-That opens `http://localhost:5641/` in your browser — a live system overview. From
-there you can also reach the **mDNS network browser** at
-`http://localhost:5641/mdns-browser` (the same discovery you ran in step 2, but as a
-live page) and the **interactive API docs** at `http://localhost:5641/docs`.
-
-If `koi launch` can't open a browser (a headless server, say), just visit
-`http://localhost:5641/` yourself.
+Open the installed Koi desktop app. Home lists discovered services; search by
+name, device or category, select a service, and choose **Open** to use its actual
+HTTP(S) destination. See [Find and open a service from Home](home.md).
+For a headless installation, continue using `koi status` and `koi mdns discover`.
 
 ---
 

@@ -570,7 +570,6 @@ impl KoiEmbedded {
             http_addr = Some(bound);
             let http_cfg = koi_serve::http::HttpConfig {
                 pond: None,
-                browser_access: None,
                 started_at: std::time::Instant::now(),
                 host: host.clone(),
                 dashboard: dashboard_state,

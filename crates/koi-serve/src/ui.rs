@@ -12,48 +12,12 @@ use koi_compose::catalog::ServiceCatalogRuntime;
 use koi_ui::{Links, View};
 
 pub const SHELL: &str = "/v1/ui/shell";
-pub const LOGIN: &str = "/ui";
-const TRANSPORT: &str = "/ui/transport.js";
-const REFRESH: &str = "/ui/refresh.js";
-const BROWSER_CSP: &str = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
-
-/// Mount only when the host configured DAT authentication. An unauthenticated
-/// embedded host does not implicitly expose an operator catalog as HTML.
+/// The authenticated rendering API is used by operator integrations. Browser
+/// onboarding is parked; no login page or browser transport is mounted.
 pub(crate) fn routes(catalog: Arc<ServiceCatalogRuntime>) -> Router {
     Router::new()
-        .route(LOGIN, get(login))
-        .route(TRANSPORT, get(transport))
-        .route(REFRESH, get(refresh))
         .route(SHELL, get(snapshot))
         .with_state(catalog)
-}
-
-pub(crate) fn shell_routes(catalog: Arc<ServiceCatalogRuntime>) -> Router {
-    Router::new()
-        .route(SHELL, get(snapshot))
-        .with_state(catalog)
-}
-
-async fn login() -> Response {
-    let document =
-        include_str!("../assets/ui-login.html").replace("{{style}}", &koi_ui::stylesheet());
-    response("text/html; charset=utf-8", document, BROWSER_CSP)
-}
-
-async fn transport() -> Response {
-    response(
-        "text/javascript; charset=utf-8",
-        include_str!("../assets/ui-transport.js").into(),
-        BROWSER_CSP,
-    )
-}
-
-async fn refresh() -> Response {
-    response(
-        "text/javascript; charset=utf-8",
-        koi_ui::REFRESH_JS.into(),
-        BROWSER_CSP,
-    )
 }
 
 async fn snapshot(
@@ -72,7 +36,6 @@ async fn snapshot(
             Links {
                 refresh: None,
                 advanced: "/",
-                browser_access: None,
             },
             &intent.query(),
         ),
@@ -167,7 +130,6 @@ mod tests {
             Links {
                 refresh: None,
                 advanced: "/",
-                browser_access: None,
             },
         );
         let reply = app_with(catalog)
@@ -200,48 +162,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bootstrap_is_public_but_contains_no_catalog_or_credentials() {
-        let reply = app()
-            .oneshot(Request::builder().uri(LOGIN).body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        assert_eq!(reply.status(), StatusCode::OK);
-        let body = String::from_utf8(
-            to_bytes(reply.into_body(), usize::MAX)
-                .await
-                .unwrap()
-                .to_vec(),
-        )
-        .unwrap();
-        assert!(body.contains("type=\"password\""));
-        assert!(!body.contains("Snapshot revision"));
-        assert!(!body.contains("secret-token"));
-        assert!(body.contains(REFRESH));
-        let refresh_reply = app()
-            .oneshot(Request::builder().uri(REFRESH).body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        assert_eq!(refresh_reply.status(), StatusCode::OK);
-        assert_eq!(refresh_reply.headers()["cache-control"], "no-store");
-        let refresh_body = to_bytes(refresh_reply.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        assert_eq!(refresh_body.as_ref(), koi_ui::REFRESH_JS.as_bytes());
-        for route in ["/v1/ui", "/ui/unknown", "/v1/ui/shell/unknown"] {
-            assert_eq!(
-                app()
+    async fn parked_browser_routes_are_absent_even_with_operator_authorization() {
+        for path in [
+            "/ui",
+            "/ui/transport.js",
+            "/ui/refresh.js",
+            "/ui/browser-access.js",
+            "/ui/connect",
+            "/ui/challenge",
+            "/ui/session/shell",
+            "/ui/disconnect",
+            "/v1/browser-access",
+            "/v1/browser-access/invitations",
+            "/v1/browser-access/sessions/old-session",
+        ] {
+            for method in ["GET", "POST", "PUT", "DELETE"] {
+                let response = app()
                     .oneshot(
                         Request::builder()
-                            .uri(route)
+                            .uri(path)
+                            .method(method)
                             .header("x-koi-token", "secret-token")
                             .body(Body::empty())
-                            .unwrap()
+                            .unwrap(),
                     )
                     .await
-                    .unwrap()
-                    .status(),
-                StatusCode::NOT_FOUND
-            );
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {path}");
+            }
         }
     }
 

@@ -107,7 +107,6 @@ console = "0.15"
 is-terminal = "0.4"
 supports-color = "3"
 terminal_size = "0.4"
-open = "5"
 ipnet = "2"
 libc = "0.2"
 socket2 = { version = "0.6", features = ["all"] }

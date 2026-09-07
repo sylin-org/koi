@@ -64,7 +64,6 @@ fn discovery_status_is_independent_of_empty_search_and_retained_rows() {
                 Links {
                     refresh: None,
                     advanced: "/",
-                    browser_access: None,
                 },
                 &HomeQuery::default(),
             );
@@ -126,7 +125,6 @@ fn rendered_search_select_open_and_clear_use_the_real_shared_projection() {
     let links = Links {
         refresh: None,
         advanced: "/",
-        browser_access: None,
     };
     let render = |query: &HomeQuery<'_>| {
         Html::parse_document(&render_home(View::Snapshot(&catalog), links, query))
@@ -204,7 +202,6 @@ fn rendered_api_absence_and_hostile_details_never_create_an_open_action() {
             Links {
                 refresh: None,
                 advanced: "/",
-                browser_access: None,
             },
             &query,
         ));

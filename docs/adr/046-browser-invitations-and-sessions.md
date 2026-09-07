@@ -1,6 +1,12 @@
 # ADR-046: Browser invitations and revocable sessions
 
-- Status: Accepted design by operator, 2026-09-06; implementation/physical proof tracked in R07.
+- Status: Parked by operator, 2026-09-07. Implementation removed; not an active contract.
+
+Browser access, phone QR pairing and browser sessions are removed from the product.
+The owner stopped this work because its setup and infrastructure costs outweighed
+its value. No phone acceptance, firewall automation, hosted certificate service or
+Android work is scheduled. The design below is historical context only; reopening
+requires an explicit new product decision. The native Home launchpad continues.
 - Relates to ADR-040, ADR-042, ADR-043 and ADR-045.
 
 ## Decision and experience

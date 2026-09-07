@@ -170,8 +170,6 @@ fn main() -> anyhow::Result<()> {
                 }
                 return Ok(());
             }
-            Command::Launch => return commands::web::launch(&cli),
-            Command::Web { command } => return commands::web::run(&cli, command),
             Command::FactoryReset => {
                 return commands::factory_reset::run(cli.json, cli.yes, &config.data_dir);
             }

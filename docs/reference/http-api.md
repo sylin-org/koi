@@ -55,21 +55,12 @@ Interactive API docs are available at `GET /docs` (Scalar UI).
 
 ### Shared operator interface
 
-`GET /ui` loads the operator login page and `GET /ui/transport.js` its small
-same-origin transport. Neither contains operator data. `GET /v1/ui/shell`
-returns a complete Rust-rendered catalog document with embedded assets; **GET
-and HEAD require `x-koi-token` even on loopback**. All three routes are mounted
-only when the host configured DAT authentication. Responses are `no-store`,
-frame-denied and use a restrictive content security policy.
-
-The browser sends a manually supplied token only in that header, never a URL,
-cookie or persistent store. It refuses remote cleartext HTTP: use HTTPS via a
-trusted transport or a loopback SSH tunnel. Refresh replaces the entire dated
-snapshot; failures remove the prior display. Forget token and page exit clear
-the token and displayed data. Advanced tools remain at `/`; the existing native
-workbench retains its richer controls. No service is started or shared by opening
-this view. These routes are absent from Pond; its existing `PUT|DELETE /v1/ui`
-publication contract is unchanged.
+`GET /v1/ui/shell` is the authenticated rendering API for operator integrations.
+It returns a complete Rust-rendered catalog document; GET and HEAD require
+`x-koi-token` even on loopback. It is mounted only when DAT authentication is
+configured, with no-store, frame-denied responses and a restrictive CSP.
+The `/ui` browser entry page, assets and session routes have been removed. The
+native workbench renders Home directly through the shared Rust presentation.
 
 ### Catalog and durable preferences (JSON)
 
@@ -997,44 +988,3 @@ An error is a flat body carrying an `error` code and a `message`:
 ```json
 { "error": "not_found", "message": "Registration not found" }
 ```
-
-## Browser access
-
-[ADR-046](../adr/046-browser-invitations-and-sessions.md) defines the schema-1
-browser exchange. Shared types live in `koi_common::browser_access`.
-
-| Method and path | Request | Response / authority |
-| --- | --- | --- |
-| GET `/v1/browser-access` | none | BrowserAccessStatus; loopback + DAT |
-| PUT `/v1/browser-access` | `{enabled, phone}` booleans | BrowserAccessStatus; loopback + DAT |
-| POST `/v1/browser-access/invitations` | `{phone}` boolean | `{url, expires_at}`; loopback + DAT |
-| DELETE `/v1/browser-access/sessions/{id}` | none | BrowserAccessStatus; loopback + DAT |
-| GET `/ui` | none | Connect page; no redemption or catalog |
-| POST `/ui/connect` | `{invitation, public_key, label, remember}` | `{id, label, origin, remembered, expires_at}` |
-| POST `/ui/challenge` | `{session}` | `{challenge}`; live origin-bound session required |
-| GET `/ui/session/shell` | Home query + proof headers | Rust-rendered Home; view services only |
-| POST `/ui/disconnect` | proof headers | `{disconnected: true}` after durable self-revocation |
-
-Browser routes require exact Host and, when supplied, exact Origin. Every browser
-POST requires Origin. The loopback surface also checks the actual peer address.
-Bodies are bounded at 4 KiB; invitation/key/label/session counts have separate limits.
-The optional phone HTTPS listener mounts only the browser routes and their assets;
-operator APIs cannot be reached through it. Browser access must be enabled to redeem
-or use a grant. Private phone access also requires usable CertMesh server identity.
-
-`x-koi-browser`, `x-koi-challenge` and `x-koi-proof` contain the session ID,
-challenge and signature. Public key is SEC1 uncompressed P-256; signature is
-fixed-width 64-byte ECDSA `r || s`, SHA-256. Binary values use URL-safe base64 without
-padding. Sign the UTF-8 bytes (newlines shown as literal escapes):
-
-```text
-koi-browser-session-v1\n<session>\n<challenge>\n<METHOD>\n<exact path and query>
-```
-
-Challenges expire after 30 seconds and a successful proof consumes one atomically.
-Replay, different method/query, wrong key or another origin cannot reuse it. The
-session ID alone is public metadata. Server-side invitation secrets are hashed and
-expire after 120 seconds. Timestamps are Unix seconds. Standard access failures are
-401 (off/revoked/expired), 403 (origin/transport), 410 (spent/expired invitation),
-429 (bounded capacity), 503 (private identity/readiness), and 500 (persistence).
-Browser responses are no-store/no-referrer and restrict scripts, framing and CORS.

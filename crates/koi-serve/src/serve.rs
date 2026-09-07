@@ -266,34 +266,6 @@ pub async fn serve(
         }
     };
 
-    // Browser sessions and their optional HTTPS listener share this serving owner.
-    let browser_access = if let Some(endpoint) = local_endpoint.as_ref().filter(|endpoint| {
-        url::Url::parse(endpoint)
-            .ok()
-            .is_some_and(|url| matches!(url.host_str(), Some("127.0.0.1" | "[::1]")))
-    }) {
-        let identity = cores.certmesh.as_ref().map(|core| {
-            koi_compose::bridges::CertmeshTlsIdentityBridge::new(core.clone())
-                as Arc<dyn koi_common::integration::TlsIdentitySource>
-        });
-        let access = crate::browser_access::BrowserAccess::new(
-            cfg.data_root.join("state/browser-access.json"),
-            endpoint.clone(),
-            cfg.host.hostname().into(),
-            serving_http_port.checked_add(4),
-            identity,
-        )?;
-        let supervisor = access.clone();
-        let catalog = cores.catalog.clone();
-        let stop = cancel.clone();
-        cores.own_task(tokio::spawn(async move {
-            crate::browser_tls::supervise(supervisor, catalog, stop).await;
-        }));
-        Some(access)
-    } else {
-        None
-    };
-
     // ── HTTP adapter (the full daemon surface: dashboard, DAT auth, MCP, admin-shutdown,
     // OpenAPI) ──
     if let Some(listener) = http_listener {
@@ -312,7 +284,6 @@ pub async fn serve(
             api_docs: true,
             daemon: true,
             pond,
-            browser_access,
         };
         cores.own_task(tokio::spawn(async move {
             if let Err(e) = crate::http::serve(listener, c, http_cfg, cancel_token).await {

@@ -35,9 +35,6 @@ koi certmesh create
 
 # Start the local DNS resolver
 koi dns serve
-
-# Open the web dashboard
-koi launch
 ```
 
 Run `koi --help` for the full command reference.
