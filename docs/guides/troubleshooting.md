@@ -159,6 +159,37 @@ koi mdns announce "My App" http 8080 --ip 192.168.1.42
 
 ---
 
+## Home finds a service, but Open says its name cannot be resolved
+
+**Symptom.** Home lists a service, but the browser reports `ERR_NAME_NOT_RESOLVED`
+when opening its advertised `.local` address.
+
+**Cause.** Discovery and application hostname lookup use separate paths. Receiving
+an mDNS announcement does not establish that the browser's resolver can resolve
+the destination.
+
+**Fix.** Check the exact hostname from Open. On Linux with Avahi, compare these
+commands, replacing `service.local` with that hostname:
+
+```sh
+getent ahosts service.local
+avahi-resolve -n service.local
+```
+
+If Avahi succeeds while `getent` fails, inspect your distribution's NSS/resolver
+integration. An installed `nss-mdns` module must also participate in the `hosts:`
+lookup order in `/etc/nsswitch.conf`; an earlier resolver can otherwise end the
+lookup. Follow your distribution's configuration and the
+[upstream activation guidance](https://github.com/avahi/nss-mdns#activation),
+preserving existing resolver requirements. Verify ordinary unicast names as well
+as the advertised `.local` destination after a change. If both lookups fail,
+check the announcement and multicast path described above.
+
+Retry Home's original Open link after correcting resolution. A successful request
+to an IP address alone does not verify the advertised hostname.
+
+---
+
 ## HTTP API returns `401 Unauthorized`
 
 **Symptom.** A `POST`/`PUT`/`DELETE` to the API comes back with

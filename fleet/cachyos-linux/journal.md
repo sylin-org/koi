@@ -1013,3 +1013,46 @@ The rollback timer stopped/collected, root executable helper/run marker and vola
 privilege wrapper were removed, and private backup binaries made non-executable.
 Ten completed owned source-fixture repositories were removed. The retained deployment
 is healthy; acceptance of the R07 parent remains pending its recorded prerequisites.
+
+
+## 2026-09-07 UTC — R07 resolver correction and actual Notes save/reopen
+
+Run `R07/resolver-notes-20260907` resolves [issue002](issues/002-r07-browser-name-resolution.md).
+The unchanged installed daemon c89f237/PID57183 and desktop5388b71/PID51150
+now complete the real Notes journey. Full hashes and observations are in the
+[R07 report](../../docs/prompts/delight/reports/R07.md#installed-notes-journey-and-host-resolver-correction--2026-09-07-utc).
+No product rebuild, installation or restart was needed; the existing final
+all-14-jobs passing CI remains applicable.
+
+The installed Avahi NSS module was absent from normal hosts lookup. Direct module
+lookup worked; ordinary getent failed. A fresh root-private checkpoint
+`/var/tmp/koi-r07-resolver.3dSalm91`, verified helper and waiting 30-minute rollback
+timer preceded adding dual-stack `mdns_minimal [NOTFOUND=return]` before `resolve`
+in `/etc/nsswitch.conf`. This single retained line change restored ordinary
+resolution of the advertised Notes alias. Localhost, unicast lookup and external
+HTTPS also passed. No resolver service, package, hosts file, firewall, system unit,
+CertMesh membership/certificate or peer changed. Full rollback was not exercised.
+
+Actual Chromium Home search/selection/Open loaded the returned `.local:18707` URL,
+saved content, retained it through reload, returned to the selected Home service,
+and reopened the saved note. Native semantic selection/Open launched the same
+actual URL and content externally. This uses explicit stable service ID
+`svc_r07_resolver_notes_20260907`, not a substituted IP URL. Withdrawal produced
+stale evidence and removed Open links. These are actual browser/native semantic
+observations, with no new pointer, physical 320px or phone claim.
+
+Cleanup removed the test storage key, withdrew registration fa4e1bdb and stopped
+both run units. Browser Disconnect/Disable cleared pointers and all grants;
+the completed empty browser repository was retained privately to restore original
+absence. Only the original MCP registration remains. Ports 5644/5645/18707 are
+closed, 5641 is loopback, the service is healthy, and both installed binary hashes
+and PIDs match baseline. Captured firewall/unit/identity hashes also match.
+Native Home, original geometry and cursor909,925 were restored. One new Notes tab
+remains alongside four earlier test tabs under Ghostlight's preserve-tabs policy;
+its storage key is removed but the already-rendered textarea still shows the note.
+
+The NSS correction was accepted under the root lock. The timer was stopped and
+collected; root executable helper, run marker and volatile privilege wrapper were
+removed. No active guard or temporary listener remains. Original/candidate files
+and audit evidence remain root-private. Physical phone/browser and issuer-trust
+facts have been requested and remain unanswered; R07 stays in_progress.

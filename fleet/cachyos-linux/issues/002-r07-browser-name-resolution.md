@@ -1,6 +1,9 @@
 # R07 Notes destination fails the workstation resolver
 
-Status: open host prerequisite; no shared provider defect is established.
+Status: resolved on this host by `R07/resolver-notes-20260907`; no shared provider
+defect was established.
+
+## Initial observation
 
 Run `R07/browser-native-20260907`, installed Koi cce33e5 and desktop5388b71,
 found and selected the real temporary Notes announcement. Chromium Open followed
@@ -16,10 +19,33 @@ and the system resolver uses resolved's stub; Avahi has used the conflict-rename
 did not repair resolution. Original firewall bytes were restored. No resolver,
 provider or hosts-file mutation was made.
 
-Next: diagnose the measured Avahi/systemd-resolved resolver discrepancy on this
-host under a fresh guard, then repeat ordinary installed Home → Notes Open → save
-→ return/reload against the actual advertised target. Use an explicit stable test
-service ID to keep address changes from introducing separate catalog identities.
-Do not change a returned URL, force browser DNS, or count a direct-IP sanity request
-as the Home journey. Phone proof separately needs a physical device that resolves
-the certified name and trusts the CertMesh issuer.
+## Resolution — 2026-09-07 UTC
+
+The installed `nss-mdns` package was absent from the application's NSS lookup path.
+Direct `getent -s mdns_minimal ahosts test-01-2.local` returned IPv6 and IPv4,
+while ordinary lookup failed and `resolvectl query` timed out. Under a fresh
+root-private restoration guard, only `/etc/nsswitch.conf`'s hosts line changed:
+
+```text
+before: hosts: mymachines resolve [!UNAVAIL=return] files myhostname dns
+after:  hosts: mymachines mdns_minimal [NOTFOUND=return] resolve [!UNAVAIL=return] files myhostname dns
+```
+
+This connects ordinary application lookup to the existing Avahi service, using
+the dual-stack minimal module. See [upstream NSS activation guidance](https://github.com/avahi/nss-mdns#activation).
+This is a measured host configuration fix, not a universal resolver order or a
+diagnosis of the underlying Avahi/resolved multicast interaction. Neither service
+was reconfigured or restarted. Localhost, unicast lookup and ordinary external
+HTTPS remained working.
+
+The unchanged installed daemon c89f237 and desktop 5388b71 then passed actual
+Home → Notes Open → save → reload → Back → reopen. Stable service ID
+`svc_r07_resolver_notes_20260907` returned
+`http://koi-bda81e6e7ba470c4.local:18707/`; Chromium loaded this exact URL.
+Native Open also launched it and displayed the saved content. Withdrawal produced
+stale evidence with no Open links. Run services, registration, stored note and
+browser grants were removed; the NSS fix is retained and its rollback guard has
+been accepted and removed. Full evidence is in the [R07 report](../../../docs/prompts/delight/reports/R07.md).
+
+Physical phone proof remains separate and pending: it needs a real device that
+resolves the certified name and trusts the CertMesh issuer.
