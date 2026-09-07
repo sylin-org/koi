@@ -49,7 +49,7 @@ It behaves identically - same API, same IPC - but stops when you close the termi
 
 ## Checking on things
 
-Three commands tell you what's happening:
+Two commands tell you what's happening:
 
 ```
 koi version          # what binary is running

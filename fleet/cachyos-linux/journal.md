@@ -1056,3 +1056,50 @@ collected; root executable helper, run marker and volatile privilege wrapper wer
 removed. No active guard or temporary listener remains. Original/candidate files
 and audit evidence remain root-private. Physical phone/browser and issuer-trust
 facts have been requested and remain unanswered; R07 stays in_progress.
+
+
+## 2026-09-07 UTC — Browser access removed and parked
+
+The owner cancelled the browser/phone feature. Published Koi
+`34e0d8c30a1524189e35608bec2a1880e65667ce` and desktop
+`be834e8b648bb5b9428734af5d9b6ad28ac54e3c` remove native controls, CLI web/launch,
+invitations/session state and crypto, private HTTPS, browser assets/routes and the
+older token-entry page. ADR-046 is parked; phone setup and physical scanning are
+no longer acceptance prerequisites. Native Home and ordinary service Open remain.
+
+Local checks: 46 client,239 CLI,162 serving,19 shared UI tests; affected strict
+Clippy; desktop30 Rust (one historical ignored),47 Node, strict Clippy and Windows
+GNU all-target check. The clean daemon release and normal Arch recipe package
+were installed serially through the public installer/pacman. Installed daemon
+SHA-256 `59c471bfd182de78a92ee626df1cfda3fff1c3b0d0be82b359ce0b126dcb7268`, PID85012;
+desktop SHA-256 `3b1b9bdba7c0581c909cda39510e9c17c3e44f3c916af1d7220dd383021267cd`, PID85677.
+Package0.1.3.r76.gbe834e8-1 SHA-256
+`cc807c8aa44656211149adde49599088b3a669e5ec9023c02a833291c8349f96`.
+The recipe emitted a fakeroot diagnostic/source-path warning but exited0; archive
+owner/mode inspection and installed/archive equality passed.
+
+Fresh root-private `/var/tmp/koi-remove.kNNCg7gr` captured prior artifacts, browser
+state and identity/policy digests. Verified root helper and waiting45-minute timer
+preceded mutation; syntax passed, full rollback not exercised. The user's two
+remaining temporary browser grants were revoked before upgrade; the disabled/empty
+repository is retained privately and absent from active state. Firewall, NSS,
+system-unit and CertMesh identity/certificate hashes match baseline.
+
+Installed checks:44 authenticated removed-route requests return404; web/launch are
+rejected by the CLI; no private5645 listener. Native Home/Settings omit Browser
+access, and a viewed native capture confirms rendering. Focused native keyboard
+search/no-match/clear and local MCP selection/Back pass. Previous pointer/320px and
+actual Notes evidence remains bound to its original source. Only normal MCP
+registration4495d618 remains; one healthy enabled root daemon and one installed
+workbench are running. Operator5641 is loopback;5644/5645/18707 are closed. Prior
+workbench was in tray state with no KWin window; updated Home is visible in the
+normal1100×748 frame. No browser tabs were closed or interlocks bypassed.
+
+The healthy removal deployment was accepted under the root lock after native and
+live route checks. The rollback timer stopped/collected with zero matching timers;
+root executable helper, run marker and volatile privilege wrapper were removed.
+Private backup binaries are mode0600. The installed removal is complete. Hosted
+CI34077834757 continues independently: Ubuntu/macOS pass, Windows is still running,
+and no failure has been reported; final full-CI/parent acceptance is not claimed.
+See the
+[R07 report](../../docs/prompts/delight/reports/R07.md) for the reconciled outcome.

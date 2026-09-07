@@ -28,9 +28,8 @@ Label a container and Koi can announce, name, health-check, and watch it without
 the image. A container can also discover and watch LAN services through ordinary HTTP,
 or bridge UDP without giving up network isolation. Participation works both ways.
 
-Everything is reachable three ways: a **CLI** built for discoverability, an
-**HTTP API** with interactive docs, and a **web dashboard** with a live mDNS
-network browser.
+Use the **native desktop workbench** to find and open services. The **CLI** and
+**HTTP API** provide capability controls and diagnostics.
 
 ```bash
 koi mdns discover              # what's on this network?

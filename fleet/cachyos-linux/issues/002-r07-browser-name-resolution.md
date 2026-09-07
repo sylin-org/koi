@@ -47,5 +47,6 @@ stale evidence with no Open links. Run services, registration, stored note and
 browser grants were removed; the NSS fix is retained and its rollback guard has
 been accepted and removed. Full evidence is in the [R07 report](../../../docs/prompts/delight/reports/R07.md).
 
-Physical phone proof remains separate and pending: it needs a real device that
-resolves the certified name and trusts the CertMesh issuer.
+The owner subsequently removed browser access and parked phone pairing. There is
+no remaining phone prerequisite for this issue. The retained resolver correction
+still supports opening discovered services from native Home.
