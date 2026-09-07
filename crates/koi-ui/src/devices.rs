@@ -10,6 +10,18 @@ pub fn label(device: &Device) -> &str {
         .map_or("Unnamed device", |name| name.value.as_str())
 }
 
+pub fn ordered(catalog: &CatalogSnapshot) -> Vec<&Device> {
+    let mut devices: Vec<_> = catalog.devices.iter().collect();
+    devices.sort_by_key(|device| {
+        (
+            catalog.local_device_id.as_ref() != Some(&device.id),
+            label(device).to_lowercase(),
+            device.id.clone(),
+        )
+    });
+    devices
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Peer {
     pub id: DeviceId,

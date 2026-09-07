@@ -17,14 +17,14 @@ pub fn render(view: View<'_>, query: &HomeQuery<'_>, comparison: &Comparison) ->
                 @if catalog.local_device_id.is_none() { p { "This snapshot does not identify the observing computer. Update Koi to identify this device." } }
                 @if catalog.devices.is_empty() { p { "No devices in this snapshot" } }
                 @let peers = devices::peers(catalog);
-                @for device in &catalog.devices {
+                @for device in devices::ordered(catalog) {
                     @let local = catalog.local_device_id.as_ref() == Some(&device.id);
                     @let services: Vec<_> = catalog.services.iter().filter(|service| service.device_id == device.id).collect();
                     details.device id=(format!("device-{}", device.id)) data-device-id=(device.id) {
-                        summary {
+                        summary id=(format!("device-toggle-{}", device.id)) {
                             strong { (devices::label(device)) }
                             " · " @if local { "This device" } @else { (device_label(device.condition)) }
-                            " · " (services.len()) " services in this snapshot"
+                            " · " (services.len()) @if services.len() == 1 { " service in this snapshot" } @else { " services in this snapshot" }
                         }
                         @if !local { p { "Discovered or recorded here. Discovery does not prove reachability, enrollment or permission." } }
                         @match device.condition {

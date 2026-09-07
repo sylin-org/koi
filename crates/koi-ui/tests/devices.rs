@@ -49,6 +49,14 @@ fn device_services_keep_identity_and_existing_details_destinations() {
     let catalog = catalog();
     let output = render(&catalog, &Comparison::NotRun);
     let html = Html::parse_document(&output);
+    assert_eq!(
+        html.select(&Selector::parse("details.device").unwrap())
+            .next()
+            .unwrap()
+            .value()
+            .attr("data-device-id"),
+        Some("local")
+    );
     for id in ["local", "peer"] {
         let row = html
             .select(&Selector::parse(&format!("#device-{id}")).unwrap())
@@ -64,7 +72,7 @@ fn device_services_keep_identity_and_existing_details_destinations() {
             .unwrap()
             .contains(&format!("selected=app-{id}")));
         let text = row.text().collect::<String>();
-        assert!(text.contains("1 services in this snapshot"));
+        assert!(text.contains("1 service in this snapshot"));
         if id == "local" {
             assert!(text.contains("This device"));
         } else {

@@ -68,11 +68,14 @@ try {
     KoiRefresh.apply(view, html, {focusId:'service-search'});
     const submitted = document.getElementById('service-search').value;
     const style = document.createElement('style'); style.textContent = ${JSON.stringify(css)}; document.head.append(style);
-    const duplicated = html + '<section id="devices"><article data-service-id="notes"><a href="https://notes.local/">Open</a></article></section>';
+    const duplicated = html + '<section id="devices"><details id="device-local"><summary id="device-toggle-local">This device</summary></details><article data-service-id="notes"><a href="https://notes.local/">Open</a></article></section>';
     KoiRefresh.apply(view, duplicated);
     document.querySelector('#devices a').focus();
     KoiRefresh.apply(view, duplicated, {automatic:true});
     const deviceFocus = document.activeElement.closest('section').id;
+    document.getElementById('device-toggle-local').focus();
+    KoiRefresh.apply(view, duplicated, {automatic:true});
+    const deviceToggleFocus = document.activeElement.id;
     const panels = '<section id="home" tabindex="-1"><div class="home-layout"><div class="home-results">Services</div><aside id="service-details" tabindex="-1">Details</aside></div></section>';
     KoiRefresh.apply(view, panels, {focusId:'service-details'});
     const visible = () => ({details:getComputedStyle(document.getElementById('service-details')).display !== 'none', results:getComputedStyle(document.querySelector('.home-results')).display !== 'none'});
@@ -83,12 +86,12 @@ try {
     const back = visible();
     KoiRefresh.apply(view, panels, {automatic:true});
     const backAfterRefresh = visible();
-    return {draft,deviceFocus,linkFocus,disabled,recovered,submitted,stale:view.hasAttribute('data-stale'),selected,afterRefresh,back,backAfterRefresh};
+    return {draft,deviceFocus,deviceToggleFocus,linkFocus,disabled,recovered,submitted,stale:view.hasAttribute('data-stale'),selected,afterRefresh,back,backAfterRefresh};
   })()` }, sessionId);
   assert.equal(reply.exceptionDetails, undefined, JSON.stringify(reply.exceptionDetails));
   assert.deepEqual(reply.result.value, {
     draft: { sameInput: true, value: 'unsent draft', focused: true, caret: [3, 7], checked: true, expanded: true },
-    deviceFocus: 'devices', linkFocus: 'https://notes.local/', disabled: true, recovered: 'https://notes.local/', submitted: 'submitted', stale: false,
+    deviceFocus: 'devices', deviceToggleFocus: 'device-toggle-local', linkFocus: 'https://notes.local/', disabled: true, recovered: 'https://notes.local/', submitted: 'submitted', stale: false,
     selected:{details:true,results:false}, afterRefresh:{details:true,results:false},
     back:{details:false,results:true}, backAfterRefresh:{details:false,results:true},
   });
