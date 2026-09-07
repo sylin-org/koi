@@ -951,3 +951,65 @@ Clippy, Windows GNU all-target check, format/diff. Fresh read-only observation
 confirmed original PID730/PID1629 and original binary hashes, health OK, loopback5641
 only; private browser5645, Pond5644 and Notes18707 closed. Completed owned browser
 fixtures were removed. Installed browser/phone acceptance remains pending.
+
+
+## 2026-09-07 UTC — R07 installed browser invitations and private HTTPS
+
+Run `R07/browser-native-20260907`, explicitly authorized by the owner's Proceed.
+Installed source: Koi `c89f2371352bc754c49aea89901542ddf6c89509`, desktop
+`5388b710554acca4da21e3c2d8d60ad1d00678a8` with exact client/UI pin cce33e5.
+The later serving-only hostname fix does not change those pinned libraries.
+The [R07 report](../../docs/prompts/delight/reports/R07.md) is the complete evidence
+and supersedes the prior source-only browser checkpoint.
+
+Fresh root-private checkpoint `/var/tmp/koi-browser-native.SaHSnYIg` captured the
+measured daemon17fb591/desktop24d619f baseline and original state/unit/firewall.
+A checksum-verified root helper and waiting 90-minute rollback timer preceded the
+serial clean release/public daemon install and normal Arch package upgrade.
+Full rollback was not exercised. Installed validation exposed and fixed stale
+browser refresh copy, incomplete native settings/grant observation, and an invented
+`.local` invitation suffix not covered by the existing certificate. Final private
+URLs use the certified identity hostname. Focused regressions and strict lint pass;
+desktop: 31 Rust tests (one historical ignored), 54 distinct Node cases, strict lint
+and Windows GNU check pass. Final [product CI 34071161411](https://github.com/sylin-org/koi/actions/runs/34071161411)
+passed all 14 jobs, including every OS lane and the cross-host CertMesh exchange.
+
+Actual native actions and Chromium proved temporary automatic opening, remembered
+Connect/reload/second-tab reuse, native settings updates after CLI changes, scoped
+revocation and automatic daemon recovery. Native QR preview/Connect on the private
+HTTPS surface passed normal certificate validation. Excluded private operator routes
+return404. Original UFW policy correctly withheld private readiness; temporary
+LAN-scoped test rules were guarded. Disabling CertMesh through an exact runtime
+drop-in closed private TCP 5645, refused invitations, disabled stale Open links and
+kept the browser at HTTPS. Local browser access stayed connected. Removing the
+fault restored the same healthy identity and private browser grant automatically.
+These are same-host browser observations, not a physical camera/phone result.
+
+The actual Notes Open target failed workstation name resolution even though Avahi
+resolved it and the HTTP endpoint responded by address. No forced browser DNS or
+replacement URL was used to claim acceptance. [Issue002](issues/002-r07-browser-name-resolution.md)
+records this host prerequisite. The phone/browser/trust question remains unanswered.
+R07 is in_progress, with actual Notes load/save/return and physical phone pending.
+
+Cleanup restored original firewall and system-unit bytes, disabled browser access,
+revoked grants, withdrew all run announcements and stopped Notes. The newly created
+empty browser repository was retained privately and its original absence restored.
+No resolver, CertMesh membership, certificate/key or root-trust configuration changed.
+All captured state hashes match except trust.json's normal startup installed_at;
+structural comparison proves this is its only change. Only the standard permanent
+MCP registration remains. Native geometry and cursor 909,925 were restored; browser
+outer 1280×800 restored. Four disconnected Chromium tabs remain because Ghostlight's
+preserve-tabs setting rejected closure; no bypass was attempted. Run-launched Firefox
+closed normally. No new generated-pointer interaction or physical320px claim is made.
+
+Retained daemon SHA-256 `5b374bd3e3e548a84cfea9146e895582c50710181bcb7b5fb4ce7a4e0aa10531`,
+PID 57183; desktop SHA-256 `fa690ae70da3b40ab0c0a8fb956cb7f64f9b8ede3b3245fa8fb47d3339f82585`,
+PID 51150. Arch package 0.1.3.r75.g5388b71-1 has SHA-256
+`f08d96fcd0f9da040e55b8d69d1294749791b40f750eca6968d5c973658624f7`.
+One enabled healthy root daemon and one normal package-owned workbench remain.
+Operator 5641 is loopback; Pond 5644/private 5645/Notes 18707 are closed.
+After final CI passed, the corrected installation was accepted under the root lock.
+The rollback timer stopped/collected, root executable helper/run marker and volatile
+privilege wrapper were removed, and private backup binaries made non-executable.
+Ten completed owned source-fixture repositories were removed. The retained deployment
+is healthy; acceptance of the R07 parent remains pending its recorded prerequisites.
