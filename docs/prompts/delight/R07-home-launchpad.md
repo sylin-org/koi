@@ -43,10 +43,10 @@ with rg, update the contract map, and inspect the current owner before creating 
 
 ## Acceptance cases
 
-- [ ] The forgotten Notes app is found by device/category and opens its actual target with one primary action.
-- [ ] No-match search says no matches and clears correctly while discovery remains healthy.
-- [ ] A stopped favorite persists; an interrupted feed shows freshness and recovers automatically without a Refresh ritual.
-- [ ] A malicious name renders as text; javascript/file/custom schemes cannot become unreviewed Open links; an API is not presented as a web dashboard.
+- [x] The forgotten Notes app is found by device/category and opens its actual target with one primary action.
+- [x] No-match search says no matches and clears correctly while discovery remains healthy.
+- [x] A stopped favorite persists; an interrupted feed shows freshness and recovers automatically without a Refresh ritual.
+- [x] A malicious name renders as text; javascript/file/custom schemes cannot become unreviewed Open links; an API is not presented as a web dashboard.
 
 ## Verification
 

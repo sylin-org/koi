@@ -1103,3 +1103,20 @@ CI34077834757 continues independently: Ubuntu/macOS pass, Windows is still runni
 and no failure has been reported; final full-CI/parent acceptance is not claimed.
 See the
 [R07 report](../../docs/prompts/delight/reports/R07.md) for the reconciled outcome.
+
+
+## 2026-09-07 UTC — Browser removal CI complete; R07 accepted
+
+Final [product CI34077834757](https://github.com/sylin-org/koi/actions/runs/34077834757)
+on34e0d8c passed all14 jobs, including Ubuntu/macOS/Windows and cross-host CertMesh.
+The previous entry's pending hosted result is resolved. Read-only checks confirm
+unchanged installed daemon/desktop hashes and PIDs85012/85677, healthy daemon,
+loopback5641, closed5644/5645/18707 and zero removal rollback timers. No rebuild,
+reinstall, host or peer mutation was needed.
+
+Git comparison confirms remaining shared UI/client/common/config matches b762456
+and desktop `src/` and `ui/` match24d619f. Existing native Notes, wide/320px interaction,
+favorite/recovery and safety evidence plus the removal checks complete the original
+Home cases. [R07 is accepted](../../docs/prompts/delight/reports/R07.md#final-reconciliation--r07-accepted-2026-09-07-utc).
+Browser access remains removed and ADR-046 parked. R08/R10 prerequisites are met;
+no new work order is started in this handoff.
