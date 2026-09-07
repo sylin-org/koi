@@ -1120,3 +1120,40 @@ favorite/recovery and safety evidence plus the removal checks complete the origi
 Home cases. [R07 is accepted](../../docs/prompts/delight/reports/R07.md#final-reconciliation--r07-accepted-2026-09-07-utc).
 Browser access remains removed and ADR-046 parked. R08/R10 prerequisites are met;
 no new work order is started in this handoff.
+
+## 2026-09-07 UTC — R08 Devices and native comparison entry
+
+Product source d9fe736 adds explicit local device identity and scoped comparison;
+UI correction e3b1157 retains device disclosure focus during refresh. Installed
+workbench062b0b5 pins e3b1157 and uses package0.1.3.r78.g062b0b5-1, desktop SHA-256
+`9614c70a840b9a320d584f2de2a51f0ee8c78189bb5268499766019b553f40e3`, PID119042.
+Daemon d9fe736 remains PID111468, SHA-256
+`696e5498c5f2deed2c160a8e2077e195cfc4c116b587d6fa3c19fd76743b9fc6`;
+the pure presentation correction needed only the desktop package retry.
+
+Actual native keyboard expansion retains focus/open state through refresh; choosing
+the local hosted MCP opens its existing Home endpoint details. Diagnostics Status
+opens the shared comparison panel, which truthfully reports no eligible peer.
+Viewed captures and AT-SPI/control evidence are local under target/r08-native.
+Controlled comparison tests cover success/differences, refusal, timeout, oversized
+or unsupported responses and incompatible scope. No peer was mutated/probed and no
+physical two-peer or new Windows/320px proof is claimed; two-peer proof remains R29.
+
+Fresh root-private guard /var/tmp/koi-r08.0ozTjP2K protected the serial installation
+and checked correction. Policy/CertMesh identity hashes remain unchanged. The
+healthy deployment was accepted, timer/helper/run marker/volatile privilege wrapper
+removed, backups made non-executable. One healthy enabled root daemon, one normal
+workbench; only loopback5641 listens,5644/5645/18707 stay closed. Browser access stays
+removed. Final product CI34087132808 is pending; earlier34086438041 was canceled
+when superseded by the native focus correction. See the
+[R08 report](../../docs/prompts/delight/reports/R08.md) for exact checks and reconciliation.
+
+## 2026-09-07 UTC — R08 final hosted reconciliation
+
+Final [product CI34087132808](https://github.com/sylin-org/koi/actions/runs/34087132808)
+passed all14 jobs on e3b1157, including every OS suite and cross-host CertMesh.
+Installed identities and cleanup from the prior entry remain unchanged; no new
+native mutation was needed. R08 is implemented/linux-ready, with Windows WebView2
+physical device/diagnostics/POST cases explicitly recorded for R29. The work order
+also reserves the physical two-peer demonstration there. R09 may consume this
+qualified prerequisite and must inherit the Windows cases; it is not started here.
