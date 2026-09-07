@@ -58,6 +58,7 @@
     const focused = view.contains(active);
     const rowId = active?.closest('[data-service-id]')?.getAttribute('data-service-id');
     const href = active?.getAttribute('href');
+    const sectionId = active?.closest('section')?.id;
     const x = window.scrollX, y = window.scrollY;
     if (automatic) {
       // Retain actual inputs, including an unsubmitted draft/caret and checkbox.
@@ -82,7 +83,8 @@
       let next = active.id ? document.getElementById(active.id) : null;
       if (!next && href) {
         next = [...view.querySelectorAll('a')].find(link => link.getAttribute('href') === href &&
-          link.closest('[data-service-id]')?.getAttribute('data-service-id') === rowId);
+          link.closest('[data-service-id]')?.getAttribute('data-service-id') === rowId &&
+          link.closest('section')?.id === sectionId);
       }
       (next || document.getElementById('home'))?.focus({ preventScroll: true });
       window.scrollTo(x, y);
@@ -111,6 +113,23 @@
       stale(view);
       status(fatal ? 'Cannot read this Home response. Reopen Home to retry.' : `Catalog unavailable; displayed evidence may be stale. Retrying in ${delay / 1000}s…`);
     },
+  });
+  view.addEventListener('submit', async event => {
+    const form = event.target.closest('form[data-comparison]');
+    if (!form) return;
+    event.preventDefault();
+    const body = new URLSearchParams(new FormData(form));
+    const button = form.querySelector('button');
+    button.disabled = true;
+    try {
+      const response = await fetch(form.getAttribute('action'), { method: 'POST', body, credentials: 'omit', redirect: 'error' });
+      if (!response.ok) throw new Error('comparison could not start');
+      history.replaceState(null, '', '/?' + body + '#comparison');
+      await reader.read({ automatic: true });
+    } catch (_) {
+      status('Could not start comparison. Wait for any running comparison to finish, then retry.');
+      button.disabled = false;
+    }
   });
   reader.read({ automatic: true });
   window.addEventListener('pagehide', () => reader.stop());

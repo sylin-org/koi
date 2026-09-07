@@ -84,6 +84,9 @@ pub struct CatalogSnapshot {
     pub epoch: String,
     pub revision: u64,
     pub generated_at: DateTime<Utc>,
+    /// Explicit observer identity. Older schema-1 producers leave it unknown.
+    #[serde(default)]
+    pub local_device_id: Option<DeviceId>,
     pub devices: Vec<Device>,
     pub services: Vec<Service>,
     pub local_candidates: Vec<LocalCandidate>,
@@ -113,6 +116,8 @@ struct CatalogSnapshotWire {
     epoch: String,
     revision: u64,
     generated_at: DateTime<Utc>,
+    #[serde(default)]
+    local_device_id: Option<DeviceId>,
     devices: Vec<Device>,
     services: Vec<Service>,
     local_candidates: Vec<LocalCandidate>,
@@ -137,6 +142,7 @@ impl<'de> Deserialize<'de> for CatalogSnapshot {
             epoch: wire.epoch,
             revision: wire.revision,
             generated_at: wire.generated_at,
+            local_device_id: wire.local_device_id,
             devices: wire.devices,
             services: wire.services,
             local_candidates: wire.local_candidates,
@@ -152,6 +158,7 @@ impl Default for CatalogSnapshot {
             epoch: "unobserved".to_string(),
             revision: 0,
             generated_at: DateTime::UNIX_EPOCH,
+            local_device_id: None,
             devices: Vec::new(),
             services: Vec::new(),
             local_candidates: Vec::new(),
@@ -632,6 +639,7 @@ mod tests {
     fn catalog_schema_round_trips() {
         let snapshot = CatalogSnapshot {
             schema: CATALOG_SCHEMA,
+            local_device_id: Some(DeviceId::new("observer").unwrap()),
             epoch: "0199a".into(),
             revision: 4,
             generated_at: Utc::now(),

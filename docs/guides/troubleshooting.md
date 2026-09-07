@@ -375,6 +375,41 @@ unlocked, retry the join. Full details are in
 
 ---
 
+## Where does a service run?
+
+Open **Devices** in the native workbench and expand a device to see its hosted
+services. Choose a service to inspect its exact destination in Home. Counts include
+all services in this computer's catalog snapshot, including retained unavailable
+ones; Home search and favorites filters do not change those counts.
+
+**This device** identifies the observing computer. A discovered Koi installation is
+an advertisement, not proof of enrollment, permission or reachability. Joined
+CertMesh identity is shown separately. Similar names or uncertain host correlation
+remain separate evidence instead of being silently merged.
+
+### Compare what devices can see
+
+Open comparison from a device or from Advanced tools → Status. Choose a discovered
+Koi peer by name, then **Compare now**. Koi uses its advertised endpoint; there is no
+manual IP list. Comparison requires a reachable peer that permits its existing
+read-only discovery API. Discovery does not itself promise that API is reachable.
+Koi does not expose a new listener, change the firewall or forward this computer's
+local token to make the read work.
+
+- **Not configured:** connect another Koi device and allow discovery to find it.
+- **Not run:** choose a peer, then start the comparison.
+- **Comparing:** both observers are being read; another run waits until this finishes.
+- **Incomplete:** a peer disappeared, refused access, timed out, returned an unsupported
+  snapshot, or reported incompatible/unavailable query coverage. Follow the read's
+  reported action and retry. This is never interpreted as an empty network.
+- **No differences / differences:** both reads succeeded with the same active mDNS
+  query scope. Results include changed endpoint/TXT details, observer labels and
+  receipt times on this computer. Expand the scope details to inspect compared queries.
+
+These are snapshots of each observer's active mDNS .local queries. The API does not
+report physical interfaces or prove the computers share a network. Agreement does
+not establish reachability, authenticated identity or complete network discovery.
+
 ## Still stuck?
 
 - For anything authentication- or exposure-related, the

@@ -1,10 +1,11 @@
 // Actual DOM mechanics in isolated Chromium; not native or live-catalog evidence.
-// No navigation or network: exercise only the shared DOM refresh helper.
+// Uses only an ephemeral loopback fixture, never an installed daemon or peer.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { createServer } from 'node:http';
 const source = await readFile(new URL('../assets/refresh.js', import.meta.url), 'utf8');
 const css = await readFile(new URL('../assets/shell.css', import.meta.url), 'utf8');
 const profile = await mkdtemp(path.join(tmpdir(), 'koi-refresh-dom-'));
@@ -29,6 +30,19 @@ function call(method, params = {}, sessionId) {
     browser.stdio[3].write(JSON.stringify({ id, method, params, sessionId }) + '\0');
   });
 }
+const comparisonRequests = [];
+let comparisonState = 'Not run', sawComparing = false;
+const fixture = createServer(async (request, response) => {
+  const chunks = []; for await (const chunk of request) chunks.push(chunk);
+  const body = Buffer.concat(chunks).toString();
+  comparisonRequests.push({method:request.method, url:request.url, body, token:request.headers['x-koi-token'], cookie:request.headers.cookie});
+  if (request.url === '/refresh.js') { response.writeHead(200, {'content-type':'text/javascript'}); response.end(source); return; }
+  if (request.url === '/compare') { comparisonState = 'Comparing'; setTimeout(() => { comparisonState = 'Finished'; }, 300); response.writeHead(202); response.end(); return; }
+  response.writeHead(200, {'content-type':'text/html'});
+  response.end('<!doctype html><html><head><script defer src="/refresh.js"></script></head><body><section id="home" tabindex="-1"><p id="catalog-status"></p></section><section id="comparison"><p id="comparison-state">' + comparisonState + '</p><form action="/compare" method="post" data-comparison><input type="hidden" name="peer" value="office"><button id="compare-now">Compare now</button></form></section></body></html>');
+  if (comparisonState === 'Comparing') sawComparing = true;
+});
+await new Promise(resolve => fixture.listen(0, '127.0.0.1', resolve));
 try {
   const { targetId } = await call('Target.createTarget', { url: 'about:blank' });
   const { sessionId } = await call('Target.attachToTarget', { targetId, flatten: true });
@@ -54,6 +68,11 @@ try {
     KoiRefresh.apply(view, html, {focusId:'service-search'});
     const submitted = document.getElementById('service-search').value;
     const style = document.createElement('style'); style.textContent = ${JSON.stringify(css)}; document.head.append(style);
+    const duplicated = html + '<section id="devices"><article data-service-id="notes"><a href="https://notes.local/">Open</a></article></section>';
+    KoiRefresh.apply(view, duplicated);
+    document.querySelector('#devices a').focus();
+    KoiRefresh.apply(view, duplicated, {automatic:true});
+    const deviceFocus = document.activeElement.closest('section').id;
     const panels = '<section id="home" tabindex="-1"><div class="home-layout"><div class="home-results">Services</div><aside id="service-details" tabindex="-1">Details</aside></div></section>';
     KoiRefresh.apply(view, panels, {focusId:'service-details'});
     const visible = () => ({details:getComputedStyle(document.getElementById('service-details')).display !== 'none', results:getComputedStyle(document.querySelector('.home-results')).display !== 'none'});
@@ -64,17 +83,37 @@ try {
     const back = visible();
     KoiRefresh.apply(view, panels, {automatic:true});
     const backAfterRefresh = visible();
-    return {draft,linkFocus,disabled,recovered,submitted,stale:view.hasAttribute('data-stale'),selected,afterRefresh,back,backAfterRefresh};
+    return {draft,deviceFocus,linkFocus,disabled,recovered,submitted,stale:view.hasAttribute('data-stale'),selected,afterRefresh,back,backAfterRefresh};
   })()` }, sessionId);
   assert.equal(reply.exceptionDetails, undefined, JSON.stringify(reply.exceptionDetails));
   assert.deepEqual(reply.result.value, {
     draft: { sameInput: true, value: 'unsent draft', focused: true, caret: [3, 7], checked: true, expanded: true },
-    linkFocus: 'https://notes.local/', disabled: true, recovered: 'https://notes.local/', submitted: 'submitted', stale: false,
+    deviceFocus: 'devices', linkFocus: 'https://notes.local/', disabled: true, recovered: 'https://notes.local/', submitted: 'submitted', stale: false,
     selected:{details:true,results:false}, afterRefresh:{details:true,results:false},
     back:{details:false,results:true}, backAfterRefresh:{details:false,results:true},
   });
+  const fixtureUrl = `http://koi-ui.localhost:${fixture.address().port}/?peer=office#comparison`;
+  const { targetId: nativeTarget } = await call('Target.createTarget', {url:fixtureUrl});
+  const { sessionId: nativeSession } = await call('Target.attachToTarget', {targetId:nativeTarget,flatten:true});
+  async function until(expression) {
+    const deadline = Date.now() + 9000;
+    while (Date.now() < deadline) {
+      const value = await call('Runtime.evaluate', {expression,returnByValue:true}, nativeSession);
+      if (value.result?.value) return value.result.value;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    throw new Error('Fixture condition did not settle: ' + expression);
+  }
+  await until("!!window.KoiRefresh && document.getElementById('comparison-state')?.textContent === 'Not run'");
+  await call('Runtime.evaluate', {expression:"document.getElementById('compare-now').click()"}, nativeSession);
+  await until("document.getElementById('comparison-state')?.textContent === 'Comparing'");
+  await until("document.getElementById('comparison-state')?.textContent === 'Finished'");
+  assert.equal(sawComparing, true);
+  assert.deepEqual(comparisonRequests.filter(request => request.method === 'POST').map(({url,body,token,cookie}) => ({url,body,token,cookie})), [{url:'/compare',body:'peer=office',token:undefined,cookie:undefined}]);
+  console.log('Chromium comparison transport: explicit POST, comparing and finished refresh; no authority in DOM requests.');
   console.log('Chromium DOM refresh: draft/caret/focus/disclosure retained; stale Open disabled; recovery restored.');
 } finally {
+  fixture.close(); fixture.closeAllConnections();
   await call('Browser.close').catch(() => browser.kill('SIGTERM'));
   if (browser.exitCode === null) await new Promise(resolve => browser.once('exit', resolve));
   await rm(profile, { recursive: true, force: true });

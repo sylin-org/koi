@@ -1,5 +1,6 @@
 //! Pure shared presentation. Transport, credentials and domain state stay outside.
 pub mod components;
+pub mod devices;
 pub mod home;
 pub mod screens;
 
@@ -41,6 +42,15 @@ pub fn render(view: View<'_>, links: Links<'_>) -> String {
 }
 
 pub fn render_home(view: View<'_>, links: Links<'_>, query: &home::HomeQuery<'_>) -> String {
+    render_workbench(view, links, query, &devices::Comparison::Unsupported)
+}
+
+pub fn render_workbench(
+    view: View<'_>,
+    links: Links<'_>,
+    query: &home::HomeQuery<'_>,
+    comparison: &devices::Comparison,
+) -> String {
     html! {
         (maud::DOCTYPE)
         html lang="en" {
@@ -50,7 +60,7 @@ pub fn render_home(view: View<'_>, links: Links<'_>, query: &home::HomeQuery<'_>
                 title { "Koi" }
                 style { (PreEscaped(stylesheet())) }
             }
-            body { (PreEscaped(fragment_home(view, links, query))) }
+            body { (PreEscaped(fragment_home(view, links, query, comparison))) }
         }
     }
     .into_string()
@@ -58,10 +68,20 @@ pub fn render_home(view: View<'_>, links: Links<'_>, query: &home::HomeQuery<'_>
 
 /// The browser transport only inserts this output; it does not interpret the DTO.
 pub fn fragment(view: View<'_>, links: Links<'_>) -> String {
-    fragment_home(view, links, &home::HomeQuery::default())
+    fragment_home(
+        view,
+        links,
+        &home::HomeQuery::default(),
+        &devices::Comparison::Unsupported,
+    )
 }
 
-fn fragment_home(view: View<'_>, links: Links<'_>, query: &home::HomeQuery<'_>) -> String {
+fn fragment_home(
+    view: View<'_>,
+    links: Links<'_>,
+    query: &home::HomeQuery<'_>,
+    comparison: &devices::Comparison,
+) -> String {
     html! {
         (components::navigation::render())
         main #content tabindex="-1" {
@@ -72,7 +92,7 @@ fn fragment_home(view: View<'_>, links: Links<'_>, query: &home::HomeQuery<'_>) 
                 a.button href=(links.advanced) { "Advanced tools" }
             }
             (screens::home::render(view, query))
-            (screens::devices::render(view))
+            (screens::devices::render(view, query, comparison))
             (screens::settings::render(view, links))
             (screens::about::render())
         }

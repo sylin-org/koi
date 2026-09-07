@@ -97,6 +97,7 @@ fn query_links_round_trip_without_turning_text_into_navigation() {
         search: "Office & café #web",
         selected: Some(&id),
         favorites_only: true,
+        peer: None,
     };
     let href = query.href(query.selected);
     let parsed =
@@ -162,6 +163,7 @@ fn rendered_search_select_open_and_clear_use_the_real_shared_projection() {
         search: "missing",
         selected: intent.selected.as_ref(),
         favorites_only: false,
+        peer: None,
     });
     assert_eq!(no_match.select(&rows).count(), 0);
     assert!(no_match
@@ -330,6 +332,7 @@ fn stopped_favorite_and_last_known_device_remain_searchable_without_an_open_acti
             search: "laptop",
             selected: Some(&selected),
             favorites_only: true,
+            peer: None,
         },
     );
     assert_eq!(view.favorites.len(), 1);

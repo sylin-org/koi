@@ -161,6 +161,43 @@ inferred from service counts and does not describe reachability, other domains,
 or completeness of network discovery. Availability-only changes publish catalog
 revisions even when there are no services. The shared Home renderer owns its copy.
 
+### R08 device and comparison projection
+
+`CatalogSnapshot.local_device_id: Option<DeviceId>` is additive in schema 1.
+Composition publishes its explicit local identity, including empty snapshots. Older
+producers decode as unknown. Consumers compare opaque IDs; they never derive this
+identity from names, address patterns or a peer's advertised installation ID.
+
+The shared owner is `koi-ui/src/devices.rs` (device labels, eligible peer projection,
+`Comparison`, `Reading`, and pure snapshot comparison) and `screens/devices.rs`
+(rendering). `home::HomeRequest.peer` is bounded presentation intent. Device service
+links reuse Home selection by ServiceId; device counts include the complete current
+catalog including retained records, independently of Home filters.
+
+The HTTP reader is `koi-client/src/comparison.rs`; native in-memory run ownership is
+`koi-desktop/src/comparison.rs` and its exact custom-protocol action is in `src/ui.rs`.
+The native POST accepts only a catalog DeviceId; no address/path/token from the DOM.
+Each run revalidates eligibility, permits only one active pair, and reads the existing
+`/v1/mdns/snapshot` projection. Peer reads carry no DAT, follow no redirects, and use
+4-second request deadlines and a1MiB response limit. Refusal/invalid/oversized/slow
+responses remain failed reads. Local reads retain their existing local authority.
+No new daemon listener, browser access, firewall rule or peer enrollment is added.
+
+Eligibility requires explicit local observer identity and a present, unambiguous
+advertised Koi installation with exactly one current MCP endpoint. This is a
+candidate read target, not an authenticated peer or a reachability promise. A missing
+or withdrawn selection is incomplete. Names/addresses do not merge device groups.
+
+Comparison scope is each observer's active mDNS .local query set; unavailable or
+unknown routes and unequal query sets are incomplete. Matching query sets permit
+comparing the two declared snapshots, including endpoint/TXT variants. Physical
+interfaces and same-network equivalence are not reported and are never inferred.
+Receipt time is measured on this computer; remote identity remains advertised.
+Not configured, not run, comparing, no differences, differences and incomplete are
+separate presentations. Only two successfully read, compatible snapshots can produce
+no differences. Legacy Diff and its manual node storage UI are superseded; diagnostics
+navigates to this same panel. Physical two-peer proof remains R29.
+
 ### Device
 
 A Device is a catalog grouping supported by device-identity evidence. It is not

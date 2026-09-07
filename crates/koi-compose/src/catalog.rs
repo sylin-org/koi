@@ -166,7 +166,7 @@ impl ServiceCatalogRuntime {
         let now = Utc::now();
         let epoch = uuid::Uuid::now_v7().to_string();
         Self {
-            installation_id,
+            installation_id: installation_id.clone(),
             hostname: hostname.into(),
             epoch: epoch.clone(),
             feed: StatusFeed::new(koi_common::service::CatalogSnapshot {
@@ -174,6 +174,7 @@ impl ServiceCatalogRuntime {
                 epoch,
                 revision: 0,
                 generated_at: now,
+                local_device_id: Some(explicit_device_id(&installation_id)),
                 devices: Vec::new(),
                 services: Vec::new(),
                 local_candidates: Vec::new(),
@@ -238,6 +239,7 @@ impl ServiceCatalogRuntime {
                     epoch: self.epoch.clone(),
                     revision: current.revision.saturating_add(1),
                     generated_at: now,
+                    local_device_id: Some(explicit_device_id(&self.installation_id)),
                     devices,
                     services,
                     local_candidates,
@@ -2019,12 +2021,21 @@ mod tests {
     fn empty_discovery_availability_changes_publish_without_inventing_services() {
         let catalog = ServiceCatalogRuntime::new(installation(), "local");
         let now = Utc::now();
+        assert_eq!(
+            catalog.status().local_device_id,
+            Some(explicit_device_id(&installation()))
+        );
         assert_eq!(catalog.status().discovery, DiscoveryAvailability::Unknown);
         let observing = mdns_input(Vec::new(), 1, true);
         catalog.reconcile(observing.clone(), now);
         assert_eq!(catalog.status().discovery, DiscoveryAvailability::Available);
         let first = catalog.status().revision;
         assert!(catalog.status().services.is_empty());
+        let snapshot = catalog.status();
+        assert!(snapshot
+            .devices
+            .iter()
+            .any(|device| Some(&device.id) == snapshot.local_device_id.as_ref()));
 
         let mut partial = observing.clone();
         let mut missing = partial.mdns.as_ref().unwrap().sources[0].clone();

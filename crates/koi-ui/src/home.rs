@@ -1,7 +1,7 @@
 //! Pure Home projection and browser destinations. No transport or stored UI state.
 use koi_common::service::{
-    AvailableAction, CatalogSnapshot, EndpointId, NetworkClassification, Service, ServiceCondition,
-    ServiceId, ServiceKind,
+    AvailableAction, CatalogSnapshot, DeviceId, EndpointId, NetworkClassification, Service,
+    ServiceCondition, ServiceId, ServiceKind,
 };
 use url::{Host, Url};
 
@@ -12,6 +12,7 @@ pub struct HomeQuery<'a> {
     pub search: &'a str,
     pub selected: Option<&'a ServiceId>,
     pub favorites_only: bool,
+    pub peer: Option<&'a DeviceId>,
 }
 
 /// Bounded, adapter-independent presentation intent, never catalog/domain state.
@@ -20,6 +21,7 @@ pub struct HomeRequest {
     pub search: String,
     pub selected: Option<ServiceId>,
     pub favorites_only: bool,
+    pub peer: Option<DeviceId>,
 }
 
 impl HomeRequest {
@@ -39,6 +41,10 @@ impl HomeRequest {
                     request.selected =
                         Some(ServiceId::new(value.into_owned()).map_err(|_| "Invalid selection")?);
                 }
+                "peer" => {
+                    request.peer =
+                        Some(DeviceId::new(value.into_owned()).map_err(|_| "Invalid peer")?)
+                }
                 "favorites" if value == "1" => request.favorites_only = true,
                 _ => return Err("Unknown Home query field"),
             }
@@ -51,6 +57,7 @@ impl HomeRequest {
             search: &self.search,
             selected: self.selected.as_ref(),
             favorites_only: self.favorites_only,
+            peer: self.peer.as_ref(),
         }
     }
 }
@@ -59,6 +66,9 @@ impl HomeQuery<'_> {
     pub fn href(&self, selected: Option<&ServiceId>) -> String {
         let mut query = url::form_urlencoded::Serializer::new(String::new());
         query.append_pair("search", self.search);
+        if let Some(peer) = self.peer {
+            query.append_pair("peer", peer.as_str());
+        }
         if self.favorites_only {
             query.append_pair("favorites", "1");
         }
