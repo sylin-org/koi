@@ -15,7 +15,7 @@ koi-common.workspace = true
 maud = "=0.27.0"
 base64.workspace = true
 url.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
 scraper = "=0.24.0"
