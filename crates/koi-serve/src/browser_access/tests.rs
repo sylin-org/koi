@@ -450,7 +450,16 @@ fn private_access_waits_on_identity_loss_and_rejects_new_trust_anchor() {
         .unwrap();
     runtime.observed(true, None);
     let key = key();
-    let origin = "https://workshop.local:5645";
+    let origin = "https://workshop:5645";
+    assert_eq!(
+        runtime.status().phone_url.as_deref(),
+        Some("https://workshop:5645/ui")
+    );
+    assert!(runtime
+        .invite(true)
+        .unwrap()
+        .url
+        .starts_with("https://workshop:5645/ui#invite="));
     let session = runtime
         .connect(origin, request(&runtime.invite(true).unwrap(), &key, true))
         .unwrap();
@@ -480,6 +489,6 @@ fn private_access_waits_on_identity_loss_and_rejects_new_trust_anchor() {
         Err(AccessError::Unauthorized)
     ));
     assert!(runtime
-        .challenge("http://workshop.local:5645", &session.id)
+        .challenge("http://workshop:5645", &session.id)
         .is_err());
 }

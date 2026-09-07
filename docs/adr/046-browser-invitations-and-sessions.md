@@ -104,3 +104,7 @@ References: [RFC 8628](https://www.rfc-editor.org/rfc/rfc8628.html),
 [OWASP storage guidance](https://cheatsheetseries.owasp.org/cheatsheets/HTML5_Security_Cheat_Sheet.html#storage-apis),
 [RFC 6265 cookie port limitations](https://www.rfc-editor.org/rfc/rfc6265.html#section-8.5).
 This is a local Koi protocol, not an OAuth conformance claim.
+
+Private invitation origins use the CertMesh identity hostname exactly. They do not
+append a discovery suffix: a reachable alias may not be covered by the certificate.
+The receiving device must resolve that certified name and trust its issuer.

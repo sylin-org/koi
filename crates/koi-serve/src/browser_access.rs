@@ -183,12 +183,9 @@ impl BrowserAccess {
     pub(crate) fn phone_identity(&self) -> Option<(String, String)> {
         let snapshot = self.0.identity.as_ref()?.tls_identity();
         let material = snapshot.material.as_ref()?;
-        let hostname = if material.hostname.contains('.') {
-            material.hostname.clone()
-        } else {
-            format!("{}.local", material.hostname)
-        };
-        let origin = format!("https://{hostname}:{}", self.0.phone_port?);
+        // The identity hostname is covered by the issued certificate. Inventing
+        // a .local suffix can produce a reachable URL that fails TLS validation.
+        let origin = format!("https://{}:{}", material.hostname, self.0.phone_port?);
         valid_origin(&origin, true).then(|| (origin, digest(&material.trust_anchor_pem)))
     }
     pub(crate) fn observed(&self, ready: bool, reason: Option<String>) {
