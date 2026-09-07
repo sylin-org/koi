@@ -44,6 +44,7 @@ try {
   assert.equal(await evaluate('document.getElementById("operator-view").children.length'),0);
   await evaluate('document.getElementById("browser-label").value="Fixture browser";document.getElementById("remember-browser").checked=true;document.getElementById("connect-form").requestSubmit()');
   await until('document.getElementById("browser-status")?.textContent === "Connected · View services"');
+  assert.equal(await evaluate('document.getElementById("catalog-status").textContent'),'Updating automatically every five seconds.');
   assert.equal(await evaluate('!!localStorage.getItem("koi-browser-session-v1")'),true);
   assert.equal(await evaluate('!!sessionStorage.getItem("koi-browser-session-v1")'),false);
   await evaluate('document.getElementById("service-search").value="notes";document.getElementById("home-search").requestSubmit()');

@@ -101,6 +101,7 @@
     apply: (html, intent) => {
       if (stopped) return;
       window.KoiRefresh.apply(view, html, intent);
+      view.querySelector('#catalog-status').textContent = 'Updating automatically every five seconds.';
       invitation = undefined;
       panel.hidden = true; disconnect.hidden = false;
       status.textContent = 'Connected · View services';

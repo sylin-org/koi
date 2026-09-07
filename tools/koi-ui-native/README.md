@@ -97,3 +97,17 @@ Measured R07 wide-layout service selection/Back and320px search/select/Back/
 no-match/clear passed on desktop24d619f; see `docs/prompts/delight/reports/R07.md`.
 Browser load/save remains unverified. The existing semantic AT-SPI action remains useful for
 inspection/setup, but does not count as pointer evidence.
+
+
+`restore-browser-cachyos.sh` is the fresh ADR-046 acceptance guard for daemon
+17fb591 (`fc5db346…`) / desktop24d619f (`2db016d9…`). Its root-owned mode-0700
+`/var/tmp/koi-browser-native.XXXXXXXX` captures the exact prior daemon/package,
+state archive, policy digests and private firewall originals. Verify its checksum
+set and waiting timer before a serial public install. Rollback retains a newly
+created browser grant repository privately, removes only the exact run-owned
+CertMesh fault drop-in, restores any marked firewall change and the prior deployment.
+Accept/disarm under `restore.lock` only after settling the intended deployment,
+revoking test grants, removing workload/fault/rule residue and checking state/policy.
+Never apply an old checkpoint to a changed baseline. Full rollback is not a pass
+unless actually exercised; retain prior packages for recovery and remove executable
+helpers/transient units after acceptance.
