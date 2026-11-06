@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
     branches: [main, dev]
   pull_request:
@@ -16,7 +17,30 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Change scope
+    runs-on: ubuntu-latest
+    outputs:
+      product: ${{ steps.scope.outputs.product }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Check scope selection
+        run: node --test scripts/ci-scope.test.mjs
+      - name: Select affected checks
+        id: scope
+        env:
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          CI_FORCE_FULL: ${{ github.event_name == 'workflow_dispatch' }}
+        run: node scripts/ci-scope.mjs
+
   test:
+    needs: changes
+    if: ${{ always() && !cancelled() && needs.changes.outputs.product != 'false' }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -38,6 +62,8 @@ jobs:
         run: cargo test --workspace --locked
 
   contracts:
+    needs: changes
+    if: ${{ always() && !cancelled() && needs.changes.outputs.product != 'false' }}
     name: Client, release, and frontend contracts
     runs-on: ubuntu-latest
     steps:
@@ -81,6 +107,8 @@ jobs:
         run: cargo test --locked -p koi-dashboard
 
   architecture:
+    needs: changes
+    if: ${{ always() && !cancelled() && needs.changes.outputs.product != 'false' }}
     name: Architecture boundaries
     runs-on: ubuntu-latest
     steps:
@@ -96,6 +124,8 @@ jobs:
         run: cargo test --locked -p koi-common --test architecture
 
   windows-gnu-check:
+    needs: changes
+    if: ${{ always() && !cancelled() && needs.changes.outputs.product != 'false' }}
     name: Windows GNU locked cross-check
     runs-on: ubuntu-latest
     steps:
@@ -118,6 +148,8 @@ jobs:
         run: cargo check --workspace --all-targets --locked --target x86_64-pc-windows-gnu
 
   clippy:
+    needs: changes
+    if: ${{ always() && !cancelled() && needs.changes.outputs.product != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -132,6 +164,8 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   lean:
+    needs: changes
+    if: ${{ always() && !cancelled() && needs.changes.outputs.product != 'false' }}
     name: lean-embedded (optional backends off)
     runs-on: ubuntu-latest
     steps:
@@ -161,6 +195,8 @@ jobs:
         run: bash scripts/check-publish-list.sh
 
   fmt:
+    needs: changes
+    if: ${{ always() && !cancelled() && needs.changes.outputs.product != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -173,6 +209,8 @@ jobs:
         run: cargo fmt --all --check
 
   msrv:
+    needs: changes
+    if: ${{ always() && !cancelled() && needs.changes.outputs.product != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -182,6 +220,8 @@ jobs:
         run: cargo check --workspace --all-targets --locked
 
   audit:
+    needs: changes
+    if: ${{ always() && !cancelled() && needs.changes.outputs.product != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -215,7 +255,8 @@ jobs:
     # rust-cache, slower on a cold cache) never runs on a tree that does not compile or
     # lint — a compile error then surfaces with a clearer message there first. To shave
     # the cross-build entirely, the driver honours KOI_BIN=<prebuilt linux koi>.
-    needs: [test, clippy]
+    needs: [changes, test, clippy]
+    if: ${{ !cancelled() && needs.changes.outputs.product != 'false' && needs.test.result == 'success' && needs.clippy.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

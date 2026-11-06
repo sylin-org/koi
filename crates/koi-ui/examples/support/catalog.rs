@@ -70,9 +70,11 @@ pub fn fixture() -> CatalogSnapshot {
         epoch: "invented-offline-fixture".into(),
         revision: 12,
         generated_at: "2026-09-12T12:00:00Z".parse().unwrap(),
+        local_device_id: None,
         devices: vec![],
         services: vec![],
         local_candidates: vec![],
+        discovery: DiscoveryAvailability::Available,
     };
     for (index, name) in host_names.iter().enumerate() {
         catalog.devices.push(Device {

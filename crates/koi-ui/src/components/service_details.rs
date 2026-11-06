@@ -1,6 +1,6 @@
 use crate::catalog_view::{
-    check_kind_label, check_result_label, condition_label, display_name, endpoint_label,
-    endpoint_open_url, host_name, observer_label,
+    check_kind_label, check_result_label, condition_label, display_name, endpoint_label, host_name,
+    observer_label, BrowserDestination,
 };
 use crate::{EndpointActions, Links, UiState};
 use koi_common::service::{
@@ -98,7 +98,7 @@ pub fn render(
                                         @if can_open || can_copy {
                                             div.endpoint-actions {
                                                 @if can_open {
-                                                    @if let Some(target) = endpoint_open_url(endpoint) {
+                                                    @if let Some(target) = BrowserDestination::for_service(service, &endpoint.id).map(|d| d.as_str().to_owned()) {
                                                         @if endpoint_actions == EndpointActions::Native {
                                                             button.button.endpoint-open type="button" data-operator-action="open_url" data-operator-url=(target)
                                                                 aria-label=(format!("Open {address}")) { "Open" }

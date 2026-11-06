@@ -556,3 +556,10 @@ nav .tab { display: inline-flex; align-items: center; min-height: 44px; height: 
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
   .tcg:hover { transform: none !important; }
 }
+
+/* Automatic refresh: a temporarily unreadable catalog keeps its last view, marked stale. */
+[data-stale] .list-footer::before, [data-stale] .snapshot-meta::before { content: "Stale evidence · "; }
+a[aria-disabled="true"] { cursor: not-allowed; pointer-events: none; color: var(--ui-quiet); }
+/* Discovery health is reported by the catalog, independently of the rows. */
+.discovery-status { margin: 0 0 8px; color: var(--ui-quiet); font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; }
+.discovery-status[data-discovery="partial"], .discovery-status[data-discovery="unavailable"], .discovery-status[data-discovery="unknown"] { color: var(--ui-warning); }

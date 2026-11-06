@@ -153,6 +153,37 @@ koi mdns announce "My App" http 8080 --ip 192.168.1.42
 
 ---
 
+## Services lists a service, but Open says its name cannot be resolved
+
+**Symptom.** Services lists a service, but the browser reports `ERR_NAME_NOT_RESOLVED`
+when opening its advertised `.local` address.
+
+**Cause.** Discovery and application hostname lookup use separate paths. Receiving
+an mDNS announcement does not establish that the browser's resolver can resolve
+the destination.
+
+**Fix.** Check the exact hostname from Open. On Linux with Avahi, compare these
+commands, replacing `service.local` with that hostname:
+
+```sh
+getent ahosts service.local
+avahi-resolve -n service.local
+```
+
+If Avahi succeeds while `getent` fails, inspect your distribution's NSS/resolver
+integration. An installed `nss-mdns` module must also participate in the `hosts:`
+lookup order in `/etc/nsswitch.conf`; an earlier resolver can otherwise end the
+lookup. Follow your distribution's configuration and the
+[upstream activation guidance](https://github.com/avahi/nss-mdns#activation),
+preserving existing resolver requirements. Verify ordinary unicast names as well
+as the advertised `.local` destination after a change. If both lookups fail,
+check the announcement and multicast path described above.
+
+Retry the service's Open action after correcting resolution. A successful request
+to an IP address alone does not verify the advertised hostname.
+
+---
+
 ## HTTP API returns `401 Unauthorized`
 
 **Symptom.** A `POST`/`PUT`/`DELETE` to the API comes back with
@@ -335,6 +366,17 @@ unlocked, retry the join. Full details are in
 > certificate instead of the mesh cert often means the CA is locked too — unlocking it
 > lets the member cert get issued, and the proxy's watcher picks it up on the next
 > handshake.
+
+---
+
+## Where does a service run?
+
+In **Services**, the Host column, the Host filter and the details pane's
+**At a glance** Host all come from the catalog's declared device identity for that
+service. **This Koi host** identifies the observing computer. A discovered Koi
+installation is an advertisement, not proof of enrollment, permission or
+reachability. Similar names or uncertain host correlation remain separate evidence
+instead of being silently merged.
 
 ---
 

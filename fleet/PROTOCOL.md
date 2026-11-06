@@ -37,6 +37,16 @@ the required checks, including locked builds/tests and lint gates specified by t
 repository. A source-only task does not require installing Koi or running unrelated
 native workbooks. Debian's capacity restriction applies before assigning any check.
 
+Owner verification policy, 2026-09-06 (retained): use focused local checks while
+developing, one complete product CI result per coherent milestone, and native
+installation only for an affected platform behavior or user journey.
+Documentation-only changes need no product build or deployment; CI's Change scope
+job (`scripts/ci-scope.mjs`) lets only known documentation paths skip product jobs.
+Record a claim in the launch ledger before editing; a sole source owner publishes
+it with the implementation commit, and a separate claim-only push is needed only
+when another writer or host must act on it. Exact identity, restoration guards for
+real mutations, release gates and truthful evidence remain binding.
+
 ## Native execution
 
 Keep one installed Koi per host. Capture the exact binary, configuration, state,

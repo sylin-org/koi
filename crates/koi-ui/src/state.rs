@@ -256,8 +256,12 @@ impl UiState {
     /// Search and order operate only on the captured authoritative snapshot.
     /// The stable identity tie-breaker avoids a discovery-order-dependent list.
     pub fn services<'a>(&self, catalog: &'a CatalogSnapshot) -> Vec<&'a Service> {
-        use crate::catalog_view::{condition_label, display_name, endpoint_label, host_name};
-        let needle = self.query.trim().to_lowercase();
+        use crate::catalog_view::{condition_label, display_name, host_name};
+        let words: Vec<_> = self
+            .query
+            .split_whitespace()
+            .map(str::to_lowercase)
+            .collect();
         let mut services: Vec<_> = catalog
             .services
             .iter()
@@ -266,13 +270,7 @@ impl UiState {
                     .as_ref()
                     .is_none_or(|host| host == &service.device_id)
                     && self.filter.matches(service.condition)
-                    && (needle.is_empty()
-                        || display_name(service).to_lowercase().contains(&needle)
-                        || service.display_name.to_lowercase().contains(&needle)
-                        || host_name(catalog, service).to_lowercase().contains(&needle)
-                        || service.endpoints.iter().any(|endpoint| {
-                            endpoint_label(endpoint).to_lowercase().contains(&needle)
-                        }))
+                    && matches_search(catalog, service, &words)
             })
             .collect();
         services.sort_by_cached_key(|service| {
@@ -288,9 +286,133 @@ impl UiState {
     }
 }
 
+/// Every query word must appear in at least one searchable field. No words
+/// matches everything; word order is irrelevant.
+fn matches_search(catalog: &CatalogSnapshot, service: &Service, words: &[String]) -> bool {
+    use crate::catalog_view::{category, display_name, endpoint_label, host_name};
+    if words.is_empty() {
+        return true;
+    }
+    let mut fields = vec![
+        display_name(service).to_lowercase(),
+        service.display_name.to_lowercase(),
+        category(&service.kind).to_lowercase(),
+        host_name(catalog, service).to_lowercase(),
+    ];
+    if let Some(device) = catalog
+        .devices
+        .iter()
+        .find(|device| device.id == service.device_id)
+    {
+        fields.extend(device.names.iter().map(|name| name.value.to_lowercase()));
+        fields.extend(
+            device
+                .addresses
+                .iter()
+                .map(|address| address.address.to_lowercase()),
+        );
+    }
+    if let Some(name) = service
+        .last_known
+        .as_ref()
+        .and_then(|known| known.device_name.as_deref())
+    {
+        fields.push(name.to_lowercase());
+    }
+    fields.extend(
+        service
+            .endpoints
+            .iter()
+            .map(|endpoint| endpoint_label(endpoint).to_lowercase()),
+    );
+    words
+        .iter()
+        .all(|word| fields.iter().any(|field| field.contains(word.as_str())))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use koi_common::service::{
+        AddressEvidence, Device, DeviceCondition, IdentityConfidence, KoiPresence, MeshIdentity,
+        MeshIdentityState, NameEvidence, ServiceKind, CATALOG_SCHEMA,
+    };
+
+    fn searchable_catalog() -> CatalogSnapshot {
+        let service = |id: &str, name: &str, kind: ServiceKind, device: &str| Service {
+            schema: CATALOG_SCHEMA,
+            id: ServiceId::new(id).unwrap(),
+            device_id: DeviceId::new(device).unwrap(),
+            display_name: name.into(),
+            alias: None,
+            kind,
+            condition: ServiceCondition::Found,
+            endpoints: vec![],
+            observations: vec![],
+            checks: vec![],
+            available_actions: vec![],
+            favorite: false,
+            local_only: false,
+            managed: false,
+            active_operations: vec![],
+            identity_confidence: IdentityConfidence::Observed,
+            ambiguity: None,
+            last_known: None,
+        };
+        let device = |id: &str, name: &str, address: &str| Device {
+            schema: CATALOG_SCHEMA,
+            id: DeviceId::new(id).unwrap(),
+            names: vec![NameEvidence {
+                value: name.into(),
+                observation_ids: vec![],
+            }],
+            addresses: vec![AddressEvidence {
+                address: address.into(),
+                network_scope_id: None,
+                observation_ids: vec![],
+            }],
+            koi_presence: KoiPresence::Absent,
+            mesh_identity: MeshIdentity {
+                state: MeshIdentityState::Unknown,
+                observation_ids: vec![],
+            },
+            condition: DeviceCondition::Present,
+        };
+        CatalogSnapshot {
+            devices: vec![
+                device("office", "Office Mac", "192.0.2.44"),
+                device("garage", "Garage NAS", "192.0.2.80"),
+            ],
+            services: vec![
+                service("notes", "Notes", ServiceKind::Web, "office"),
+                service("ledger", "Ledger", ServiceKind::Api, "office"),
+                service("photos", "Photos", ServiceKind::Web, "garage"),
+            ],
+            ..CatalogSnapshot::default()
+        }
+    }
+
+    fn found(catalog: &CatalogSnapshot, query: &str) -> Vec<String> {
+        UiState {
+            query: query.into(),
+            ..UiState::default()
+        }
+        .services(catalog)
+        .into_iter()
+        .map(|service| service.id.as_str().to_owned())
+        .collect()
+    }
+
+    #[test]
+    fn every_search_word_must_match_some_service_device_or_endpoint_field() {
+        let catalog = searchable_catalog();
+        assert_eq!(found(&catalog, "office web"), ["notes"]);
+        assert_eq!(found(&catalog, "  WEB   office "), ["notes"]);
+        assert_eq!(found(&catalog, "192.0.2.80"), ["photos"]);
+        assert_eq!(found(&catalog, "api 192.0.2.44"), ["ledger"]);
+        assert!(found(&catalog, "office missing").is_empty());
+        assert_eq!(found(&catalog, "   ").len(), 3);
+    }
     #[test]
     fn view_queries_are_bounded_strict_and_round_trip_opaque_ids() {
         let state = UiState {

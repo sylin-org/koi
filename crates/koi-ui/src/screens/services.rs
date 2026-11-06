@@ -1,6 +1,8 @@
 use crate::catalog_view::{condition_label, display_name, endpoint_label, host_name};
-use crate::{components::service_details, Links, ServiceFilter, ServiceSort, UiState, View};
-use koi_common::service::{CatalogSnapshot, Service};
+use crate::{
+    components::service_details, Destination, Links, ServiceFilter, ServiceSort, UiState, View,
+};
+use koi_common::service::{CatalogSnapshot, DiscoveryAvailability, Service};
 use maud::{html, Markup};
 
 pub fn render(view: View<'_>, state: &UiState, visible: &[&Service], links: Links<'_>) -> Markup {
@@ -23,12 +25,18 @@ pub fn render(view: View<'_>, state: &UiState, visible: &[&Service], links: Link
                     div.empty-state role="status" { h2 { "Cannot read the local catalog" } p { "Check that Koi is running, then refresh to try again." } }
                 },
                 View::Snapshot(catalog) => {
+                    (discovery_status(catalog.discovery, state))
                     (filters(catalog, state))
                     div class={ "catalog-layout" @if state.selected.is_some() { " has-details" } } {
                         div.catalog-list {
                             @if catalog.services.is_empty() {
                                 div.empty-state role="status" {
-                                    h2 { "No services in this snapshot" }
+                                    @if catalog.discovery == DiscoveryAvailability::Available {
+                                        h2 { "No services found yet" }
+                                    } @else {
+                                        h2 { "No services in this snapshot" }
+                                        p { "This is not proof that the network is empty; see the discovery status above." }
+                                    }
                                     p { "Start an application with Koi container labels, or let Koi discover services on your network. Refresh to check again." }
                                 }
                             } @else if visible.is_empty() {
@@ -64,6 +72,43 @@ pub fn render(view: View<'_>, state: &UiState, visible: &[&Service], links: Link
                         }
                     }
                 },
+            }
+        }
+    }
+}
+
+/// Discovery health is reported by the catalog, never inferred from row counts
+/// or from an empty search. The transport status line announces failures, so
+/// this sentence is not a live region.
+fn discovery_status(discovery: DiscoveryAvailability, state: &UiState) -> Markup {
+    let (key, copy) = match discovery {
+        DiscoveryAvailability::Unknown => (
+            "unknown",
+            "Discovery status not reported. An empty list is not proof that the network is empty.",
+        ),
+        DiscoveryAvailability::Available => (
+            "available",
+            "Discovery is observing the local network. A listed service is not proof that it is reachable.",
+        ),
+        DiscoveryAvailability::Partial => (
+            "partial",
+            "Discovery is partially unavailable; some services may be missing.",
+        ),
+        DiscoveryAvailability::Unavailable => (
+            "unavailable",
+            "Discovery is unavailable; services from saved or other sources may remain.",
+        ),
+    };
+    let inspect = matches!(
+        discovery,
+        DiscoveryAvailability::Partial | DiscoveryAvailability::Unavailable
+    );
+    html! {
+        p #discovery-status .discovery-status data-discovery=(key) {
+            (copy)
+            @if inspect {
+                " "
+                a href=(state.destination_href(Destination::Mdns)) data-ui-link data-ui-tab { "Inspect mDNS sources" }
             }
         }
     }

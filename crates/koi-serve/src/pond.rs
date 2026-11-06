@@ -1287,9 +1287,13 @@ fn public_catalog(
         epoch: "pond-public".to_string(),
         revision: snapshot.revision,
         generated_at: snapshot.generated_at,
+        // Observer identity stays behind the authenticated adapter.
+        local_device_id: None,
         devices,
         services,
         local_candidates: Vec::new(),
+        // Coarse, allowlisted health keeps Pond's empty state truthful.
+        discovery: snapshot.discovery,
     }
 }
 
@@ -1331,6 +1335,22 @@ mod browser_projection_tests {
         assert!(!encoded.contains("private-unresolved-instance"));
         assert_eq!(value["total_instances"], 0);
         assert_eq!(value["total_types"], 0);
+    }
+
+    #[test]
+    fn public_catalog_strips_observer_identity_and_keeps_discovery_health() {
+        use koi_common::service::{CatalogSnapshot, DeviceId, DiscoveryAvailability};
+        let snapshot = CatalogSnapshot {
+            local_device_id: Some(DeviceId::new("private_observer").unwrap()),
+            discovery: DiscoveryAvailability::Partial,
+            ..CatalogSnapshot::default()
+        };
+        let public = super::public_catalog(&snapshot);
+        assert_eq!(public.local_device_id, None);
+        assert_eq!(public.discovery, DiscoveryAvailability::Partial);
+        assert!(!serde_json::to_string(&public)
+            .unwrap()
+            .contains("private_observer"));
     }
 }
 

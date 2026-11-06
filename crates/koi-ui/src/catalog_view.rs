@@ -1,13 +1,17 @@
 //! Presentation labels for the authoritative service catalog.
 //!
-//! These helpers format supplied facts. They do not infer current state, action
-//! eligibility, reachability, trust, or a preferred endpoint.
+//! These helpers format supplied facts. They do not infer current state,
+//! reachability, trust, or a preferred endpoint. `BrowserDestination` only
+//! narrows the catalog's Open grant; it is the one Open validator for every
+//! adapter and never widens action eligibility.
 
 use std::net::Ipv6Addr;
 
 use koi_common::service::{
-    CatalogSnapshot, CheckKind, CheckResult, Endpoint, Service, ServiceCondition,
+    AvailableAction, CatalogSnapshot, CheckKind, CheckResult, Endpoint, EndpointId,
+    NetworkClassification, Service, ServiceCondition, ServiceKind,
 };
+use url::{Host, Url};
 
 pub fn display_name(service: &Service) -> &str {
     service.alias.as_deref().unwrap_or(&service.display_name)
@@ -57,44 +61,127 @@ pub fn endpoint_label(endpoint: &Endpoint) -> String {
     label
 }
 
-/// Return a browser navigation target only after validating the complete,
-/// renderer-built address. Catalog action eligibility remains a separate gate.
-pub fn endpoint_open_url(endpoint: &Endpoint) -> Option<String> {
-    if !endpoint.browser_usable
-        || !matches!(endpoint.scheme.as_str(), "http" | "https")
-        || endpoint.port == 0
-    {
-        return None;
-    }
-    let candidate = endpoint_label(endpoint);
-    browser_open_url(&candidate)
-}
-
 /// Validate an exact browser target for adapters that dispatch outside HTML.
 /// The returned value is URL-parser canonical output and contains no credentials.
 pub fn browser_open_url(candidate: &str) -> Option<String> {
-    if candidate != candidate.trim()
-        || candidate.chars().any(char::is_control)
-        || candidate.contains('\\')
-    {
-        return None;
+    BrowserDestination::parse(candidate).map(|destination| destination.as_str().to_owned())
+}
+
+pub fn category(kind: &ServiceKind) -> &str {
+    match kind {
+        ServiceKind::Web => "Web",
+        ServiceKind::Api => "API",
+        ServiceKind::Printer => "Printer",
+        ServiceKind::Database => "Database",
+        ServiceKind::Runtime => "Runtime",
+        ServiceKind::Proxy => "Proxy",
+        ServiceKind::Other(value) => value,
     }
-    let authority = candidate
-        .strip_prefix("http://")
-        .or_else(|| candidate.strip_prefix("https://"))?;
-    if authority.is_empty() || authority.starts_with('/') {
-        return None;
+}
+
+/// Parsed HTTP(S), with neither URL credentials nor ambiguous authority syntax.
+/// This proves URL shape only, never reachability, server identity or TLS trust.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowserDestination(Url);
+
+impl BrowserDestination {
+    pub fn parse(value: &str) -> Option<Self> {
+        if value
+            .chars()
+            .any(|c| c.is_control() || c.is_whitespace() || c == '\\')
+        {
+            return None;
+        }
+        // Url::parse intentionally repairs forms such as http:host. At an Open
+        // boundary require an explicit authority, not a parser's repair guess.
+        let (scheme, rest) = value.split_once("://")?;
+        if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+            return None;
+        }
+        let authority = rest.split(['/', '?', '#']).next()?;
+        if authority.is_empty() || authority.contains('@') {
+            return None;
+        }
+        let url = Url::parse(value).ok()?;
+        if !url.username().is_empty() || url.password().is_some() || url.port() == Some(0) {
+            return None;
+        }
+        match url.host()? {
+            Host::Ipv4(ip) if ip.is_unspecified() => return None,
+            Host::Ipv6(ip) if ip.is_unspecified() => return None,
+            _ => {}
+        }
+        Some(Self(url))
     }
-    let parsed = url::Url::parse(candidate).ok()?;
-    if !matches!(parsed.scheme(), "http" | "https")
-        || parsed.host_str().is_none()
-        || !parsed.username().is_empty()
-        || parsed.password().is_some()
-        || parsed.port() == Some(0)
-    {
-        return None;
+
+    /// Narrow the catalog's permission; never infer HTTP from a port, name or TXT.
+    pub fn for_service(service: &Service, endpoint_id: &EndpointId) -> Option<Self> {
+        if !service.available_actions.contains(&AvailableAction::Open)
+            || service.kind == ServiceKind::Api
+            || matches!(
+                service.condition,
+                ServiceCondition::Absent | ServiceCondition::Stale | ServiceCondition::Ambiguous
+            )
+        {
+            return None;
+        }
+        let endpoint = service
+            .endpoints
+            .iter()
+            .find(|endpoint| endpoint.id == *endpoint_id)?;
+        if !endpoint.browser_usable
+            || !matches!(endpoint.scheme.as_str(), "http" | "https")
+            || endpoint.port == 0
+            || endpoint.network_scope.as_ref().is_some_and(|scope| {
+                scope.classification == NetworkClassification::LinkLocal
+                    && scope.interface.is_none()
+            })
+        {
+            return None;
+        }
+        // Hosts arrive as evidence, not URL authority strings. Reject userinfo,
+        // appended paths/ports, escapes and scoped IPv6 unsupported by browsers.
+        let host = &endpoint.host;
+        if host.is_empty()
+            || host
+                .chars()
+                .any(|c| c.is_control() || c.is_whitespace() || "@/?#\\%".contains(c))
+        {
+            return None;
+        }
+        let host = if let Ok(ip) = host.parse::<std::net::Ipv6Addr>() {
+            format!("[{ip}]")
+        } else {
+            host.clone()
+        };
+        let host = Host::parse(&host).ok()?;
+        let mut destination = Self::parse(&format!(
+            "{}://{}:{}/",
+            endpoint.scheme, host, endpoint.port
+        ))?;
+        if let Some(path) = endpoint.path.as_deref().filter(|path| !path.is_empty()) {
+            if !path.starts_with('/')
+                || path.starts_with("//")
+                || path.chars().any(|c| c.is_control() || c == '\\')
+            {
+                return None;
+            }
+            let (path_query, fragment) = path
+                .split_once('#')
+                .map_or((path, None), |(p, f)| (p, Some(f)));
+            let (path, query) = path_query
+                .split_once('?')
+                .map_or((path_query, None), |(p, q)| (p, Some(q)));
+            destination.0.set_path(path);
+            destination.0.set_query(query);
+            destination.0.set_fragment(fragment);
+        }
+        Some(destination)
     }
-    Some(parsed.into())
+
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
 }
 
 pub fn condition_label(condition: ServiceCondition) -> &'static str {
@@ -143,9 +230,9 @@ pub fn observer_label(observer: &str) -> &str {
 mod tests {
     use super::*;
     use koi_common::service::{
-        Device, DeviceCondition, DeviceId, EndpointId, EndpointOwner, IdentityConfidence,
-        KoiPresence, LastKnownService, MeshIdentity, MeshIdentityState, NameEvidence, ServiceId,
-        ServiceKind, TransportEncryption, CATALOG_SCHEMA,
+        AddressFamily, Device, DeviceCondition, DeviceId, EndpointOwner, IdentityConfidence,
+        KoiPresence, LastKnownService, MeshIdentity, MeshIdentityState, NameEvidence, NetworkScope,
+        NetworkScopeId, ServiceId, TransportEncryption, CATALOG_SCHEMA,
     };
 
     fn service() -> Service {
@@ -306,9 +393,38 @@ mod tests {
             " http://example.invalid/",
             "http://example.invalid/\r\ncommand",
             "http:///missing-host",
+            "http://0.0.0.0:8080/",
+            "http://[::]:80/",
         ] {
             assert_eq!(browser_open_url(candidate), None, "accepted {candidate:?}");
         }
+    }
+
+    #[test]
+    fn open_refuses_link_local_endpoints_without_interface_scope() {
+        let scope = |interface: Option<&str>| NetworkScope {
+            id: NetworkScopeId::new("scope").unwrap(),
+            family: AddressFamily::Ipv4,
+            interface: interface.map(str::to_owned),
+            local_address: None,
+            prefix_len: None,
+            route_source: "test".into(),
+            classification: NetworkClassification::LinkLocal,
+            provider_scope: None,
+        };
+        let mut endpoint = endpoint("http", "169.254.10.20", 8080, Some("/"));
+        endpoint.browser_usable = true;
+        endpoint.network_scope = Some(scope(None));
+        let mut service = service();
+        service.available_actions = vec![AvailableAction::Open];
+        service.endpoints = vec![endpoint];
+        let id = EndpointId::new("endpoint").unwrap();
+        assert_eq!(BrowserDestination::for_service(&service, &id), None);
+        service.endpoints[0].network_scope = Some(scope(Some("eth0")));
+        assert_eq!(
+            BrowserDestination::for_service(&service, &id).map(|d| d.as_str().to_owned()),
+            Some("http://169.254.10.20:8080/".into())
+        );
     }
 
     #[test]

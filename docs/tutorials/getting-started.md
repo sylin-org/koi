@@ -88,8 +88,8 @@ koi --standalone mdns discover _http._tcp
 ```
 
 This reveals matching announcements, not every application, tested endpoint or
-trusted identity on the LAN. `koi launch` opens the local web interface
-when available; its capabilities vary by artifact.
+trusted identity on the LAN. `koi launch` opens Koi's interface;
+[Find and open a service](home.md) covers search, details and Open in Services.
 
 ## Add names and trust after access works
 

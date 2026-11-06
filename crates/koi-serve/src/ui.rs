@@ -1052,6 +1052,39 @@ mod tests {
         }
     }
 
+    /// Browser invitations, WebCrypto sessions and the private HTTPS listener are
+    /// parked (34e0d8c). Only /ui and /ui/transport.js, the ADR-047 DAT adapter,
+    /// remain browser routes.
+    #[tokio::test]
+    async fn parked_browser_access_routes_are_absent_even_with_operator_authorization() {
+        for path in [
+            "/ui/refresh.js",
+            "/ui/browser-access.js",
+            "/ui/connect",
+            "/ui/challenge",
+            "/ui/session/shell",
+            "/ui/disconnect",
+            "/v1/browser-access",
+            "/v1/browser-access/invitations",
+            "/v1/browser-access/sessions/old-session",
+        ] {
+            for method in ["GET", "POST", "PUT", "DELETE"] {
+                let reply = app()
+                    .oneshot(
+                        Request::builder()
+                            .uri(path)
+                            .method(method)
+                            .header("x-koi-token", "secret-token")
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(reply.status(), StatusCode::NOT_FOUND, "{method} {path}");
+            }
+        }
+    }
+
     #[tokio::test]
     async fn encoded_and_noncanonical_paths_cannot_bypass_authentication() {
         for path in [

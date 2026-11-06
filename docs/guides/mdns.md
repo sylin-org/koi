@@ -115,27 +115,15 @@ browse generation removes its source-scoped projection.
 
 ## Network browser
 
-`koi mdns discover` is a CLI tool: you ask a question, you get an answer (a one-shot scan or a stream you read until you stop it). The **network browser** is the opposite end of the same idea - a live, always-current HTML page that explores _every_ service type on the LAN at once, grouped by type, updating in place as services come and go.
+`koi mdns discover` is a CLI tool: you ask a question, you get an answer (a one-shot scan or a stream you read until you stop it). The **network browser** is the opposite end of the same idea - it explores _every_ service type on the LAN at once, grouped by type, updating in place as services come and go.
 
-Open it in your default browser:
+The **mDNS** destination of Koi's interface (`koi launch`, then mDNS; `/mdns-browser` redirects to `/ui?tab=mdns`) shows every reported type, resolved and unresolved instances, addresses, ports, full TXT and per-source evidence, refreshing every five seconds while visible, with requery, browse and resolve controls. The same data is available from the DAT-protected `/v1/mdns/browser/*` routes.
 
-```
-koi launch
-```
-
-This opens the dashboard at `http://localhost:5641`; the mDNS card has a **Browse network →** link to the browser page. You can also navigate straight to it:
-
-```
-GET /mdns-browser
-```
-
-A single-page app that renders the whole LAN: each discovered service type, its instances, their addresses, ports, and TXT records, refreshing as the network changes.
-
-Well-known service types are shown with a friendly label rather than the raw DNS-SD string: `_hap._tcp` reads "HomeKit", `_matterc._udp` "Matter (commissioning)", `_esphomelib._tcp` "ESPHome", `_googlecast._tcp` "Google Cast", and so on (the raw type stays available as a tooltip). Unrecognized types render as-is. This makes the browser a cross-platform way to see and debug smart-home / IoT commissioning (HomeKit, Matter, ESPHome, Google Cast) on any OS — including Windows, where Avahi and Bonjour are awkward.
+Well-known service types are shown with a friendly label and description beside the raw DNS-SD string: `_hap._tcp` reads "HomeKit", `_matterc._udp` "Matter" (commissioning), `_esphomelib._tcp` "ESPHome", `_googlecast._tcp` "Google Cast", and so on. Unrecognized types are marked "Unclassified type". This makes the browser a cross-platform way to see and debug smart-home / IoT commissioning (HomeKit, Matter, ESPHome, Google Cast) on any OS — including Windows, where Avahi and Bonjour are awkward.
 
 ### Lazy by design
 
-The browser is backed by a **LAN-wide meta-browse** - a query across every service type, which is chatty multicast. The daemon does **not** run it on startup. It starts on the **first** browser request and idles itself out after **~300 seconds** of no requests. So a daemon nobody is watching does no LAN-wide browsing at all; the moment someone opens the page, discovery spins up; once they close it, it winds back down.
+The browser is backed by a **LAN-wide meta-browse** - a query across every service type, which is chatty multicast. The daemon does **not** run it on startup. It starts on the **first** mDNS-destination read or `/v1/mdns/browser` request and idles itself out after **~300 seconds** of no requests. So a daemon nobody is watching does no LAN-wide browsing at all; the moment someone opens the page, discovery spins up; once they close it, it winds back down.
 
 `koi status` reports the current state:
 
@@ -151,7 +139,7 @@ Koi <selected-version>
 
 ### Browser endpoints
 
-The page is driven by two endpoints (both `GET`, both touch the lazy meta-browse, so hitting either one is enough to start it):
+Two DAT-protected endpoints expose the same data (both `GET`, both touch the lazy meta-browse, so hitting either one is enough to start it):
 
 | Method | Path                        | Purpose                            |
 | ------ | --------------------------- | ---------------------------------- |

@@ -19,11 +19,20 @@
     window.KoiCardFoil?.arm(view);
   }
   const narrow = window.matchMedia('(max-width: 1099px)');
+  // Automatic refresh: re-read 5 s after a completed read, give each read a
+  // 10 s deadline and back off 1/2/4/8/15 s while the daemon is unreachable.
+  const REFRESH_INTERVAL = 5000;
+  const READ_DEADLINE = 10000;
+  const RETRY_CEILING = 15000;
   let token = '';
   let pending;
   let preferencePending;
   let mdnsPending;
-  let mdnsPoll;
+  let refreshTimer;
+  let reading = false;
+  let stopped = false;
+  let failures = 0;
+  let actionsPending = 0;
   let generation = 0;
   let preferenceGeneration = 0;
   let currentQuery = location.search.slice(1);
@@ -58,8 +67,69 @@
     }
   }
 
+  // An automatic read must not replace what the operator is typing. The mDNS
+  // inspector keeps its own drafts across refresh, so it keeps its cadence.
+  function editingInView() {
+    const outsideInspector = node => !node.closest('#mdns-inspector');
+    const active = document.activeElement;
+    if (active && view.contains(active) && active.matches('input,textarea,select') &&
+        outsideInspector(active)) return true;
+    return [...view.querySelectorAll('input,textarea,select')].filter(outsideInspector)
+      .some(field => field.tagName === 'SELECT'
+        ? selectionChanged(field)
+        : ['checkbox', 'radio'].includes(field.type)
+          ? field.checked !== field.defaultChecked
+          : field.value !== field.defaultValue);
+  }
+
+  // A single select without a declared default starts on its first option.
+  function selectionChanged(select) {
+    const options = [...(select.options ?? [])];
+    const declared = options.some(option => option.defaultSelected);
+    return options.some((option, index) => option.selected !==
+      (option.defaultSelected || (!declared && !select.multiple && index === 0)));
+  }
+
+  function scheduleRead(delay = REFRESH_INTERVAL) {
+    clearTimeout(refreshTimer);
+    refreshTimer = undefined;
+    if (!safe || !token || stopped || !view.children.length) return;
+    refreshTimer = setTimeout(() => {
+      refreshTimer = undefined;
+      if (reading) return; // The read in flight schedules its successor.
+      if (document.visibilityState === 'hidden' || window.KoiMdns?.isBusy() ||
+          actionsPending > 0 || editingInView()) scheduleRead();
+      else read(currentQuery, { automatic: true });
+    }, delay);
+  }
+
+  // Retained evidence stays readable, but an old Open permission is not reused.
+  function markStale() {
+    view.setAttribute('data-stale', 'true');
+    for (const link of view.querySelectorAll('a.endpoint-open')) {
+      link.removeAttribute('href');
+      link.setAttribute('aria-disabled', 'true');
+    }
+    for (const button of view.querySelectorAll('button[data-operator-action="open_url"]')) {
+      button.disabled = true;
+    }
+  }
+
+  // Repeating an unchanged sentence would make the status region chatter.
+  function announce(message) {
+    if (status.textContent !== message) status.textContent = message;
+  }
+
+  function detailKey(node) {
+    // KoiMdns restores its own disclosures; others are matched by identity.
+    if (node.dataset.mdnsDetail) return null;
+    return node.id || `${node.getAttribute('class') ?? ''}|${node.querySelector('summary')?.textContent ?? ''}`;
+  }
+
   async function read(query = currentQuery, intent = {}) {
     if (!safe || !token) return;
+    const automatic = intent.automatic === true;
+    if (!automatic) stopped = false; // A deliberate read resumes after a rejection.
     const active = document.activeElement;
     let focusKey = intent.focusKey || active?.closest('[data-focus-key]')?.dataset.focusKey;
     let selection = typeof active?.selectionStart === 'number'
@@ -72,16 +142,21 @@
       const region = view.querySelector(selector);
       return { selector, top: region?.scrollTop, left: region?.scrollLeft };
     });
-    clearTimeout(mdnsPoll);
+    clearTimeout(refreshTimer);
+    refreshTimer = undefined;
     pending?.abort();
     const controller = new AbortController();
     pending = controller;
     const current = ++generation;
-    const timeout = setTimeout(() => controller.abort(), 10000);
-    view.setAttribute('aria-busy', 'true');
-    status.textContent = 'Reading the local catalog…';
-    delete status.dataset.error;
-    refresh.disabled = true;
+    reading = true;
+    let next = null;
+    const timeout = setTimeout(() => controller.abort(), READ_DEADLINE);
+    if (!automatic) {
+      view.setAttribute('aria-busy', 'true');
+      status.textContent = 'Reading the local catalog…';
+      delete status.dataset.error;
+      refresh.disabled = true;
+    }
     try {
       // Only this fixed endpoint ever receives the token. Links supply a query,
       // never a fetch destination or a catalog to interpret in JavaScript.
@@ -108,7 +183,12 @@
         error.forgetToken = true;
         throw error;
       }
-      if (!reply.ok) throw new Error('catalog unavailable');
+      if (!reply.ok) {
+        const error = new Error('catalog unavailable');
+        // Other client errors are protocol rejections; retrying cannot help.
+        error.rejected = reply.status >= 400 && reply.status < 500 && ![408, 429].includes(reply.status);
+        throw error;
+      }
       if (!reply.headers.get('content-type')?.startsWith('text/html')) {
         const error = new Error('unexpected catalog response');
         error.forgetToken = true;
@@ -122,8 +202,11 @@
       // A background/refresh request may be in flight while the operator keeps
       // typing, tabs elsewhere, or scrolls. Sample that latest interaction before
       // replacement; only explicit navigation may retain its requested focus.
+      let sessionFocus = null;
       if (!intent.focus && !intent.focusKey) {
         const latest = document.activeElement;
+        // Session controls move with the view; moving them must not drop focus.
+        if (latest && sessionControls.contains(latest)) sessionFocus = latest;
         focusKey = latest?.closest('[data-focus-key]')?.dataset.focusKey;
         selection = typeof latest?.selectionStart === 'number'
           ? [latest.selectionStart, latest.selectionEnd] : null;
@@ -133,9 +216,18 @@
           return { selector, top: region?.scrollTop, left: region?.scrollLeft };
         });
       }
+      const opened = automatic
+        ? new Set([...view.querySelectorAll('details[open]')].map(detailKey).filter(Boolean))
+        : new Set();
+      const recovered = view.hasAttribute('data-stale');
       window.KoiMdns?.beforeRefresh();
       replaceView(...rendered.body.childNodes);
       window.KoiMdns?.afterRefresh();
+      for (const detail of view.querySelectorAll('details')) {
+        if (opened.has(detailKey(detail))) detail.open = true;
+      }
+      view.removeAttribute('data-stale');
+      failures = 0;
       if (rendered.title) document.title = rendered.title;
       history.replaceState(null, '', '/ui' + (currentQuery ? `?${currentQuery}` : ''));
       form.hidden = true;
@@ -160,7 +252,7 @@
       } else if (intent.focus === 'heading') {
         target = view.querySelector('[data-ui-heading]');
       } else {
-        target = findFocus(focusKey);
+        target = findFocus(focusKey) || (sessionFocus?.isConnected ? sessionFocus : null);
         if (!target && (focusKey || intent.focus === 'origin' || intent.focus === 'dialog')) {
           target = view.querySelector('[data-ui-form] input[name="q"]') || view.querySelector('[data-ui-heading]');
         }
@@ -183,9 +275,15 @@
           if (left !== undefined) region.scrollLeft = left;
         }
       }
-      status.textContent = 'View updated. Refresh to read changes.';
+      // A quiet automatic read keeps action feedback such as a copy failure;
+      // it replaces the status only when it ends a stale period.
+      if (!automatic || recovered) {
+        delete status.dataset.error;
+        announce('Updates automatically every five seconds.');
+      }
       const live = view.querySelector('[data-mdns-live-status]');
       if (live) live.textContent = 'Live observations refresh every five seconds while this view is visible.';
+      next = REFRESH_INTERVAL;
     } catch (error) {
       if (current !== generation) return;
       status.dataset.error = 'true';
@@ -193,8 +291,11 @@
       if (live) live.textContent = 'Live refresh failed. These are the last observations; refresh to reconnect.';
       if (error.forgetToken) {
         token = '';
+        failures = 0;
+        clearTimeout(refreshTimer);
         mdnsPending?.abort();
         window.KoiMdns?.reset?.();
+        view.removeAttribute('data-stale');
         replaceView();
         form.hidden = false;
         refresh.hidden = true;
@@ -205,27 +306,30 @@
         form.hidden = true;
         refresh.hidden = false;
         forget.hidden = false;
-        status.textContent = view.children.length
-          ? 'The catalog is temporarily unavailable. The last view remains visible; refresh to reconnect.'
-          : 'The catalog is temporarily unavailable. Refresh to reconnect or forget this token.';
+        if (!view.children.length) {
+          status.textContent = 'The catalog is temporarily unavailable. Refresh to reconnect or forget this token.';
+        } else if (error.rejected) {
+          markStale();
+          status.textContent = 'Koi did not accept this catalog request. The last view is marked stale and Open is disabled; refresh to retry.';
+        } else {
+          markStale();
+          next = Math.min(RETRY_CEILING, 1000 * 2 ** Math.min(failures++, 4));
+          status.textContent = `The catalog is temporarily unavailable. The last view is marked stale and Open is disabled; retrying in ${next / 1000} s.`;
+        }
       }
     } finally {
       clearTimeout(timeout);
       if (current === generation) {
+        reading = false;
         refresh.disabled = false;
         view.removeAttribute('aria-busy');
-        scheduleMdnsRead();
+        // Authorization loss, a rejected request or an unreadable first view
+        // stop automatic reads until the operator deliberately reads again.
+        stopped = next === null;
+        if (stopped) clearTimeout(refreshTimer);
+        else scheduleRead(next);
       }
     }
-  }
-
-  function scheduleMdnsRead() {
-    clearTimeout(mdnsPoll);
-    if (!token || !view.querySelector('#mdns-inspector')) return;
-    mdnsPoll = setTimeout(() => {
-      if (document.visibilityState === 'hidden' || window.KoiMdns?.isBusy()) scheduleMdnsRead();
-      else read(currentQuery);
-    }, 5000);
   }
 
   function follow(link) {
@@ -257,6 +361,7 @@
     preferencePending = controller;
     const current = ++preferenceGeneration;
     button.disabled = true;
+    actionsPending++;
     delete status.dataset.error;
     status.textContent = change.working;
     const request = async (path, options = {}) => fetch(path, {
@@ -305,6 +410,7 @@
       status.dataset.error = 'true';
       status.textContent = change.failure;
     } finally {
+      actionsPending--;
       if (current === preferenceGeneration && button.isConnected) button.disabled = false;
     }
   }
@@ -462,6 +568,7 @@
       mdnsPending = mdnsController;
       queryTimeout = setTimeout(() => mdnsController.abort(), 9000);
     }
+    actionsPending++;
     try {
     const reply = await fetch(target, {
       signal: mdnsController?.signal,
@@ -482,6 +589,7 @@
     }
     return { message: result.message || 'Change applied.' };
     } finally {
+      actionsPending--;
       clearTimeout(queryTimeout);
       if (mdnsPending === mdnsController) mdnsPending = null;
     }
@@ -505,12 +613,17 @@
     pending?.abort();
     preferencePending?.abort();
     mdnsPending?.abort();
-    clearTimeout(mdnsPoll);
+    clearTimeout(refreshTimer);
+    refreshTimer = undefined;
+    reading = false;
+    stopped = false;
+    failures = 0;
     window.KoiMdns?.reset?.();
     token = '';
     input.value = '';
     replaceView();
     view.removeAttribute('aria-busy');
+    view.removeAttribute('data-stale');
     form.hidden = false;
     refresh.hidden = true;
     forget.hidden = true;
@@ -518,18 +631,26 @@
     status.textContent = 'Token forgotten. No catalog is displayed.';
     input.focus();
   });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') scheduleRead(0);
+  });
   window.addEventListener('pagehide', () => {
     generation++;
     preferenceGeneration++;
     pending?.abort();
     preferencePending?.abort();
     mdnsPending?.abort();
-    clearTimeout(mdnsPoll);
+    clearTimeout(refreshTimer);
+    refreshTimer = undefined;
+    reading = false;
+    stopped = false;
+    failures = 0;
     window.KoiMdns?.reset?.();
     token = '';
     input.value = '';
     replaceView();
     view.removeAttribute('aria-busy');
+    view.removeAttribute('data-stale');
     form.hidden = false;
     refresh.hidden = true;
     forget.hidden = true;

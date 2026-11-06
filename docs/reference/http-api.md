@@ -25,7 +25,7 @@ Exposing HTTP with `--http-bind` adds no encryption. Tokens must not appear in q
 | POST | `/v1/admin/shutdown` | Daemon lifecycle cancellation |
 | GET | `/openapi.json`, `/docs` | Schema and interactive reference when enabled |
 
-Catalog fields include `schema`, `epoch`, `revision`, `generated_at`, `devices`, `services` and `local_candidates`. An epoch changes across process restart; revisions only compare within their epoch. Catalog events carry complete snapshots as `event: catalog`. Replace state on a new epoch and recover by reading the snapshot after a lost stream, gap or malformed event. Display names/ports are not stable identifiers.
+Catalog fields include `schema`, `epoch`, `revision`, `generated_at`, `devices`, `services` and `local_candidates`, plus additive `discovery` (`unknown`, `available`, `partial` or `unavailable`, from the authoritative mDNS browse routes, not row counts) and optional `local_device_id` (the observer's device); older producers omit both and they decode as unknown. An epoch changes across process restart; revisions only compare within their epoch. Catalog events carry complete snapshots as `event: catalog`. Replace state on a new epoch and recover by reading the snapshot after a lost stream, gap or malformed event. Display names/ports are not stable identifiers.
 
 ## Local preferences
 
@@ -78,7 +78,7 @@ Full status is an operator view rather than the bootstrap contract. Member renew
 
 ## Operator HTML and Pond
 
-`GET /ui` serves the token-entry page and `GET /ui/transport.js` the same-origin transport. `GET /v1/ui/shell` is DAT-protected even on loopback and returns Rust-rendered operator content. `GET /v1/ui/state` is also DAT-protected and supplies the typed operator projection used by the native adapter. Both accept the shared bounded view query. Responses are no-store, frame-denied and constrained by CSP where they contain HTML. Refresh replaces the dated snapshot; auth/content failures clear stale display, and forgetting/exiting clears the token.
+`GET /ui` serves the token-entry page and `GET /ui/transport.js` the same-origin transport. `GET /v1/ui/shell` is DAT-protected even on loopback and returns Rust-rendered operator content. `GET /v1/ui/state` is also DAT-protected and supplies the typed operator projection used by the native adapter. Both accept the shared bounded view query. Responses are no-store, frame-denied and constrained by CSP where they contain HTML. The browser re-reads the view five seconds after each completed read while visible and while no unsent input is focused. A temporary failure keeps the last view, marks it stale, disables its Open controls and retries after 1, 2, 4, 8, then 15 seconds; authorization or content failures clear the display and stop. Refresh performs an immediate read. Forgetting or exiting clears the token.
 
 The mDNS destination uses `tab=mdns` and arms the existing
 lazy browse-all worker. Its typed state includes authoritative observations and

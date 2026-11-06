@@ -84,9 +84,30 @@ pub struct CatalogSnapshot {
     pub epoch: String,
     pub revision: u64,
     pub generated_at: DateTime<Utc>,
+    /// Explicit observer identity. Older schema-1 producers leave it unknown.
+    #[serde(default)]
+    pub local_device_id: Option<DeviceId>,
     pub devices: Vec<Device>,
     pub services: Vec<Service>,
     pub local_candidates: Vec<LocalCandidate>,
+    /// Local-network browse availability, independent of catalog row counts.
+    /// Old schema-1 producers omit this additive field: absence means unknown.
+    #[serde(default)]
+    pub discovery: DiscoveryAvailability,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DiscoveryAvailability {
+    /// No source-availability evidence has been reported.
+    #[default]
+    Unknown,
+    /// Every currently demanded browse query has a live observation route.
+    Available,
+    /// Some, but not all, demanded browse queries have a live route.
+    Partial,
+    /// No live route, no configured discovery source, or its watch has closed.
+    Unavailable,
 }
 
 #[derive(Deserialize)]
@@ -95,9 +116,13 @@ struct CatalogSnapshotWire {
     epoch: String,
     revision: u64,
     generated_at: DateTime<Utc>,
+    #[serde(default)]
+    local_device_id: Option<DeviceId>,
     devices: Vec<Device>,
     services: Vec<Service>,
     local_candidates: Vec<LocalCandidate>,
+    #[serde(default)]
+    discovery: DiscoveryAvailability,
 }
 
 impl<'de> Deserialize<'de> for CatalogSnapshot {
@@ -117,9 +142,11 @@ impl<'de> Deserialize<'de> for CatalogSnapshot {
             epoch: wire.epoch,
             revision: wire.revision,
             generated_at: wire.generated_at,
+            local_device_id: wire.local_device_id,
             devices: wire.devices,
             services: wire.services,
             local_candidates: wire.local_candidates,
+            discovery: wire.discovery,
         })
     }
 }
@@ -131,9 +158,11 @@ impl Default for CatalogSnapshot {
             epoch: "unobserved".to_string(),
             revision: 0,
             generated_at: DateTime::UNIX_EPOCH,
+            local_device_id: None,
             devices: Vec::new(),
             services: Vec::new(),
             local_candidates: Vec::new(),
+            discovery: DiscoveryAvailability::Unknown,
         }
     }
 }
@@ -610,12 +639,14 @@ mod tests {
     fn catalog_schema_round_trips() {
         let snapshot = CatalogSnapshot {
             schema: CATALOG_SCHEMA,
+            local_device_id: Some(DeviceId::new("observer").unwrap()),
             epoch: "0199a".into(),
             revision: 4,
             generated_at: Utc::now(),
             devices: Vec::new(),
             services: Vec::new(),
             local_candidates: Vec::new(),
+            discovery: DiscoveryAvailability::Partial,
         };
         let json = serde_json::to_vec(&snapshot).unwrap();
         assert_eq!(
@@ -625,6 +656,36 @@ mod tests {
         let mut future: serde_json::Value = serde_json::from_slice(&json).unwrap();
         future["schema"] = serde_json::json!(CATALOG_SCHEMA + 1);
         assert!(serde_json::from_value::<CatalogSnapshot>(future).is_err());
+    }
+
+    #[test]
+    fn legacy_catalog_discovery_is_unknown_not_available() {
+        let mut value = serde_json::to_value(CatalogSnapshot::default()).unwrap();
+        value.as_object_mut().unwrap().remove("discovery");
+        let decoded: CatalogSnapshot = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(decoded.discovery, DiscoveryAvailability::Unknown);
+        value["discovery"] = serde_json::json!("invented_status");
+        assert!(serde_json::from_value::<CatalogSnapshot>(value).is_err());
+    }
+
+    #[test]
+    fn discovery_availability_round_trips_every_declared_state() {
+        for discovery in [
+            DiscoveryAvailability::Unknown,
+            DiscoveryAvailability::Available,
+            DiscoveryAvailability::Partial,
+            DiscoveryAvailability::Unavailable,
+        ] {
+            let snapshot = CatalogSnapshot {
+                discovery,
+                ..CatalogSnapshot::default()
+            };
+            let bytes = serde_json::to_vec(&snapshot).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<CatalogSnapshot>(&bytes).unwrap(),
+                snapshot
+            );
+        }
     }
 
     #[test]

@@ -1,6 +1,11 @@
 //! Pure shared presentation. Transport, credentials and domain state stay outside.
 pub mod catalog_view;
 pub mod components;
+// Retained, unrendered projections from the retired Home/Devices line (ADR-047).
+// fragment_with_operator_state never renders them; scheduled for removal once
+// comparison has a place.
+pub mod devices;
+pub mod home;
 pub mod operator;
 pub mod screens;
 mod state;

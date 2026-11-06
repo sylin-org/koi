@@ -627,3 +627,248 @@ fn about_uses_snapshot_facts_and_keeps_documentation_available_without_catalog()
         assert!(!koi_ui::screens::about::is_documentation_url(untrusted));
     }
 }
+
+/// The authenticated browser adapter's Links, as mounted by koi-serve at /ui.
+fn browser_adapter_links() -> Links<'static> {
+    Links {
+        refresh: None,
+        endpoint_actions: EndpointActions::Browser,
+        preference_actions: false,
+        operator_actions: OperatorActions::Browser,
+    }
+}
+
+fn notes_service(id: &str) -> Service {
+    serde_json::from_value(serde_json::json!({
+        "schema":1,"id":id,"device_id":"desk","display_name":"Forgotten Notes",
+        "alias":"Notebook","kind":"web","condition":"found","favorite":false,
+        "local_only":false,"managed":false,"identity_confidence":"observed",
+        "observations":[],"checks":[],"active_operations":[],
+        "available_actions":["open","view_details","favorite"],
+        "endpoints":[{
+            "schema":1,"id":"http","scheme":"https","host":"notes.local","port":8443,
+            "path":"/notes?sort=recent&view=all#today","source_observation_ids":["mdns"],
+            "owner":{"kind":"foreign"},"browser_usable":true,"transport_encryption":"tls",
+            "authority_needs":[],"reachability":[],"client_tls":[]
+        }]
+    }))
+    .unwrap()
+}
+
+/// Notes on device "Office Mac", with Open granted and a strictly valid target.
+fn notes_catalog() -> CatalogSnapshot {
+    CatalogSnapshot {
+        services: vec![notes_service("notes")],
+        devices: vec![serde_json::from_value(serde_json::json!({
+            "schema":1,"id":"desk","names":[{"value":"Office Mac","observation_ids":[]}],
+            "addresses":[{"address":"192.0.2.40","observation_ids":[]}],
+            "koi_presence":{"state":"absent"},"mesh_identity":{"state":"unknown","observation_ids":[]},
+            "condition":"present"
+        }))
+        .unwrap()],
+        ..CatalogSnapshot::default()
+    }
+}
+
+#[test]
+fn discovery_status_is_reported_independently_of_rows() {
+    for (availability, key, phrase) in [
+        (
+            DiscoveryAvailability::Unknown,
+            "unknown",
+            "Discovery status not reported.",
+        ),
+        (
+            DiscoveryAvailability::Available,
+            "available",
+            "Discovery is observing the local network.",
+        ),
+        (
+            DiscoveryAvailability::Partial,
+            "partial",
+            "Discovery is partially unavailable",
+        ),
+        (
+            DiscoveryAvailability::Unavailable,
+            "unavailable",
+            "Discovery is unavailable;",
+        ),
+    ] {
+        for has_services in [false, true] {
+            let mut catalog = notes_catalog();
+            catalog.discovery = availability;
+            if !has_services {
+                catalog.services.clear();
+            }
+            let document = Html::parse_document(&render_with_state(
+                View::Snapshot(&catalog),
+                browser_adapter_links(),
+                &UiState::default(),
+            ));
+            let status = document
+                .select(&selector("#discovery-status"))
+                .next()
+                .unwrap_or_else(|| panic!("{key}: no discovery status"));
+            assert_eq!(status.value().attr("data-discovery"), Some(key));
+            assert!(status.value().attr("role").is_none(), "{key}");
+            let copy: String = status.text().collect();
+            assert!(copy.contains(phrase), "{key}: {copy}");
+            let inspect: Vec<_> = status.select(&selector("a")).collect();
+            if matches!(
+                availability,
+                DiscoveryAvailability::Partial | DiscoveryAvailability::Unavailable
+            ) {
+                assert_eq!(inspect.len(), 1, "{key}");
+                let href = inspect[0].value().attr("href").unwrap();
+                let target = UiState::parse_query(href.trim_start_matches('?')).unwrap();
+                assert_eq!(target.destination, Destination::Mdns);
+            } else {
+                assert!(inspect.is_empty(), "{key}");
+            }
+            let html = document.root_element().html();
+            assert_eq!(
+                html.contains("No services found yet"),
+                !has_services && availability == DiscoveryAvailability::Available,
+                "{key}/{has_services}"
+            );
+            assert_eq!(row_ids(&document).len(), usize::from(has_services), "{key}");
+        }
+    }
+}
+
+#[test]
+fn search_select_and_open_in_services() {
+    let mut catalog = notes_catalog();
+    // Decoys: one matches only "office", the other only "web".
+    let mut ledger = notes_service("ledger");
+    ledger.display_name = "Ledger".into();
+    ledger.alias = None;
+    ledger.kind = ServiceKind::Api;
+    let mut photos = notes_service("photos");
+    photos.display_name = "Photos".into();
+    photos.alias = None;
+    photos.device_id = DeviceId::new("garage").unwrap();
+    catalog.services.extend([ledger, photos]);
+    let notes = &catalog.services[0];
+    let label = koi_ui::catalog_view::endpoint_label(&notes.endpoints[0]).to_lowercase();
+    for word in ["office", "web"] {
+        assert!(!notes.display_name.to_lowercase().contains(word));
+        assert!(!notes
+            .alias
+            .as_deref()
+            .unwrap()
+            .to_lowercase()
+            .contains(word));
+        assert!(!label.contains(word));
+    }
+
+    let state = UiState::parse_query("tab=services&q=office+web").unwrap();
+    let document = Html::parse_document(&render_with_state(
+        View::Snapshot(&catalog),
+        browser_adapter_links(),
+        &state,
+    ));
+    assert_eq!(row_ids(&document), ["notes"]);
+    let href = document
+        .select(&selector("a.name-link"))
+        .next()
+        .unwrap()
+        .value()
+        .attr("href")
+        .unwrap()
+        .to_owned();
+    let selected = UiState::parse_query(href.trim_start_matches('?')).unwrap();
+    assert_eq!(
+        selected.selected.as_ref().map(ServiceId::as_str),
+        Some("notes")
+    );
+    assert_eq!(selected.query, "office web");
+
+    let document = Html::parse_document(&render_with_state(
+        View::Snapshot(&catalog),
+        browser_adapter_links(),
+        &selected,
+    ));
+    let details = document
+        .select(&selector("#service-details"))
+        .next()
+        .expect("selection opens details");
+    let open: Vec<_> = details.select(&selector("a.endpoint-open")).collect();
+    assert_eq!(open.len(), 1);
+    assert_eq!(
+        open[0].value().attr("href"),
+        Some("https://notes.local:8443/notes?sort=recent&view=all#today")
+    );
+    assert!(details.text().collect::<String>().contains("Office Mac"));
+
+    let lost = UiState {
+        query: "missing".into(),
+        ..selected
+    };
+    let document = Html::parse_document(&render_with_state(
+        View::Snapshot(&catalog),
+        browser_adapter_links(),
+        &lost,
+    ));
+    assert!(row_ids(&document).is_empty());
+    assert!(text(&document, "#services").contains("No services match these filters"));
+    assert_eq!(
+        text(&document, ".selection-notice[role='status']"),
+        "The selected service is no longer in this view."
+    );
+    assert!(document
+        .select(&selector("#service-details, [aria-selected='true']"))
+        .next()
+        .is_none());
+}
+
+#[test]
+fn api_absent_and_hostile_services_never_offer_open() {
+    let hostile_name = "<script>hostile()</script>";
+    let hostile_path = "/\"><img src=x onerror=evil()>";
+    for (kind, condition) in [
+        (ServiceKind::Api, ServiceCondition::Found),
+        (ServiceKind::Web, ServiceCondition::Absent),
+    ] {
+        let mut catalog = notes_catalog();
+        let service = &mut catalog.services[0];
+        service.kind = kind.clone();
+        service.condition = condition;
+        service.display_name = hostile_name.into();
+        service.alias = None;
+        service.endpoints[0].path = Some(hostile_path.into());
+        assert!(service.available_actions.contains(&AvailableAction::Open));
+        let state = UiState {
+            selected: Some(service.id.clone()),
+            ..UiState::default()
+        };
+        // The native variant proves the typed open_url button is refused too.
+        for endpoint_actions in [EndpointActions::Browser, EndpointActions::Native] {
+            let links = Links {
+                endpoint_actions,
+                ..browser_adapter_links()
+            };
+            let document =
+                Html::parse_document(&render_with_state(View::Snapshot(&catalog), links, &state));
+            assert!(document
+                .select(&selector("#service-details"))
+                .next()
+                .is_some());
+            for forbidden in [
+                "a.endpoint-open",
+                "button[data-operator-action=\"open_url\"]",
+                "script",
+                "[onerror]",
+            ] {
+                assert_eq!(
+                    document.select(&selector(forbidden)).count(),
+                    0,
+                    "{kind:?}/{condition:?}/{endpoint_actions:?}: {forbidden}"
+                );
+            }
+            let visible = text(&document, "#services");
+            assert!(visible.contains(hostile_name));
+            assert!(visible.contains(hostile_path));
+        }
+    }
+}

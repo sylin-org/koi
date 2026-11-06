@@ -34,9 +34,9 @@ executable and daemon version. A row marked unavailable or not observed is not
 an empty successful result. Provider state, runtime inventory and service checks
 have different meanings.
 
-koi launch opens the local web interface when available. Dashboard/workbench
-capabilities vary with the artifact; CLI and HTTP suffice for the initial
-container task.
+`koi launch` opens Koi's built-in interface at `/ui` (Services, mDNS, Certmesh,
+Settings, About); it asks for the daemon access token. CLI and HTTP suffice for
+the initial container task.
 
 ## Configuration and access
 

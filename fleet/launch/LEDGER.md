@@ -29,6 +29,16 @@ deployment, create user observations or publish a release.
 
 ## Claim and completion rules
 
+2026-11-05: the coordinating agent merged origin/dev (Epic 003 line through
+`cd0926f`) into dev. Kept from it: catalog `discovery`/`local_device_id`, the CI
+Change scope job, the koi-client comparison reader, and Home's Open-safety and
+search rules. Under ADR-047 these are re-expressed in Services (one
+BrowserDestination validator, all-words search, discovery status, automatic
+refresh with stale Open disabled) rather than a Home destination. Parked browser
+invitations and sessions stay removed. Home/Devices modules remain in source
+unrendered pending removal; Services → Compare observations remains open. This
+merge claims source and test evidence only; no native or installed evidence.
+
 2026-09-13 U07 accepted: the owner authorized implementation and local deployment
 of one Koi interface. [ADR-047](../../docs/adr/047-one-interface-built-in-presenter.md)
 and [the implementation receipt](../../docs/ux/single-ui-proof.md) record the

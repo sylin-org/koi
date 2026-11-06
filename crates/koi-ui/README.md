@@ -33,6 +33,20 @@ authority operations, DNS names, LAN sharing, host service controls and composed
 capability diagnosis. See the [implementation receipt](../../docs/ux/implementation-proof.md)
 and [endpoint-action receipt](../../docs/ux/action-proof.md).
 
+Open uses one validator, `catalog_view::BrowserDestination` (strict HTTP(S), no
+credentials, unspecified or link-local-without-interface hosts, API-only, absent,
+stale or ambiguous services). Browser, native and Pond adapters share it. Search
+requires every word to match a name, friendly name, host or device name, device
+address, endpoint or category. Services reports `CatalogSnapshot.discovery`
+independently of rows. The authenticated browser transport re-reads the view
+every five seconds, marks failures stale with Open disabled, and backs off.
+
+The `home` and `devices` modules and `screens::{home,devices}` are retained,
+unrendered projections from the retired Home/Devices line.
+`fragment_with_operator_state` does not call them; `tests/home.rs` and
+`tests/devices.rs` keep them honest until comparison is placed and they are
+removed.
+
 [U07's single-UI plan](../../docs/ux/single-ui-plan.md) records the consolidation
 and the retired HTML entry points.
 

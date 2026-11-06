@@ -56,6 +56,23 @@ mod tests {
     use axum::http::Request;
     use tower::ServiceExt;
 
+    #[test]
+    fn discovery_availability_is_an_optional_documented_wire_field() {
+        let api = serde_json::to_value(crate::http::build_openapi()).unwrap();
+        let schemas = &api["components"]["schemas"];
+        let catalog = &schemas["CatalogSnapshot"];
+        assert!(catalog["properties"]["discovery"].is_object());
+        assert!(!catalog["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field == "discovery"));
+        assert_eq!(
+            schemas["DiscoveryAvailability"]["enum"],
+            serde_json::json!(["unknown", "available", "partial", "unavailable"])
+        );
+    }
+
     #[tokio::test]
     async fn snapshot_is_the_catalogs_typed_current_value() {
         let catalog = Arc::new(ServiceCatalogRuntime::default());

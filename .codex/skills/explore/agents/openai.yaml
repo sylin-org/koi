@@ -1,4 +1,4 @@
 interface:
   display_name: "Explore"
-  short_description: "Structured pre-implementation exploration workflow"
-  default_prompt: "Use $explore to map current Koi source ownership, existing patterns and verification before implementing the authorized change."
+  short_description: "Focused ownership and risk exploration before edits"
+  default_prompt: "Use $explore to map current Koi source ownership and the closest existing pattern, then implement the authorized change with proportional verification."

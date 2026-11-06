@@ -69,6 +69,15 @@ it does not require recreating a broad service-management platform.
 - An advertisement establishes discovery. `responding` requires current check
   evidence. State, expiry and eligibility are owned by the domain/projector, not a
   frontend clock.
+- `CatalogSnapshot.discovery` (additive schema 1: unknown|available|partial|unavailable)
+  comes only from the authoritative mDNS browse-source routes and watch availability,
+  never row counts; absence decodes as unknown, never healthy; availability-only
+  changes publish a revision; it says nothing about reachability or completeness.
+  Services renders it independently of rows.
+- `CatalogSnapshot.local_device_id` (additive, optional) is the observer's explicit
+  device identity; older producers leave it unknown; compare it opaquely and never
+  derive it from names, addresses or advertised installation IDs; Pond's public
+  projection omits it (always null).
 
 Preferences remain durable personal intent. Malformed storage exposes recovery;
 unsupported future schemas are read-only and never become empty state. Optimistic
@@ -87,6 +96,14 @@ Pond uses the separately managed, allowlisted read-only listener in
 [ADR-042](../docs/adr/042-pond-read-only-lan-adapter.md). Never expose the complete
 operator router by changing its default loopback bind. Public projections exclude
 credentials, private diagnostics, native mutation actions and internal control data.
+
+`koi-client::comparison` reads a peer's existing `/v1/mdns/snapshot` with no DAT
+(only the observer's own local read carries its DAT), no redirects, a 4-second
+deadline and a 1 MiB limit. Comparison scope is each observer's active mDNS `.local`
+query set; unequal or unavailable scopes are incomplete, and only two successful
+compatible reads can report no differences. It adds no listener, firewall rule or
+enrollment. No shipped destination renders comparison yet (see the
+[retained-task audit](../docs/ux/retained-task-audit.md)).
 
 When a workflow adds or reverses DNS, advertisements, listeners, firewall rules or
 certificates, retain explicit ownership and the exact selected scope. Preflight

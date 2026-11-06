@@ -132,9 +132,10 @@ koi mdns
 koi mdns announce?
 ```
 
-The CLI and HTTP API are sufficient for the initial supported journey. The
-dashboard and workbench are additional interfaces; unfinished UI workflows are
-not substitutes for verifying an application from a second machine.
+The CLI and HTTP API are sufficient for the initial supported journey.
+`koi launch` opens Koi's built-in interface (Services, mDNS, Certmesh, Settings,
+About), the same presentation the desktop app renders; it does not substitute
+for verifying the application from a second machine.
 
 ## Documentation and development
 

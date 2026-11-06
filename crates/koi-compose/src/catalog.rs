@@ -17,10 +17,10 @@ use koi_common::integration::{
 };
 use koi_common::service::{
     AddressEvidence, AddressFamily, Ambiguity, AvailableAction, CheckEvidence, CheckKind,
-    CheckResult, Device, DeviceCondition, DeviceId, Endpoint, EndpointId, EndpointOwner,
-    IdentityConfidence, InstallationId, KoiPresence, LastKnownService, LocalCandidate,
-    MeshIdentity, MeshIdentityState, NameEvidence, NetworkClassification, NetworkScope,
-    NetworkScopeId, Observation, ObservationId, ObservationKind, ObservationState,
+    CheckResult, Device, DeviceCondition, DeviceId, DiscoveryAvailability, Endpoint, EndpointId,
+    EndpointOwner, IdentityConfidence, InstallationId, KoiPresence, LastKnownService,
+    LocalCandidate, MeshIdentity, MeshIdentityState, NameEvidence, NetworkClassification,
+    NetworkScope, NetworkScopeId, Observation, ObservationId, ObservationKind, ObservationState,
     OperationSummary, PreferencesMode, PreferencesStatus, Service, ServiceCondition, ServiceId,
     ServiceKind, TransportEncryption, CATALOG_SCHEMA, INSTALLATION_ID_TXT_KEY, SERVICE_ID_TXT_KEY,
 };
@@ -166,7 +166,7 @@ impl ServiceCatalogRuntime {
         let now = Utc::now();
         let epoch = uuid::Uuid::now_v7().to_string();
         Self {
-            installation_id,
+            installation_id: installation_id.clone(),
             hostname: hostname.into(),
             epoch: epoch.clone(),
             feed: StatusFeed::new(koi_common::service::CatalogSnapshot {
@@ -174,9 +174,11 @@ impl ServiceCatalogRuntime {
                 epoch,
                 revision: 0,
                 generated_at: now,
+                local_device_id: Some(explicit_device_id(&installation_id)),
                 devices: Vec::new(),
                 services: Vec::new(),
                 local_candidates: Vec::new(),
+                discovery: DiscoveryAvailability::Unknown,
             }),
             model: Mutex::new(CatalogModel::default()),
         }
@@ -206,6 +208,7 @@ impl ServiceCatalogRuntime {
     }
 
     fn reconcile(&self, inputs: CatalogInputs, now: DateTime<Utc>) {
+        let discovery = discovery_availability(&inputs);
         let preferences = inputs.preferences.clone();
         let mut model = self.model.lock().expect("catalog model lock");
         let (mut devices, mut services) = model.project(
@@ -227,6 +230,7 @@ impl ServiceCatalogRuntime {
             if current.devices == devices
                 && current.services == services
                 && current.local_candidates == local_candidates
+                && current.discovery == discovery
             {
                 None
             } else {
@@ -235,9 +239,11 @@ impl ServiceCatalogRuntime {
                     epoch: self.epoch.clone(),
                     revision: current.revision.saturating_add(1),
                     generated_at: now,
+                    local_device_id: Some(explicit_device_id(&self.installation_id)),
                     devices,
                     services,
                     local_candidates,
+                    discovery,
                 })
             }
         });
@@ -247,6 +253,30 @@ impl ServiceCatalogRuntime {
 impl Default for ServiceCatalogRuntime {
     fn default() -> Self {
         Self::new(InstallationId::new_uuid_v7(), "unobserved")
+    }
+}
+
+fn discovery_availability(inputs: &CatalogInputs) -> DiscoveryAvailability {
+    if !inputs.availability.mdns {
+        return DiscoveryAvailability::Unavailable;
+    }
+    let Some(snapshot) = &inputs.mdns else {
+        return DiscoveryAvailability::Unavailable;
+    };
+    if snapshot.sources.is_empty() {
+        // Legacy snapshots and not-yet-reported demand carry no route evidence.
+        // Records, including Koi's own announcement, cannot establish availability.
+        return DiscoveryAvailability::Unknown;
+    }
+    let available = snapshot
+        .sources
+        .iter()
+        .filter(|source| source.available)
+        .count();
+    match available {
+        0 => DiscoveryAvailability::Unavailable,
+        count if count == snapshot.sources.len() => DiscoveryAvailability::Available,
+        _ => DiscoveryAvailability::Partial,
     }
 }
 
@@ -1992,6 +2022,79 @@ mod tests {
     }
 
     #[test]
+    fn empty_discovery_availability_changes_publish_without_inventing_services() {
+        let catalog = ServiceCatalogRuntime::new(installation(), "local");
+        let now = Utc::now();
+        assert_eq!(
+            catalog.status().local_device_id,
+            Some(explicit_device_id(&installation()))
+        );
+        assert_eq!(catalog.status().discovery, DiscoveryAvailability::Unknown);
+        let observing = mdns_input(Vec::new(), 1, true);
+        catalog.reconcile(observing.clone(), now);
+        assert_eq!(catalog.status().discovery, DiscoveryAvailability::Available);
+        let first = catalog.status().revision;
+        assert!(catalog.status().services.is_empty());
+        let snapshot = catalog.status();
+        assert!(snapshot
+            .devices
+            .iter()
+            .any(|device| Some(&device.id) == snapshot.local_device_id.as_ref()));
+
+        let mut partial = observing.clone();
+        let mut missing = partial.mdns.as_ref().unwrap().sources[0].clone();
+        missing.query = "_printer._tcp.local.".into();
+        missing.available = false;
+        Arc::make_mut(partial.mdns.as_mut().unwrap())
+            .sources
+            .push(missing);
+        catalog.reconcile(partial, now);
+        assert_eq!(catalog.status().discovery, DiscoveryAvailability::Partial);
+        assert_eq!(catalog.status().revision, first + 1);
+
+        catalog.reconcile(mdns_input(Vec::new(), 2, false), now);
+        assert_eq!(
+            catalog.status().discovery,
+            DiscoveryAvailability::Unavailable
+        );
+        assert_eq!(catalog.status().revision, first + 2);
+        catalog.reconcile(observing.clone(), now);
+        assert_eq!(catalog.status().discovery, DiscoveryAvailability::Available);
+        assert_eq!(catalog.status().revision, first + 3);
+        catalog.reconcile(observing, now);
+        assert_eq!(
+            catalog.status().revision,
+            first + 3,
+            "unchanged source status coalesces"
+        );
+        assert!(catalog.status().services.is_empty());
+    }
+
+    #[test]
+    fn discovery_watch_loss_and_legacy_records_cannot_report_healthy_discovery() {
+        let mut inputs = mdns_input(
+            vec![record("Notes", "desk.local.", "192.168.1.10", 3000)],
+            1,
+            true,
+        );
+        inputs.availability.mdns = false;
+        assert_eq!(
+            discovery_availability(&inputs),
+            DiscoveryAvailability::Unavailable
+        );
+        inputs.availability.mdns = true;
+        Arc::make_mut(inputs.mdns.as_mut().unwrap()).sources.clear();
+        assert_eq!(
+            discovery_availability(&inputs),
+            DiscoveryAvailability::Unknown
+        );
+        assert_eq!(
+            discovery_availability(&CatalogInputs::default()),
+            DiscoveryAvailability::Unavailable
+        );
+    }
+
+    #[test]
     fn same_names_on_different_devices_remain_separate() {
         let mut model = CatalogModel::default();
         let now = Utc::now();
@@ -2302,6 +2405,10 @@ mod tests {
         })
         .await
         .expect("catalog did not stale retained evidence after source closure");
+        assert_eq!(
+            catalog.status().discovery,
+            DiscoveryAvailability::Unavailable
+        );
 
         cancel.cancel();
         for task in tasks {
