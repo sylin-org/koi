@@ -15,6 +15,12 @@ The binary is `koi`; its Cargo package is `koi-net`. Bare `koi` shows live statu
 
 Normal commands use the healthy local service. An explicit remote endpoint does not inherit the local token. `--standalone` is not a parallel-daemon workaround for a broken installed service.
 
+## Version
+
+`koi version` (and `koi --version`) prints `MAJOR.MINOR.PATCH.N`. The first three numbers are the workspace version without its pre-release part. `N` is the number of commits in the build's history, so it grows with every commit and is the same for the same commit on any machine. A second line gives the commit, the build time, and "uncommitted changes" when the binary was built from a dirty tree; `--json` returns the same fields. Every other surface (`/v1/status`, mDNS TXT `version`, MCP server info, the About screen) reports the same version.
+
+`koi install` checks after restarting the service that the daemon now answering is the build it just staged, and fails if an older process still holds the port.
+
 ## Container/LAN workflow
 
 Configure runtime observation with `--runtime auto|docker|podman` (environment `KOI_RUNTIME`). Runtime labels opt in the application and select metadata; use the [runtime guide](../guides/runtime.md) for the complete fixture. Verify the published application from a second device, then stop/recreate it. The current scenario matrix is in [launch readiness](../launch/README.md).

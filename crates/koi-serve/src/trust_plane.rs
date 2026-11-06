@@ -508,7 +508,10 @@ async fn register_certmesh_record(
         .and_then(|authority| authority.ca_fingerprint.clone())?;
 
     let mut txt = std::collections::HashMap::new();
-    txt.insert("version".to_string(), env!("CARGO_PKG_VERSION").to_string());
+    txt.insert(
+        "version".to_string(),
+        koi_common::build::version().to_string(),
+    );
     txt.insert("name".to_string(), format!("Koi CA ({hostname})"));
     // Stamp the node's trust state (posture/fp/expires) so discoverers read the mesh's
     // trust map directly (ADR-020 §8). `fp=` stays the joiner's disambiguation hint

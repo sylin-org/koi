@@ -105,7 +105,7 @@ pub(crate) fn startup_diagnostics(
     http_bind_ip: Option<std::net::IpAddr>,
     host: &koi_compose::host::HostIdentity,
 ) {
-    tracing::info!("Koi v{} starting", env!("CARGO_PKG_VERSION"));
+    tracing::info!("Koi v{} starting", koi_common::build::version());
     tracing::info!("Platform: {}", std::env::consts::OS);
 
     tracing::info!("Hostname: {}", host.hostname());

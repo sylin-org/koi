@@ -563,7 +563,7 @@ fn build_openapi_for(include_pond: bool) -> utoipa::openapi::OpenApi {
 
     let info = InfoBuilder::new()
         .title("Koi Network Toolkit API")
-        .version(env!("CARGO_PKG_VERSION"))
+        .version(koi_common::build::version())
         .description(Some(
             "Local network toolkit: service discovery, DNS, health monitoring, \
              TLS proxy, and certificate mesh.",
@@ -855,8 +855,10 @@ async fn unified_status_handler(Extension(state): Extension<AppState>) -> Json<s
     // until the group-key rung lands. Reported only when certmesh is present (sealing
     // needs the identity infra); makes the un-encrypted state observable, not silent.
     let seal = seal_projection(status.as_ref());
+    let build = koi_common::build::info();
     Json(serde_json::json!({
-        "version": env!("CARGO_PKG_VERSION"),
+        "version": build.version,
+        "build": build,
         "platform": std::env::consts::OS,
         "uptime_secs": uptime_secs,
         "revision": status.revision,
@@ -1044,7 +1046,7 @@ fn build_server_card(version: &str, mcp_enabled: bool) -> serde_json::Value {
 
 /// `GET /.well-known/mcp/server-card.json` — unauthenticated discovery (the Door).
 async fn mcp_server_card_handler(Extension(state): Extension<AppState>) -> Response {
-    let card = build_server_card(env!("CARGO_PKG_VERSION"), state.mcp_http_enabled);
+    let card = build_server_card(koi_common::build::version(), state.mcp_http_enabled);
     Json(card).into_response()
 }
 

@@ -457,7 +457,7 @@ impl KoiEmbedded {
             let webhook_event_tx = dash_event_tx.clone();
             let ds = koi_dashboard::dashboard::DashboardState {
                 identity: koi_dashboard::dashboard::DashboardIdentity {
-                    version: env!("CARGO_PKG_VERSION").to_string(),
+                    version: koi_common::build::version().to_string(),
                     platform: std::env::consts::OS.to_string(),
                     hostname: host.hostname().to_string(),
                     hostname_fqdn: host.local_fqdn().to_string(),

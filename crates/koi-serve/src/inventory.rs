@@ -14,7 +14,7 @@ fn project_status(status: &KoiStatus, uptime_secs: u64, http_bind: &str, daemon:
         .map(|capability| capability.status.clone())
         .collect();
     json!({
-        "version": env!("CARGO_PKG_VERSION"),
+        "version": koi_common::build::version(),
         "platform": std::env::consts::OS,
         "uptime_secs": uptime_secs,
         "revision": status.revision,

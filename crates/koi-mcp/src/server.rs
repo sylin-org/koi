@@ -441,7 +441,7 @@ impl<S: KoiSource> ServerHandler for Server<S> {
         // default() and mutate rather than a struct literal.
         let mut implementation = Implementation::default();
         implementation.name = "koi-mcp".to_string();
-        implementation.version = env!("CARGO_PKG_VERSION").to_string();
+        implementation.version = koi_common::build::version().to_string();
 
         let mut info = ServerInfo::default();
         info.server_info = implementation;

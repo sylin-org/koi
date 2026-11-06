@@ -572,7 +572,7 @@ impl MdnsCore {
     pub fn admin_status(&self) -> DaemonStatus {
         let status = self.status();
         DaemonStatus {
-            version: env!("CARGO_PKG_VERSION").to_string(),
+            version: koi_common::build::version().to_string(),
             uptime_secs: self.started_at.elapsed().as_secs(),
             platform: std::env::consts::OS.to_string(),
             registrations: status.registrations.clone(),

@@ -50,7 +50,7 @@ fn parse_bool_flag(value: &str) -> Result<bool, String> {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "koi", version, about = "Local service discovery for everyone")]
+#[command(name = "koi", version = env!("KOI_VERSION"), about = "Local service discovery for everyone")]
 pub struct Cli {
     /// Run in daemon mode (HTTP + IPC adapters)
     #[arg(long)]

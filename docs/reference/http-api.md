@@ -15,7 +15,7 @@ Exposing HTTP with `--http-bind` adds no encryption. Tokens must not appear in q
 | Method | Path | Contract |
 | --- | --- | --- |
 | GET | `/healthz` | Plain-text daemon liveness; not application reachability |
-| GET | `/v1/status` | Composition-owned capability status |
+| GET | `/v1/status` | Composition-owned capability status, plus `version` and `build` (`version`, `commit`, `dirty`, `built_at`) identifying the running binary |
 | GET | `/v1/host` | Host identity/network view |
 | GET | `/v1/inventory` | Coherent inventory projection |
 | GET | `/v1/catalog` | Schema-1 authoritative catalog snapshot |

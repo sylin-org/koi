@@ -39,7 +39,10 @@ pub async fn http_record(
 
     let mut txt = std::collections::HashMap::new();
     txt.insert("path".to_string(), "/".to_string());
-    txt.insert("version".to_string(), env!("CARGO_PKG_VERSION").to_string());
+    txt.insert(
+        "version".to_string(),
+        koi_common::build::version().to_string(),
+    );
     txt.insert("api".to_string(), "v1".to_string());
     txt.insert("dashboard".to_string(), dashboard_enabled.to_string());
     stamp_catalog_identity(&mut txt, cores, "http");
@@ -117,7 +120,10 @@ pub async fn mcp_record(
     let mut txt = std::collections::HashMap::new();
     txt.insert("transport".to_string(), "streamable-http".to_string());
     txt.insert("path".to_string(), "/v1/mcp".to_string());
-    txt.insert("version".to_string(), env!("CARGO_PKG_VERSION").to_string());
+    txt.insert(
+        "version".to_string(),
+        koi_common::build::version().to_string(),
+    );
     txt.insert("name".to_string(), format!("Koi MCP ({hostname})"));
     stamp_catalog_identity(&mut txt, cores, "mcp");
     let payload = koi_mdns::protocol::RegisterPayload {

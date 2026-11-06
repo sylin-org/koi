@@ -1,4 +1,6 @@
 mod admin;
+#[cfg(test)]
+mod build_version;
 pub(crate) mod cli;
 mod client;
 mod commands;
@@ -25,7 +27,22 @@ pub(crate) const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);
 /// Brief pause after cancellation to let in-flight requests complete.
 pub(crate) const SHUTDOWN_DRAIN: Duration = Duration::from_millis(500);
 
+/// Hand this binary's build identity (computed by build.rs) to every surface
+/// that reports a version. First thing in main, so even the Windows service
+/// path reports the right build.
+fn record_build_identity() {
+    let commit = env!("KOI_BUILD_COMMIT");
+    koi_common::build::set(koi_common::build::BuildInfo {
+        version: env!("KOI_VERSION").to_string(),
+        commit: (!commit.is_empty()).then(|| commit.to_string()),
+        dirty: env!("KOI_BUILD_DIRTY") == "true",
+        built_at: Some(env!("KOI_BUILT_AT").to_string()),
+    });
+}
+
 fn main() -> anyhow::Result<()> {
+    record_build_identity();
+
     // ── Windows Service dispatch ────────────────────────────────────
     // Must happen before anything else - the SCM expects the service
     // process to connect to the dispatcher almost immediately.
@@ -157,16 +174,21 @@ fn main() -> anyhow::Result<()> {
                 };
             }
             Command::Version => {
+                let build = koi_common::build::info();
                 if cli.json {
                     println!(
                         "{}",
                         serde_json::json!({
-                            "version": env!("CARGO_PKG_VERSION"),
+                            "version": build.version,
+                            "commit": build.commit,
+                            "dirty": build.dirty,
+                            "built_at": build.built_at,
                             "platform": std::env::consts::OS,
                         })
                     );
                 } else {
-                    println!("koi {}", env!("CARGO_PKG_VERSION"));
+                    println!("koi {}", build.version);
+                    println!("{}", build.details());
                 }
                 return Ok(());
             }

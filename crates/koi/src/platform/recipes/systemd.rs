@@ -279,6 +279,7 @@ pub fn install_system(operator: Option<&str>, data_dir: &Path) -> anyhow::Result
             );
         }
         println!(" healthy.");
+        super::verify_running_build(planned.http)?;
         Ok(persisted)
     })();
 
@@ -961,6 +962,7 @@ pub fn install_user(operator: Option<&str>, data_dir: &Path) -> anyhow::Result<(
                 planned.http
             );
         }
+        super::verify_running_build(planned.http)?;
         Ok(persisted)
     })();
 

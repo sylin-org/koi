@@ -82,7 +82,7 @@ pub fn render(view: View<'_>) -> Markup {
                 h1 #about-title data-ui-heading tabindex="-1" { "Koi" }
                 p.about-lede { "Find the applications on your network, see what they are doing, and open the one you need. Koi runs on your machines, with the evidence close at hand." }
                 dl.about-facts {
-                    dt { "Interface" } dd { (env!("CARGO_PKG_VERSION")) }
+                    dt { "Interface" } dd { (koi_common::build::version()) }
                     @match view {
                         View::Snapshot(catalog) => {
                             dt { "Services" } dd { (catalog.services.len()) " in this snapshot" }

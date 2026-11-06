@@ -780,6 +780,55 @@ fn healthz_once(port: u16) -> bool {
     head.starts_with("HTTP/1.") && head.contains("200")
 }
 
+/// The running daemon's build identity, read from `GET /v1/status`. `None`
+/// when it can't be read (an older daemon without the field, or no answer).
+fn running_build(port: u16) -> Option<koi_common::build::BuildInfo> {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+        .ok()?;
+    const REQUEST: &str = "GET /v1/status HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+    stream.write_all(REQUEST.as_bytes()).ok()?;
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).ok()?;
+    let response = String::from_utf8_lossy(&response);
+    let (head, body) = response.split_once("\r\n\r\n")?;
+    if !head.lines().next()?.contains(" 200") {
+        return None;
+    }
+    let status: serde_json::Value = serde_json::from_str(body).ok()?;
+    serde_json::from_value(status.get("build")?.clone()).ok()
+}
+
+/// After a service (re)start, confirm that the daemon answering is the build
+/// this installer just staged, not an old process still holding the port.
+/// A daemon too old to report its build is noted and skipped.
+pub fn verify_running_build(port: u16) -> anyhow::Result<()> {
+    let expected = koi_common::build::info();
+    print!("  Verifying the running build...");
+    let _ = std::io::stdout().flush();
+    match running_build(port) {
+        Some(running) if running.same_build(expected) => {
+            println!(" koi {} ({}).", running.version, running.details());
+            Ok(())
+        }
+        Some(running) => {
+            println!(" mismatch.");
+            anyhow::bail!(
+                "the service on port {port} is running koi {} ({}), but this installer is koi {} ({})",
+                running.version,
+                running.details(),
+                expected.version,
+                expected.details()
+            )
+        }
+        None => {
+            println!(" not reported; skipped.");
+            Ok(())
+        }
+    }
+}
+
 // ── Tests ───────────────────────────────────────────────────────────
 
 #[cfg(test)]

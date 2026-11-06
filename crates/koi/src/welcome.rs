@@ -26,7 +26,7 @@ pub fn emit_once(data_dir: &Path, lan_name: &str, dashboard_url: &str, next_step
     for line in banner_lines(lan_name, dashboard_url, next_step) {
         println!("{line}");
     }
-    if let Err(e) = std::fs::write(&marker, env!("CARGO_PKG_VERSION")) {
+    if let Err(e) = std::fs::write(&marker, koi_common::build::version()) {
         tracing::debug!(error = %e, "welcome marker not written (non-fatal)");
     }
 }

@@ -1,5 +1,6 @@
 pub mod api;
 pub mod blocking;
+pub mod build;
 pub mod capability;
 pub mod ceremony;
 pub mod diagnosis;

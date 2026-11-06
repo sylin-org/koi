@@ -41,7 +41,7 @@ pub fn build_dashboard_state(
 
     DashboardState {
         identity: DashboardIdentity {
-            version: env!("CARGO_PKG_VERSION").to_string(),
+            version: koi_common::build::version().to_string(),
             platform: std::env::consts::OS.to_string(),
             hostname: host.hostname().to_string(),
             hostname_fqdn: host.local_fqdn().to_string(),

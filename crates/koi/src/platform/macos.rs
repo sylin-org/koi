@@ -171,6 +171,7 @@ pub fn install(user: bool, operator: Option<&str>, data_dir: &Path) -> anyhow::R
                 planned.http
             );
         }
+        super::recipes::verify_running_build(planned.http)?;
         Ok(persisted)
     })();
     let persisted = finish_install_transaction(transaction, result)?;

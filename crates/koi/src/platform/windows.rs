@@ -256,6 +256,7 @@ pub fn install(
             );
         }
         println!(" healthy.");
+        crate::platform::recipes::verify_running_build(planned.http)?;
         Ok((persisted, planned))
     })();
 

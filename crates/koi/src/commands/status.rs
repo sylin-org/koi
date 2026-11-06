@@ -28,7 +28,7 @@ pub fn status(cli: &Cli) -> anyhow::Result<()> {
     let capabilities = offline_capabilities(observation);
 
     let status = LocalStatus {
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        version: koi_common::build::version().to_string(),
         platform: std::env::consts::OS.to_string(),
         daemon: false,
         capabilities,

@@ -34,7 +34,7 @@ pub struct PondPublicStatus {
 /// summaries and exact domain projections never enter the output value.
 pub fn project(status: &KoiStatus, uptime_secs: u64) -> PondPublicStatus {
     PondPublicStatus {
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        version: koi_common::build::version().to_string(),
         platform: std::env::consts::OS.to_string(),
         uptime_secs,
         revision: status.revision,
@@ -127,7 +127,7 @@ mod tests {
         assert_eq!(
             value,
             json!({
-                "version": env!("CARGO_PKG_VERSION"),
+                "version": koi_common::build::version(),
                 "platform": std::env::consts::OS,
                 "uptime_secs": 17,
                 "revision": 42,
