@@ -11,7 +11,6 @@
 
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
-use sha2::Digest;
 
 use crate::lab::{curl_json, wait_for_http, Lab};
 use crate::model::{output_path, CheckResult, MgmtPrincipalReport, NodeSpec, RunId, TrustRotation};
@@ -114,7 +113,7 @@ impl Lab {
             .context("primary daemon did not become healthy")?;
         let token = self.daemon_token(primary, run_id)?;
 
-        let entropy = format!("{:x}", sha2::Sha256::digest(run_id.as_str().as_bytes()));
+        let entropy = crate::model::sha256_hex(run_id.as_str().as_bytes());
         curl_json(
             "POST",
             &format!("{primary_url}/v1/certmesh/create"),

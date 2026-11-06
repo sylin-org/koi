@@ -34,8 +34,9 @@ pub struct EphemeralKeyPair {
 impl EphemeralKeyPair {
     /// Generate a fresh ephemeral key pair using OS randomness.
     pub fn generate() -> Self {
-        // Use rand_core 0.6 OsRng (re-exported through p256) for x25519-dalek compat
-        let secret = EphemeralSecret::random_from_rng(p256::elliptic_curve::rand_core::OsRng);
+        // The OS RNG (getrandom), panicking on failure exactly as rand_core 0.6's OsRng did.
+        let mut os_rng = rand::rand_core::UnwrapErr(rand::rngs::SysRng);
+        let secret = EphemeralSecret::random_from_rng(&mut os_rng);
         let public = PublicKey::from(&secret);
         Self { secret, public }
     }

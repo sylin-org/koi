@@ -23,7 +23,6 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
-use sha2::Digest;
 
 use crate::certmesh_lifecycle_windows_ca::{
     member_identity_evidence, passed, required_str, status_has_active_member, MemberIdentity,
@@ -145,7 +144,7 @@ impl Lab {
             .context("read the Windows CA daemon breadcrumb")?;
 
         // ── Create the CA (trust plane mounts; mTLS answers joins) ──
-        let entropy = format!("{:x}", sha2::Sha256::digest(run_id.as_str().as_bytes()));
+        let entropy = crate::model::sha256_hex(run_id.as_str().as_bytes());
         curl_json(
             "POST",
             &format!("{ca_url}/v1/certmesh/create"),

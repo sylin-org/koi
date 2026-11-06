@@ -151,7 +151,7 @@ pub fn generate_ca_keypair(entropy_seed: &[u8]) -> Result<CaKeyPair, CryptoError
 
     // Use the mixed seed to derive an ECDSA key.
     // p256's from_bytes performs modular reduction if needed.
-    let signing_key = SigningKey::from_bytes((&*mixed_seed).into())
+    let signing_key = SigningKey::from_bytes(&mixed_seed)
         .map_err(|e| CryptoError::KeyEncoding(format!("P-256 scalar from seed: {e}")))?;
 
     os_random.zeroize();

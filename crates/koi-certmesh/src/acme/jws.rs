@@ -23,8 +23,8 @@
 use base64::Engine;
 use p256::ecdsa::signature::Verifier;
 use p256::ecdsa::{Signature, VerifyingKey};
-use p256::elliptic_curve::sec1::FromEncodedPoint;
-use p256::{EncodedPoint, PublicKey};
+use p256::elliptic_curve::sec1::FromSec1Point;
+use p256::{PublicKey, Sec1Point};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -200,18 +200,15 @@ fn verifying_key_from_jwk(jwk: &Jwk) -> Result<VerifyingKey, JwsError> {
     let y = b64()
         .decode(&jwk.y)
         .map_err(|_| JwsError::Malformed("JWK y is not base64url".into()))?;
-    if x.len() != 32 || y.len() != 32 {
+    let (Ok(x), Ok(y)) = (<[u8; 32]>::try_from(x), <[u8; 32]>::try_from(y)) else {
         return Err(JwsError::Malformed(
             "JWK x/y must be 32 bytes each for P-256".into(),
         ));
-    }
+    };
 
-    let point = EncodedPoint::from_affine_coordinates(
-        x.as_slice().into(),
-        y.as_slice().into(),
-        /* compress = */ false,
-    );
-    let maybe_pk = PublicKey::from_encoded_point(&point);
+    let point =
+        Sec1Point::from_affine_coordinates((&x).into(), (&y).into(), /* compress = */ false);
+    let maybe_pk = PublicKey::from_sec1_point(&point);
     if maybe_pk.is_none().into() {
         return Err(JwsError::Malformed(
             "JWK coordinates are not a valid P-256 point".into(),
@@ -241,12 +238,13 @@ mod tests {
     use super::*;
     use p256::ecdsa::signature::Signer;
     use p256::ecdsa::SigningKey;
+    use p256::elliptic_curve::Generate;
     use p256::pkcs8::EncodePublicKey;
 
     /// Build a JWK for a signing key's public half.
     fn jwk_for(sk: &SigningKey) -> Jwk {
         let vk = sk.verifying_key();
-        let point = vk.to_encoded_point(false);
+        let point = vk.to_sec1_point(false);
         Jwk {
             kty: "EC".into(),
             crv: "P-256".into(),
@@ -277,7 +275,7 @@ mod tests {
 
     #[test]
     fn valid_jws_parses_and_verifies() {
-        let sk = SigningKey::random(&mut p256::elliptic_curve::rand_core::OsRng);
+        let sk = SigningKey::generate();
         let jws = make_jws(&sk, "nonce-1", "https://ca/acme/new-account", b"{}");
         let parsed = parse(&jws).expect("should parse");
         assert_eq!(parsed.nonce, "nonce-1");
@@ -293,8 +291,8 @@ mod tests {
     fn wrong_key_jws_is_rejected() {
         // Sign with sk_a but verify against sk_b's JWK → must fail. This is the
         // security gate: a forged signature under the wrong key never passes.
-        let sk_a = SigningKey::random(&mut p256::elliptic_curve::rand_core::OsRng);
-        let sk_b = SigningKey::random(&mut p256::elliptic_curve::rand_core::OsRng);
+        let sk_a = SigningKey::generate();
+        let sk_b = SigningKey::generate();
         let jws = make_jws(&sk_a, "n", "https://ca/x", b"{}");
         let parsed = parse(&jws).unwrap();
         let wrong_jwk = jwk_for(&sk_b);
@@ -318,7 +316,7 @@ mod tests {
 
     #[test]
     fn both_jwk_and_kid_is_malformed() {
-        let sk = SigningKey::random(&mut p256::elliptic_curve::rand_core::OsRng);
+        let sk = SigningKey::generate();
         let jwk = jwk_for(&sk);
         let jws = FlattenedJws {
             protected: b64().encode(
@@ -354,7 +352,7 @@ mod tests {
     fn thumbprint_is_rfc7638_canonical() {
         // Known-answer from RFC 7638 §3.1 is for RSA; here we just assert the
         // canonical JSON ordering + that the same JWK yields a stable digest.
-        let sk = SigningKey::random(&mut p256::elliptic_curve::rand_core::OsRng);
+        let sk = SigningKey::generate();
         let jwk = jwk_for(&sk);
         let t1 = jwk_thumbprint(&jwk);
         let t2 = jwk_thumbprint(&jwk);
@@ -366,7 +364,7 @@ mod tests {
     #[test]
     fn _suppress_unused_encode_public_key() {
         // Keep EncodePublicKey import meaningful even if a refactor drops its use.
-        let sk = SigningKey::random(&mut p256::elliptic_curve::rand_core::OsRng);
+        let sk = SigningKey::generate();
         let _ = sk.verifying_key().to_public_key_der().is_ok();
     }
 }

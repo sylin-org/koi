@@ -28,6 +28,7 @@ use koi_common::integration::AcmeDnsResolver;
 use koi_common::service::ServiceId;
 use p256::ecdsa::signature::Signer;
 use p256::ecdsa::{Signature, SigningKey};
+use p256::elliptic_curve::Generate;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -168,12 +169,12 @@ struct ClientKey {
 impl ClientKey {
     fn new() -> Self {
         Self {
-            sk: SigningKey::random(&mut p256::elliptic_curve::rand_core::OsRng),
+            sk: SigningKey::generate(),
         }
     }
 
     fn jwk_value(&self) -> Value {
-        let point = self.sk.verifying_key().to_encoded_point(false);
+        let point = self.sk.verifying_key().to_sec1_point(false);
         json!({
             "kty": "EC",
             "crv": "P-256",

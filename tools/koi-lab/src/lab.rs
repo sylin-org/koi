@@ -10,7 +10,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use x509_parser::prelude::{FromDer, X509Certificate};
 
 use crate::model::{
@@ -340,7 +339,7 @@ impl Lab {
     ) -> Result<CertmeshProvisioning> {
         let ca_url = self.node_url(ca)?;
         let ca_token = self.daemon_token(ca, run_id)?;
-        let entropy = format!("{:x}", Sha256::digest(run_id.as_str().as_bytes()));
+        let entropy = crate::model::sha256_hex(run_id.as_str().as_bytes());
         let create = curl_json(
             "POST",
             &format!("{ca_url}/v1/certmesh/create"),
@@ -2624,7 +2623,7 @@ impl Lab {
         let fingerprint = if source.is_file() {
             let certificate = fs::read(&source)?;
             match pem::parse(&certificate) {
-                Ok(parsed) => Some(format!("{:x}", Sha256::digest(parsed.contents()))),
+                Ok(parsed) => Some(crate::model::sha256_hex(parsed.contents())),
                 Err(error) if !state.exists() => {
                     eprintln!(
                         "WARNING: removing an incomplete pre-install Windows trust source: {error}"
@@ -3925,7 +3924,7 @@ fn windows_trust_fingerprint() -> Result<String> {
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
-    Ok(format!("{:x}", Sha256::digest(&output.stdout)))
+    Ok(crate::model::sha256_hex(&output.stdout))
 }
 
 fn windows_store_contains(fingerprint: &str) -> Result<bool> {
@@ -4055,9 +4054,9 @@ fn windows_member_identity_evidence(root: &Path, hostname: &str) -> Result<Membe
             ca_cert.validity().not_after
         );
     }
-    let key_sha256 = format!("{:x}", Sha256::digest(&key));
-    let cert_sha256 = format!("{:x}", Sha256::digest(&cert));
-    let cert_fingerprint = format!("{:x}", Sha256::digest(parsed.contents()));
+    let key_sha256 = crate::model::sha256_hex(&key);
+    let cert_sha256 = crate::model::sha256_hex(&cert);
+    let cert_fingerprint = crate::model::sha256_hex(parsed.contents());
     if !is_sha256(&key_sha256) || !is_sha256(&cert_sha256) || !is_sha256(&cert_fingerprint) {
         bail!("Windows member identity evidence returned malformed fingerprints");
     }

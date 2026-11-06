@@ -440,7 +440,7 @@ fn copy_and_hash(
     }
     Ok(FileIntegrity {
         len,
-        sha256: format!("{:x}", hasher.finalize()),
+        sha256: crate::encoding::hex_encode(&hasher.finalize()),
     })
 }
 

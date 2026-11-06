@@ -20,7 +20,6 @@ use instant_acme::{
     Account, ChallengeType, Identifier, NewAccount, NewOrder, OrderStatus, RetryPolicy,
 };
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use std::time::Duration;
 use x509_parser::extensions::GeneralName;
 use x509_parser::prelude::{FromDer, X509Certificate};
@@ -139,7 +138,7 @@ impl Lab {
         };
 
         // ── Create the CA (posture flips; the trust plane mounts) ──
-        let entropy = format!("{:x}", sha2::Sha256::digest(run_id.as_str().as_bytes()));
+        let entropy = crate::model::sha256_hex(run_id.as_str().as_bytes());
         curl_json(
             "POST",
             &format!("{windows_url}/v1/certmesh/create"),
@@ -521,7 +520,7 @@ fn verify_issued_chain(chain_pem: &str, ca_pem: &str, expected_san: &str) -> Res
     if !covers_name {
         bail!("ACME leaf did not cover authorized name {expected_san}");
     }
-    Ok(format!("{:x}", Sha256::digest(chain[0].contents())))
+    Ok(crate::model::sha256_hex(chain[0].contents()))
 }
 fn acme_listener_probe(port: u16) -> bool {
     // TCP connect probe for the ACME listener.

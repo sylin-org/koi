@@ -4,7 +4,7 @@
 //! This is message authentication only — no key derivation, no new HKDF labels
 //! (STACK-0001 K3 untouched).
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 
 type HmacSha256 = Hmac<Sha256>;

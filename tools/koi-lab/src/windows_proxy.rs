@@ -22,7 +22,6 @@
 
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
-use sha2::Digest;
 use std::time::Duration;
 
 use crate::lab::{curl_json, wait_for_http, Lab};
@@ -135,7 +134,7 @@ impl Lab {
             .context("CA breadcrumb had no DAT token")?;
 
         // CA creation: enrollment open for exactly this run.
-        let entropy = format!("{:x}", sha2::Sha256::digest(run_id.as_str().as_bytes()));
+        let entropy = crate::model::sha256_hex(run_id.as_str().as_bytes());
         curl_json(
             "POST",
             &format!("{ca_url}/v1/certmesh/create"),

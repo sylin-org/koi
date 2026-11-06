@@ -181,7 +181,7 @@ pub fn verify_code(secret: &TotpSecret, code: &str) -> bool {
     let mut matched = false;
     for offset in [0i64, -1, 1] {
         let time = (now as i64 + offset * step as i64) as u64;
-        let expected = totp.generate(time);
+        let expected = totp.generate(time).to_string();
         let expected_bytes = expected.as_bytes();
 
         let step_ok: bool = bool::from(code_bytes.ct_eq(expected_bytes));
@@ -305,14 +305,14 @@ pub fn current_code(secret: &TotpSecret) -> Result<String, String> {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    Ok(totp.generate(now))
+    Ok(totp.generate(now).to_string())
 }
 
 /// Build the `otpauth://` URI for authenticator apps.
 pub fn build_totp_uri(secret: &TotpSecret, issuer: &str, account: &str) -> String {
     use totp_rs::Secret;
 
-    let encoded = Secret::Raw(secret.secret.clone()).to_encoded().to_string();
+    let encoded = Secret::from(secret.secret.as_slice()).to_base32();
     format!(
         "otpauth://totp/{}:{}?secret={}&issuer={}&algorithm=SHA1&digits=6&period=30",
         issuer, account, encoded, issuer
@@ -320,14 +320,16 @@ pub fn build_totp_uri(secret: &TotpSecret, issuer: &str, account: &str) -> Strin
 }
 
 /// Build a totp-rs TOTP instance from our secret.
-fn build_totp(secret: &TotpSecret) -> Result<totp_rs::TOTP, totp_rs::TotpUrlError> {
-    use totp_rs::{Algorithm, Secret, TOTP};
+fn build_totp(secret: &TotpSecret) -> Result<totp_rs::Totp, totp_rs::TotpError> {
+    use totp_rs::{Algorithm, Builder};
 
-    let bytes = Secret::Raw(secret.secret.clone())
-        .to_bytes()
-        .map_err(|_| totp_rs::TotpUrlError::Secret("failed to convert TOTP secret".into()))?;
-
-    TOTP::new(Algorithm::SHA1, 6, 1, 30, bytes)
+    Builder::new()
+        .with_algorithm(Algorithm::SHA1)
+        .with_digits(6)
+        .with_skew(1)
+        .with_step_duration(30)
+        .with_secret(secret.secret.as_slice())
+        .build()
 }
 
 #[cfg(test)]
@@ -367,7 +369,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        let code = totp.generate(now);
+        let code = totp.generate(now).to_string();
         assert!(verify_code(&secret, &code));
     }
 

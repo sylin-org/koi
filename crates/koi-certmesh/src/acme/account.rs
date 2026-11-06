@@ -230,14 +230,15 @@ mod tests {
     use super::*;
     use base64::Engine;
     use p256::ecdsa::SigningKey;
+    use p256::elliptic_curve::Generate;
 
     fn b64() -> base64::engine::general_purpose::GeneralPurpose {
         base64::engine::general_purpose::URL_SAFE_NO_PAD
     }
 
     fn random_jwk() -> Jwk {
-        let sk = SigningKey::random(&mut p256::elliptic_curve::rand_core::OsRng);
-        let point = sk.verifying_key().to_encoded_point(false);
+        let sk = SigningKey::generate();
+        let point = sk.verifying_key().to_sec1_point(false);
         Jwk {
             kty: "EC".into(),
             crv: "P-256".into(),

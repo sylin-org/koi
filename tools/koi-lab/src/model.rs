@@ -1157,6 +1157,12 @@ fn validate_remote_root(value: &str) -> Result<()> {
     Ok(())
 }
 
+/// Lowercase hex SHA-256 of `bytes` (sha2 0.11 digests have no `LowerHex` impl).
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    hex_prefix(&digest, digest.len())
+}
+
 fn hex_prefix(bytes: &[u8], count: usize) -> String {
     let mut output = String::with_capacity(count * 2);
     for byte in bytes.iter().take(count) {
