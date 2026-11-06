@@ -4,7 +4,7 @@
 # (or CI runner) with `cross` — the same toolchain the release workflow uses — and staged
 # into this directory by scripts/cross-host-certmesh.sh. The tiny build context (this dir,
 # not the repo) keeps the image build fast and avoids a compile-in-Docker.
-FROM alpine:3.20
+FROM alpine:3.24
 
 RUN apk add --no-cache ca-certificates
 

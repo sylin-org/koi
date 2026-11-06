@@ -29,10 +29,10 @@ jobs:
       npm_tag: ${{ steps.meta.outputs.npm_tag }}
       description: ${{ steps.meta.outputs.description }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version: 26
 
       - name: Extract version metadata
         id: meta
@@ -71,14 +71,14 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 24
-      - uses: actions/setup-python@v5
+          node-version: 26
+      - uses: actions/setup-python@v7
         with:
-          python-version: '3.13'
+          python-version: '3.15'
       - uses: Swatinem/rust-cache@v2
       - name: Rust workspace
         run: cargo test --workspace --locked
@@ -128,7 +128,7 @@ jobs:
             use_cross: false
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -192,7 +192,7 @@ jobs:
 
       - name: Upload release artifact
         if: matrix.os != 'windows-latest'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.target }}
           path: |
@@ -201,7 +201,7 @@ jobs:
 
       - name: Upload unsigned Windows artifact
         if: matrix.os == 'windows-latest'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: unsigned-windows-${{ matrix.target }}
           path: ${{ env.WINDOWS_STAGING }}
@@ -213,10 +213,10 @@ jobs:
     needs: [prepare, build]
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download unsigned Windows artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: windows-input
           pattern: unsigned-windows-*
@@ -230,7 +230,7 @@ jobs:
             -VersionTag '${{ needs.prepare.outputs.tag }}'
 
       - name: Upload x86_64 Windows release
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-x86_64-pc-windows-msvc
           path: |
@@ -239,7 +239,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload arm64 Windows release
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-aarch64-pc-windows-msvc
           path: |
@@ -254,15 +254,15 @@ jobs:
     needs: [prepare, build, finalize-windows]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version: 26
           cache: npm
           cache-dependency-path: packages/npm/package-lock.json
 
       - name: Download all native artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           pattern: release-*
@@ -294,7 +294,7 @@ jobs:
           done
 
       - name: Upload validated candidate manifest
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: candidate-release-manifest
           path: artifacts/koi-${{ needs.prepare.outputs.tag }}-manifest.json
@@ -310,12 +310,12 @@ jobs:
     needs: [prepare, test, build, finalize-windows, channels]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download validated candidate manifest
         id: manifest
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: candidate-release-manifest
           path: candidate-artifacts
@@ -353,7 +353,7 @@ jobs:
 
       - name: Upload candidate validation summary
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: candidate-validation-${{ github.sha }}
           path: candidate-validation.json
@@ -397,10 +397,10 @@ jobs:
       id-token: write # keyless (Sigstore) signing for build-provenance attestations
       attestations: write # write the attestations
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           pattern: release-*
@@ -418,7 +418,7 @@ jobs:
       # Signed build provenance for every published archive: `gh attestation verify
       # <file> --repo sylin-org/koi` proves it was built by this workflow, not a mirror.
       - name: Attest binary and manifest provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             artifacts/*.tar.gz
@@ -488,10 +488,10 @@ jobs:
       id-token: write # keyless (Sigstore) signing for the image attestation
       attestations: write # write the attestation
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download linux build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           pattern: release-*-unknown-linux-musl
@@ -513,11 +513,11 @@ jobs:
           chmod +x docker/release/koi-*
           ls -l docker/release/
 
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -525,7 +525,7 @@ jobs:
 
       - name: Image metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
           # Disable metadata-action's implicit floating tag. The centralized
@@ -538,7 +538,7 @@ jobs:
 
       - name: Build and push
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: docker/release
           file: docker/release/Dockerfile
@@ -552,11 +552,14 @@ jobs:
       # Signed build provenance for the image, pushed to GHCR as a referrer so
       # `gh attestation verify oci://ghcr.io/sylin-org/koi:<ver> --repo sylin-org/koi` works.
       - name: Attest image provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-name: ghcr.io/${{ github.repository }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
+          # v3+ also files an org artifact-metadata storage record by default, which
+          # needs `artifact-metadata: write`. Keep the v2 behaviour: attestation only.
+          create-storage-record: false
 
   # ── Publish to crates.io ──────────────────────────────────────────
   # Runs only after the GitHub Release succeeds (which requires all 6 cross
@@ -580,10 +583,10 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version: 26
           registry-url: https://registry.npmjs.org
           cache: npm
           cache-dependency-path: packages/npm/package-lock.json

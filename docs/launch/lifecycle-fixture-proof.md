@@ -10,8 +10,11 @@ client or release proof.
 ## Fixture contract
 
 The [operator-preview Compose fixture](../../docker/operator-preview/README.md)
-uses the pinned image
-`node:24-bookworm-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e`.
+used the pinned image
+`node:24-bookworm-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e`
+for the dry run below. A later dependency refresh (2026-11-05) moved the pin to
+`node:26-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68`;
+the dry run has not been repeated on that image.
 It publishes a configurable TCP port on `0.0.0.0`, opts in with the implemented
 `koi.announce` shorthand, and requests HTTP health checks at `/health` every
 five seconds with a two-second timeout. Its response includes the operator's

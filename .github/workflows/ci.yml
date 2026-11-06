@@ -23,12 +23,12 @@ jobs:
     outputs:
       product: ${{ steps.scope.outputs.product }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version: 26
       - name: Check scope selection
         run: node --test scripts/ci-scope.test.mjs
       - name: Select affected checks
@@ -47,7 +47,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -67,17 +67,17 @@ jobs:
     name: Client, release, and frontend contracts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version: 26
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
-          python-version: '3.13'
+          python-version: '3.15'
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -112,7 +112,7 @@ jobs:
     name: Architecture boundaries
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -129,7 +129,7 @@ jobs:
     name: Windows GNU locked cross-check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -152,7 +152,7 @@ jobs:
     if: ${{ always() && !cancelled() && needs.changes.outputs.product != 'false' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -169,7 +169,7 @@ jobs:
     name: lean-embedded (optional backends off)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -199,7 +199,7 @@ jobs:
     if: ${{ always() && !cancelled() && needs.changes.outputs.product != 'false' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -213,7 +213,7 @@ jobs:
     if: ${{ always() && !cancelled() && needs.changes.outputs.product != 'false' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.92
       - uses: Swatinem/rust-cache@v2
       - name: Check (MSRV)
@@ -224,7 +224,7 @@ jobs:
     if: ${{ always() && !cancelled() && needs.changes.outputs.product != 'false' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install cargo-audit
@@ -239,7 +239,7 @@ jobs:
     # Surface-ledger tripwire (Epic E02): docs/SURFACES.md must exist and parse.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Lint surface ledger
         run: bash scripts/lint-surfaces.sh docs/SURFACES.md
       - name: No downstream-consumer names in user-facing docs (STACK-0001)
@@ -259,7 +259,7 @@ jobs:
     if: ${{ !cancelled() && needs.changes.outputs.product != 'false' && needs.test.result == 'success' && needs.clippy.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:

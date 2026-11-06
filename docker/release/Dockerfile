@@ -8,7 +8,7 @@
 #
 # Build locally (after staging a binary named koi-<arch> beside this file):
 #   docker build -t koi docker/release
-FROM alpine:3.20
+FROM alpine:3.24
 
 # ca-certificates: outbound TLS (ACME, upstream DNS). wget (busybox) powers the
 # HEALTHCHECK below.
