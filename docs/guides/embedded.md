@@ -180,6 +180,7 @@ let binding = udp.bind(koi_udp::UdpBindRequest {
     lease_secs: 300,
     // 0.0.0.0 is non-loopback, so this is required; loopback binds default to false.
     allow_remote: true,
+    broadcast: false,
 }).await?;
 let _bytes_sent = udp.send(&binding.id, koi_udp::UdpSendRequest {
     dest: "127.0.0.1:9998".to_string(),

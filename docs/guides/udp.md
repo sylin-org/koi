@@ -157,6 +157,7 @@ All UDP endpoints live under `/v1/udp/`:
 | `addr`         | string | `"127.0.0.1"` | Bind address (loopback by default; a non-loopback bind requires `allow_remote`)                          |
 | `lease_secs`   | u64    | `300`         | Lease duration in seconds (max 86400)                                                                    |
 | `allow_remote` | bool   | `false`       | Allow binding on / sending to non-loopback addresses. Default keeps the binding loopback-only (no relay) |
+| `broadcast`    | bool   | `false`       | Enable `SO_BROADCAST` so the binding can send to `255.255.255.255` and subnet-directed broadcast addresses (from `/v1/host`). Requires `allow_remote` |
 
 ### Send request body
 
@@ -232,6 +233,7 @@ let info = udp.bind(koi_udp::UdpBindRequest {
     addr: "127.0.0.1".to_string(),
     lease_secs: 300,
     allow_remote: false,
+    broadcast: false,
 }).await?;
 
 // Subscribe to incoming datagrams

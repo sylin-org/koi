@@ -41,6 +41,7 @@ pub async fn bind(
                     addr: addr.to_string(),
                     lease_secs: lease,
                     allow_remote,
+                    broadcast: false,
                 })
                 .await?;
             let binding_id = info.id.clone();

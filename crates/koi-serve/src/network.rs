@@ -10,6 +10,20 @@ use std::net::Ipv4Addr;
 pub struct LanInterface {
     pub name: String,
     pub address: Ipv4Addr,
+    /// CIDR prefix length of the interface's subnet.
+    pub prefix_len: u8,
+    /// Subnet-directed broadcast address, when the subnet has one (not /31 or /32).
+    pub broadcast: Option<Ipv4Addr>,
+}
+
+/// Directed broadcast for `address/prefix_len`; `None` for /31 and /32, which
+/// have no broadcast address.
+fn directed_broadcast(address: Ipv4Addr, prefix_len: u8) -> Option<Ipv4Addr> {
+    if prefix_len >= 31 {
+        return None;
+    }
+    let host_bits = u32::MAX >> prefix_len;
+    Some(Ipv4Addr::from(u32::from(address) | host_bits))
 }
 
 /// Return the IPv4 interface the kernel selected for its default route. If the
@@ -22,10 +36,12 @@ pub fn lan_ipv4_interfaces() -> std::io::Result<Vec<LanInterface>> {
     let mut interfaces = all
         .into_iter()
         .filter(|interface| !interface.is_loopback())
-        .filter_map(|interface| match interface.addr.ip() {
-            std::net::IpAddr::V4(address) if !address.is_link_local() => Some(LanInterface {
+        .filter_map(|interface| match interface.addr {
+            if_addrs::IfAddr::V4(v4) if !v4.ip.is_link_local() => Some(LanInterface {
                 name: interface.name,
-                address,
+                address: v4.ip,
+                prefix_len: v4.prefixlen,
+                broadcast: directed_broadcast(v4.ip, v4.prefixlen),
             }),
             _ => None,
         })
@@ -59,6 +75,21 @@ fn default_route_ipv4() -> Option<Ipv4Addr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn directed_broadcast_sets_host_bits() {
+        let ip = Ipv4Addr::new(192, 168, 1, 37);
+        assert_eq!(
+            directed_broadcast(ip, 24),
+            Some(Ipv4Addr::new(192, 168, 1, 255))
+        );
+        assert_eq!(
+            directed_broadcast(ip, 22),
+            Some(Ipv4Addr::new(192, 168, 3, 255))
+        );
+        assert_eq!(directed_broadcast(ip, 31), None);
+        assert_eq!(directed_broadcast(ip, 32), None);
+    }
 
     #[test]
     fn observations_never_advertise_loopback_or_link_local() {

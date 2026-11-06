@@ -1489,6 +1489,7 @@ mod tests {
             last_heartbeat: now,
             lease_secs: 60,
             allow_remote: false,
+            broadcast: false,
         }));
         assert!(matches!(
             bound,

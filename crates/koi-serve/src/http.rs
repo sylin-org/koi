@@ -463,6 +463,11 @@ struct NetworkInterface {
     name: String,
     /// IPv4 or IPv6 address.
     ip: String,
+    /// CIDR prefix length of the interface's subnet (e.g. 24).
+    prefix_len: u8,
+    /// Subnet-directed broadcast address (e.g. "192.168.1.255"); absent for /31 and /32.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    broadcast: Option<String>,
 }
 
 // ── System-level OpenAPI doc ─────────────────────────────────────────
@@ -910,6 +915,8 @@ fn default_lan_interfaces() -> std::io::Result<Vec<NetworkInterface>> {
         .map(|interface| NetworkInterface {
             name: interface.name,
             ip: interface.address.to_string(),
+            prefix_len: interface.prefix_len,
+            broadcast: interface.broadcast.map(|broadcast| broadcast.to_string()),
         })
         .collect())
 }

@@ -94,6 +94,8 @@ pub(crate) struct ActiveBinding {
     /// Opt-in at bind time; default false keeps a binding loopback-only so a DAT
     /// holder cannot use it as a LAN/internet egress relay (SSRF).
     allow_remote: bool,
+    /// Whether the socket has `SO_BROADCAST` and may send to broadcast addresses.
+    broadcast: bool,
     lease: Arc<RwLock<LeaseState>>,
     tx: broadcast::Sender<UdpDatagram>,
     /// The relay is the socket's sole owner; senders submit acknowledged work.
@@ -114,6 +116,7 @@ impl ActiveBinding {
         created_at: DateTime<Utc>,
         lease_secs: u64,
         allow_remote: bool,
+        broadcast: bool,
         parent_cancel: CancellationToken,
     ) -> Self {
         let (tx, _) = broadcast::channel(512);
@@ -176,6 +179,7 @@ impl ActiveBinding {
             id,
             lease_secs,
             allow_remote,
+            broadcast,
             lease: Arc::new(RwLock::new(LeaseState::new(
                 created_at,
                 Instant::now(),
@@ -193,6 +197,11 @@ impl ActiveBinding {
     /// Whether this binding may send to / listen on non-loopback addresses.
     pub(crate) fn allow_remote(&self) -> bool {
         self.allow_remote
+    }
+
+    /// Whether this binding may send to broadcast addresses.
+    pub(crate) fn broadcast(&self) -> bool {
+        self.broadcast
     }
 
     /// Update the display timestamp and extend the real lease against a
