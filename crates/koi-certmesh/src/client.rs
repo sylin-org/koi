@@ -224,7 +224,7 @@ mod tests {
     use super::*;
     use koi_common::posture::Posture;
     use koi_common::types::ServiceRecord;
-    use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyPair, SanType};
+    use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair, SanType};
     use std::collections::HashMap;
     use std::net::{IpAddr, Ipv4Addr};
 
@@ -245,6 +245,7 @@ mod tests {
         ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
         let ca_key = KeyPair::generate().unwrap();
         let ca_cert = ca_params.self_signed(&ca_key).unwrap();
+        let ca_issuer = Issuer::from_params(&ca_params, &ca_key);
         let ca_pem = ca_cert.pem();
         let ca_fp =
             koi_crypto::pinning::fingerprint_sha256(pem::parse(&ca_pem).unwrap().contents());
@@ -257,7 +258,7 @@ mod tests {
             .distinguished_name
             .push(DnType::CommonName, "me");
         let leaf_key = KeyPair::generate().unwrap();
-        let leaf_cert = leaf_params.signed_by(&leaf_key, &ca_cert, &ca_key).unwrap();
+        let leaf_cert = leaf_params.signed_by(&leaf_key, &ca_issuer).unwrap();
 
         // A server cert (SAN localhost + 127.0.0.1) for the listener side.
         let mut s_params = CertificateParams::new(vec!["localhost".to_string()]).unwrap();
@@ -268,7 +269,7 @@ mod tests {
             .distinguished_name
             .push(DnType::CommonName, "test-server");
         let s_key = KeyPair::generate().unwrap();
-        let s_cert = s_params.signed_by(&s_key, &ca_cert, &ca_key).unwrap();
+        let s_cert = s_params.signed_by(&s_key, &ca_issuer).unwrap();
 
         let identity = Identity {
             hostname: "me".to_string(),

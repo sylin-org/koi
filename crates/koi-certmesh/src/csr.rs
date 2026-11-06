@@ -126,10 +126,10 @@ pub fn sign_csr_with_usage(
     csr_params.params.not_after = time::OffsetDateTime::from_unix_timestamp(not_after.timestamp())
         .unwrap_or(time::OffsetDateTime::now_utc());
 
-    // Issue the leaf signed by the CA. The 0.13 CSR form of `signed_by` takes
-    // (issuer_cert, issuer_key) — the CSR carries its own public key.
+    // Issue the leaf signed by the CA. The CSR form of `signed_by` takes only
+    // the issuer — the CSR carries its own public key.
     let leaf = csr_params
-        .signed_by(&ca.ca_cert, &ca.rcgen_key)
+        .signed_by(&ca.issuer)
         .map_err(|e| CertmeshError::Certificate(e.to_string()))?;
 
     Ok(leaf.pem())

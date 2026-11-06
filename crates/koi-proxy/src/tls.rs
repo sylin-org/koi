@@ -386,7 +386,7 @@ fn generate_self_signed(entry: &ProxyEntry) -> Result<(Vec<u8>, Vec<u8>), ProxyE
         .map_err(|e| ProxyError::Io(format!("self-signed cert generation failed: {e}")))?;
     Ok((
         generated.cert.pem().into_bytes(),
-        generated.key_pair.serialize_pem().into_bytes(),
+        generated.signing_key.serialize_pem().into_bytes(),
     ))
 }
 

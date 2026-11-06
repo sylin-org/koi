@@ -8,7 +8,7 @@ use koi_crypto::keys::{self, CaKeyPair, CryptoError};
 use koi_crypto::pinning;
 use koi_crypto::unlock_slots::{self, SlotTable};
 use rcgen::{
-    BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, KeyPair,
+    BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
     KeyUsagePurpose, SanType,
 };
 #[cfg(test)]
@@ -47,10 +47,9 @@ pub struct CaState {
     /// The CA's cryptographic key pair (koi-crypto type, zeroized on drop).
     /// Used to sign the trust bundle (ADR-017 P1) and kept alive for its Drop impl.
     pub(crate) key: CaKeyPair,
-    /// The CA's rcgen KeyPair for signing operations.
-    pub(crate) rcgen_key: KeyPair,
-    /// The self-signed CA certificate.
-    pub(crate) ca_cert: rcgen::Certificate,
+    /// The CA as an rcgen issuer: its subject DN, key-identifier method and key
+    /// usages, plus the CA's rcgen KeyPair for signing operations.
+    pub(crate) issuer: Issuer<'static, KeyPair>,
     /// CA certificate in PEM format.
     pub cert_pem: String,
     /// CA certificate in DER format (for fingerprinting).
@@ -169,7 +168,7 @@ pub(crate) fn apply_leaf_profile(params: &mut CertificateParams) {
     apply_leaf_profile_for_usage(params, LeafUsage::Host);
 }
 
-/// Build the CA's CertificateParams (without key - rcgen 0.13 style).
+/// Build the CA's CertificateParams (without key).
 fn build_ca_params() -> Result<CertificateParams, CertmeshError> {
     let mut ca_params = CertificateParams::default();
     ca_params
@@ -251,7 +250,7 @@ pub(crate) fn prepare_ca(
     let rcgen_key =
         KeyPair::from_pem(&key_pem).map_err(|e| CertmeshError::Certificate(e.to_string()))?;
 
-    // Build CA params and self-sign (rcgen 0.13: params consumed, key by ref)
+    // Build CA params and self-sign; the same params then describe the issuer.
     let ca_params = build_ca_params()?;
     let ca_cert = ca_params
         .self_signed(&rcgen_key)
@@ -259,6 +258,7 @@ pub(crate) fn prepare_ca(
 
     let cert_pem = ca_cert.pem();
     let cert_der = ca_cert.der().to_vec();
+    let issuer = Issuer::new(ca_params, rcgen_key);
 
     // Envelope encryption: master key wraps CA key, passphrase wraps master key
     let ca_key_der =
@@ -270,8 +270,7 @@ pub(crate) fn prepare_ca(
     Ok(PreparedCa {
         state: CaState {
             key: ca_key,
-            rcgen_key,
-            ca_cert,
+            issuer,
             cert_pem,
             cert_der,
         },
@@ -456,16 +455,13 @@ pub(crate) fn build_ca_state_from_material(
     let rcgen_key =
         KeyPair::from_pem(&key_pem_str).map_err(|e| CertmeshError::Certificate(e.to_string()))?;
 
-    // Re-create the self-signed CA cert for use as issuer in signed_by()
-    let ca_params = build_ca_params()?;
-    let ca_cert = ca_params
-        .self_signed(&rcgen_key)
-        .map_err(|e| CertmeshError::Certificate(e.to_string()))?;
+    // Re-create the CA issuer (subject DN, key-identifier method, key usages)
+    // for signed_by()
+    let issuer = Issuer::new(build_ca_params()?, rcgen_key);
 
     Ok(CaState {
         key: ca_key,
-        rcgen_key,
-        ca_cert,
+        issuer,
         cert_pem: cert_pem.to_owned(),
         cert_der,
     })
@@ -558,9 +554,9 @@ fn issue_certificate_at(
     cert_params.not_after = time::OffsetDateTime::from_unix_timestamp(not_after.timestamp())
         .unwrap_or(time::OffsetDateTime::now_utc());
 
-    // Sign with the CA (rcgen 0.13: params.signed_by(&member_key, &ca_cert, &ca_key))
+    // Sign with the CA
     let member_cert = cert_params
-        .signed_by(&member_key, &ca.ca_cert, &ca.rcgen_key)
+        .signed_by(&member_key, &ca.issuer)
         .map_err(|e| CertmeshError::Certificate(e.to_string()))?;
 
     let cert_pem = member_cert.pem();

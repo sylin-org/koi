@@ -659,7 +659,7 @@ pub fn extract_cn(cert_der: &[u8]) -> Option<String> {
 mod tests {
     use super::*;
     use axum::routing::{get, post};
-    use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyPair, SanType};
+    use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair, SanType};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -700,6 +700,7 @@ mod tests {
         ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
         let ca_key = KeyPair::generate().unwrap();
         let ca_cert = ca_params.self_signed(&ca_key).unwrap();
+        let ca_issuer = Issuer::from_params(&ca_params, &ca_key);
 
         let mut s_params = CertificateParams::new(vec!["localhost".to_string()]).unwrap();
         s_params
@@ -709,14 +710,14 @@ mod tests {
             .distinguished_name
             .push(DnType::CommonName, "test-server");
         let s_key = KeyPair::generate().unwrap();
-        let s_cert = s_params.signed_by(&s_key, &ca_cert, &ca_key).unwrap();
+        let s_cert = s_params.signed_by(&s_key, &ca_issuer).unwrap();
 
         let mut c_params = CertificateParams::new(vec![]).unwrap();
         c_params
             .distinguished_name
             .push(DnType::CommonName, "test-client");
         let c_key = KeyPair::generate().unwrap();
-        let c_cert = c_params.signed_by(&c_key, &ca_cert, &ca_key).unwrap();
+        let c_cert = c_params.signed_by(&c_key, &ca_issuer).unwrap();
 
         TestPki {
             ca_pem: ca_cert.pem(),
@@ -811,7 +812,7 @@ mod tests {
 
     #[tokio::test]
     async fn reloadable_resolver_hot_swaps_served_leaf() {
-        use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyPair, SanType};
+        use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair, SanType};
 
         // A CA, two CA-signed server leaves (CN server-A / server-B), one client leaf.
         let mut ca_params = CertificateParams::default();
@@ -821,6 +822,7 @@ mod tests {
         ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
         let ca_key = KeyPair::generate().unwrap();
         let ca_cert = ca_params.self_signed(&ca_key).unwrap();
+        let ca_issuer = Issuer::from_params(&ca_params, &ca_key);
         let ca_pem = ca_cert.pem();
 
         let server_leaf = |cn: &str| {
@@ -829,7 +831,7 @@ mod tests {
                 .push(SanType::IpAddress(IpAddr::V4(Ipv4Addr::LOCALHOST)));
             p.distinguished_name.push(DnType::CommonName, cn);
             let k = KeyPair::generate().unwrap();
-            let c = p.signed_by(&k, &ca_cert, &ca_key).unwrap();
+            let c = p.signed_by(&k, &ca_issuer).unwrap();
             (c.pem(), k.serialize_pem())
         };
         let (cert_a, key_a) = server_leaf("server-A");
@@ -840,7 +842,7 @@ mod tests {
             .distinguished_name
             .push(DnType::CommonName, "test-client");
         let c_key = KeyPair::generate().unwrap();
-        let c_cert = c_params.signed_by(&c_key, &ca_cert, &ca_key).unwrap();
+        let c_cert = c_params.signed_by(&c_key, &ca_issuer).unwrap();
         let client = (c_cert.pem(), c_key.serialize_pem());
 
         // Serve with a resolver-backed config presenting leaf A.

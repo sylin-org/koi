@@ -599,7 +599,7 @@ mod tests {
             TlsIdentityMaterial {
                 hostname: "localhost".to_string(),
                 certificate_chain_pem: Arc::from(certificate_pem.clone()),
-                private_key_pem: Arc::from(generated.key_pair.serialize_pem()),
+                private_key_pem: Arc::from(generated.signing_key.serialize_pem()),
                 trust_anchor_pem: Arc::from(certificate_pem),
             },
             certificate_der,

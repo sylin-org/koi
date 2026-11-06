@@ -65,7 +65,7 @@ fn write_cert(name: &str, extra_san: &str) -> Vec<u8> {
     ];
     let generated = rcgen::generate_simple_self_signed(sans).expect("generate cert");
     // key first, fullchain last, to narrow the rotation race window.
-    std::fs::write(dir.join("key.pem"), generated.key_pair.serialize_pem()).expect("write key");
+    std::fs::write(dir.join("key.pem"), generated.signing_key.serialize_pem()).expect("write key");
     std::fs::write(dir.join("fullchain.pem"), generated.cert.pem()).expect("write cert");
     generated.cert.der().as_ref().to_vec()
 }
@@ -106,7 +106,7 @@ fn generated_identity(hostname: &str) -> (TlsIdentityMaterial, Vec<u8>) {
         TlsIdentityMaterial {
             hostname: hostname.to_string(),
             certificate_chain_pem: Arc::from(generated.cert.pem()),
-            private_key_pem: Arc::from(generated.key_pair.serialize_pem()),
+            private_key_pem: Arc::from(generated.signing_key.serialize_pem()),
             trust_anchor_pem: Arc::from(generated.cert.pem()),
         },
         der,
