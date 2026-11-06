@@ -150,8 +150,18 @@ fn backoff_delay(attempt: usize, event_id: &str) -> Duration {
     Duration::from_millis(base_ms + jitter_ms)
 }
 
+/// Redirect hops followed before a delivery fails (ureq's default is 10).
+const MAX_REDIRECTS: u32 = 5;
+
+/// One end-to-end bound per delivery. Proxy environment variables are ignored
+/// and a 4xx/5xx reply is a failed delivery.
 fn build_agent() -> ureq::Agent {
-    ureq::AgentBuilder::new().timeout(DELIVERY_TIMEOUT).build()
+    ureq::Agent::config_builder()
+        .proxy(None)
+        .max_redirects(MAX_REDIRECTS)
+        .timeout_global(Some(DELIVERY_TIMEOUT))
+        .build()
+        .into()
 }
 
 #[derive(Debug)]
@@ -190,10 +200,10 @@ impl DeliveryActor {
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         agent
                             .post(&url)
-                            .set("content-type", "application/json")
-                            .set("x-koi-event-id", &job.event_id)
-                            .set("x-koi-signature", &job.signature)
-                            .send_bytes(&job.body)
+                            .header("content-type", "application/json")
+                            .header("x-koi-event-id", &job.event_id)
+                            .header("x-koi-signature", &job.signature)
+                            .send(&job.body)
                             .map(|_| ())
                             .map_err(|error| error.to_string())
                     }));

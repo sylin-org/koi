@@ -92,7 +92,10 @@ zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 hickory-server = "0.26"
 hickory-resolver = { version = "0.26", features = ["tokio", "system-config"] }
 hickory-proto = "0.26"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "stream"] }
+# Mozilla's root set, compiled in. koi's reqwest clients pass it to `tls_certs_only`
+# instead of reqwest's default OS-store verifier (rustls-platform-verifier).
+webpki-root-certs = "1"
 axum-server = { version = "0.8", features = ["tls-rustls"] }
 hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["server", "tokio"] }
@@ -146,12 +149,12 @@ x25519-dalek = { version = "2", features = ["static_secrets"] }
 hkdf = "0.12"
 
 # OpenAPI
-utoipa = { version = "5", features = ["axum_extras", "chrono"] }
-utoipa-scalar = { version = "0.3", features = ["axum"] }
+utoipa = { version = "6", features = ["axum_extras", "chrono"] }
+utoipa-scalar = { version = "0.4", features = ["axum"] }
 
 # MCP (Model Context Protocol) — stdio + in-process Streamable HTTP server. schemars
 # is RE-EXPORTED by rmcp (rmcp::schemars); do NOT add schemars directly.
-rmcp = { version = "1.7", features = [
+rmcp = { version = "3.9", features = [
     "server",
     "transport-io",
     "transport-streamable-http-server",

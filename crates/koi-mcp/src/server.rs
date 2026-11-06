@@ -15,10 +15,11 @@ use std::time::Duration;
 use rmcp::{
     handler::server::wrapper::Parameters,
     model::{
-        AnnotateAble, CallToolResult, Content, Implementation, ListResourcesResult,
-        PaginatedRequestParams, RawResource, ReadResourceRequestParams, ReadResourceResult,
-        Resource, ResourceContents, ResourceUpdatedNotificationParam, ServerCapabilities,
-        ServerInfo, SubscribeRequestParams, UnsubscribeRequestParams,
+        CallToolResult, ContentBlock, DiscoverRequestMethod, DiscoverResult, Implementation,
+        ListResourcesResult, PaginatedRequestParams, ReadResourceRequestParams,
+        ReadResourceResponse, ReadResourceResult, Resource, ResourceContents,
+        ResourceUpdatedNotificationParam, ServerCapabilities, ServerConfig, SubscribeRequestParams,
+        UnsubscribeRequestParams,
     },
     service::RequestContext,
     tool, tool_handler, tool_router, ErrorData, RoleServer, ServerHandler,
@@ -436,14 +437,14 @@ impl<S: KoiSource> Server<S> {
 
 #[tool_handler]
 impl<S: KoiSource> ServerHandler for Server<S> {
-    fn get_info(&self) -> ServerInfo {
-        // ServerInfo and Implementation are both #[non_exhaustive] — build via
+    fn get_info(&self) -> ServerConfig {
+        // ServerConfig and Implementation are both #[non_exhaustive] — build via
         // default() and mutate rather than a struct literal.
         let mut implementation = Implementation::default();
         implementation.name = "koi-mcp".to_string();
         implementation.version = koi_common::build::version().to_string();
 
-        let mut info = ServerInfo::default();
+        let mut info = ServerConfig::default();
         info.server_info = implementation;
         info.capabilities = ServerCapabilities::builder()
             .enable_tools()
@@ -459,6 +460,17 @@ impl<S: KoiSource> ServerHandler for Server<S> {
                 .to_string(),
         );
         info
+    }
+
+    /// Report `server/discover` as unknown, so discover-first clients fall back
+    /// to an `initialize` session. rmcp serves the discover lifecycle
+    /// statelessly, building a fresh `Server` per HTTP request, which would end
+    /// each `lan_announce` heartbeat and resource subscription with its request.
+    async fn discover(
+        &self,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<DiscoverResult, ErrorData> {
+        Err(ErrorData::method_not_found::<DiscoverRequestMethod>())
     }
 
     // ── Resources: snapshot-on-read + (in-process) resources/updated deltas ──
@@ -496,7 +508,7 @@ impl<S: KoiSource> ServerHandler for Server<S> {
         &self,
         request: ReadResourceRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> Result<ReadResourceResult, ErrorData> {
+    ) -> Result<ReadResourceResponse, ErrorData> {
         let uri = request.uri;
         let value = match uri.as_str() {
             URI_INVENTORY => self
@@ -516,7 +528,7 @@ impl<S: KoiSource> ServerHandler for Server<S> {
         };
         let text = serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string());
         let contents = ResourceContents::text(text, &uri).with_mime_type("application/json");
-        Ok(ReadResourceResult::new(vec![contents]))
+        Ok(ReadResourceResult::new(vec![contents]).into())
     }
 
     async fn subscribe(
@@ -604,7 +616,7 @@ fn structured(value: serde_json::Value) -> CallToolResult {
 
 /// A tool-level error returned as an error result with a text message.
 fn text_error(message: &str) -> CallToolResult {
-    CallToolResult::error(vec![Content::text(message.to_string())])
+    CallToolResult::error(vec![ContentBlock::text(message.to_string())])
 }
 
 /// Map a source error to a tool error result. Never leaks the token.
@@ -619,10 +631,9 @@ fn resource_err(err: SourceError) -> ErrorData {
 
 /// Build a resource descriptor for `list_resources`.
 fn resource_descriptor(uri: &str, name: &str, description: &str) -> Resource {
-    let mut raw = RawResource::new(uri, name);
-    raw.description = Some(description.to_string());
-    raw.mime_type = Some("application/json".to_string());
-    raw.no_annotation()
+    Resource::new(uri, name)
+        .with_description(description)
+        .with_mime_type("application/json")
 }
 
 /// Whether `uri` is one of Koi's exposed MCP resources.

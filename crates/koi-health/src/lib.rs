@@ -664,6 +664,7 @@ impl HealthCore {
 
         let http_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(HTTP_CLIENT_TIMEOUT_SECS))
+            .tls_certs_only(bundled_web_roots())
             .build()
             .unwrap_or_default();
         Ok(Self {
@@ -785,6 +786,14 @@ impl Drop for HealthCore {
             observer.abort();
         }
     }
+}
+
+/// Mozilla's compiled-in root set, so HTTPS probes trust the same roots on
+/// every host (reqwest's default verifier reads the OS store instead).
+fn bundled_web_roots() -> impl Iterator<Item = reqwest::Certificate> {
+    webpki_root_certs::TLS_SERVER_ROOT_CERTS
+        .iter()
+        .filter_map(|der| reqwest::Certificate::from_der(der.as_ref()).ok())
 }
 
 fn proxy_checks(entries: &[ProxyEntrySummary]) -> Vec<HealthCheckConfig> {

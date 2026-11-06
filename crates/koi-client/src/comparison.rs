@@ -1,6 +1,6 @@
 //! Bounded discovery reads for an explicit, native device comparison.
 //! The peer reader deliberately has no credential parameter or redirect support.
-use crate::{ClientError, KoiClient, Result};
+use crate::{ClientError, Exchange, HttpError, KoiClient, ResponseBody, Result};
 use koi_common::integration::MdnsDiscoverySnapshot;
 use std::io::Read;
 use std::time::Duration;
@@ -22,18 +22,21 @@ impl KoiClient {
 }
 
 fn read(client: &KoiClient, deadline: Duration) -> Result<MdnsDiscoverySnapshot> {
-    let agent = ureq::AgentBuilder::new()
-        .redirects(0)
-        .timeout(deadline)
-        .timeout_connect(deadline)
-        .timeout_read(deadline)
-        .build();
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .proxy(None)
+        .max_redirects(0)
+        .timeout_global(Some(deadline))
+        .timeout_connect(Some(deadline))
+        .timeout_per_read(Some(deadline))
+        .build()
+        .into();
     let mut request = agent.get(&format!("{}/v1/mdns/snapshot", client.endpoint));
     if !client.token.is_empty() {
-        request = request.set(crate::DAT_HEADER, &client.token);
+        request = request.header(crate::DAT_HEADER, &client.token);
     }
-    let response = request.call().map_err(|error| match error {
-        ureq::Error::Status(401 | 403, _) => ClientError::Unauthorized,
+    let response = request.call().checked().map_err(|error| match error {
+        HttpError::Status(401 | 403, _) => ClientError::Unauthorized,
         error => crate::map_error(error),
     })?;
     if response.status() != 200 {
@@ -152,9 +155,11 @@ mod tests {
         KoiClient::with_token(&endpoint, "fixture-local-token")
             .comparison_snapshot()
             .unwrap();
-        assert!(worker
-            .join()
-            .unwrap()
-            .contains("X-Koi-Token: fixture-local-token"));
+        // Header names are case-insensitive (ureq sends them lowercase); the
+        // token value is compared exactly.
+        assert!(worker.join().unwrap().lines().any(|line| line
+            .split_once(':')
+            .is_some_and(|(name, value)| name.eq_ignore_ascii_case("x-koi-token")
+                && value.trim() == "fixture-local-token")));
     }
 }

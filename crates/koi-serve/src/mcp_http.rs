@@ -745,10 +745,11 @@ mod tests {
     #[tokio::test]
     async fn mcp_client_over_tcp_through_auth_layer() {
         use axum::http::{HeaderName, HeaderValue};
+        use rmcp::model::ProtocolVersion;
         use rmcp::transport::streamable_http_client::{
             StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
         };
-        use rmcp::ServiceExt as _;
+        use rmcp::{ClientLifecycleMode, ClientServiceExt as _, ServiceExt as _};
 
         let token = "itest-token";
         // Mount exactly as http::start does: the rmcp service nested at
@@ -776,8 +777,8 @@ mod tests {
             HeaderName::from_static("x-koi-token"),
             HeaderValue::from_str(token).unwrap(),
         );
-        let config =
-            StreamableHttpClientTransportConfig::with_uri(url.clone()).custom_headers(headers);
+        let config = StreamableHttpClientTransportConfig::with_uri(url.clone())
+            .custom_headers(headers.clone());
         let transport = StreamableHttpClientTransport::from_config(config);
         let client = ().serve(transport).await.expect("authenticated client should initialize");
 
@@ -801,6 +802,29 @@ mod tests {
             .expect("read_resource");
         assert!(!read.contents.is_empty(), "read must return contents");
         let _ = client.cancel().await;
+
+        // ── A client preferring 2026-07-28 (stateless) falls back to a session:
+        // announcements and subscriptions must outlive a single request. ──
+        let config =
+            StreamableHttpClientTransportConfig::with_uri(url.clone()).custom_headers(headers);
+        let transport = StreamableHttpClientTransport::from_config(config);
+        let modern = ()
+            .serve_with_lifecycle(
+                transport,
+                ClientLifecycleMode::Auto {
+                    preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+                    legacy_version: None,
+                },
+            )
+            .await
+            .expect("a 2026-07-28 client should fall back to initialize");
+        let negotiated = modern
+            .peer_info()
+            .expect("initialize result")
+            .protocol_version
+            .clone();
+        assert!(negotiated.has_initialize(), "negotiated {negotiated}");
+        let _ = modern.cancel().await;
 
         // ── Without the token: the real auth layer rejects it. ──
         let config = StreamableHttpClientTransportConfig::with_uri(url);

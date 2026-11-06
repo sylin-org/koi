@@ -1377,8 +1377,13 @@ impl CertmeshHandle {
             // Secure peer → hand the posture-keyed rustls config to reqwest. The
             // workspace pins a single rustls version, so the `Any` downcast matches.
             Some(config) => reqwest::Client::builder().use_preconfigured_tls(config),
-            // Open peer → plain HTTP, no TLS.
-            None => reqwest::Client::builder(),
+            // Open peer → plain HTTP, no TLS. Any other TLS use trusts Mozilla's
+            // compiled-in roots rather than reqwest's default OS-store verifier.
+            None => reqwest::Client::builder().tls_certs_only(
+                webpki_root_certs::TLS_SERVER_ROOT_CERTS
+                    .iter()
+                    .filter_map(|der| reqwest::Certificate::from_der(der.as_ref()).ok()),
+            ),
         };
         builder
             .build()

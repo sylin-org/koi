@@ -27,6 +27,9 @@ use koi_common::service::{
     SetServicePreferenceRequest, CATALOG_SCHEMA, PREFERENCES_SCHEMA,
 };
 use koi_common::types::{ServiceCheckKind, ServiceRecord};
+use ureq::http::Response;
+use ureq::typestate::{WithBody, WithoutBody};
+use ureq::{Body, RequestBuilder};
 
 /// TCP connection timeout for general API requests.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -141,10 +144,7 @@ impl KoiClient {
     pub fn new(endpoint: &str) -> Self {
         let clean = endpoint.trim_end_matches('/');
         let resolved = resolve_localhost(clean);
-        let agent = ureq::AgentBuilder::new()
-            .timeout_connect(CONNECT_TIMEOUT)
-            .timeout_read(READ_TIMEOUT)
-            .build();
+        let agent = http_agent(CONNECT_TIMEOUT, READ_TIMEOUT);
         Self {
             endpoint: resolved,
             agent,
@@ -179,42 +179,42 @@ impl KoiClient {
     }
 
     /// Attach the DAT header to a request if a token is present.
-    fn auth_get(&self, url: &str) -> ureq::Request {
+    fn auth_get(&self, url: &str) -> RequestBuilder<WithoutBody> {
         let req = self.agent.get(url);
         if self.token.is_empty() {
             req
         } else {
-            req.set(DAT_HEADER, &self.token)
+            req.header(DAT_HEADER, &self.token)
         }
     }
 
     /// Attach the DAT header to a POST request.
-    fn auth_post(&self, url: &str) -> ureq::Request {
+    fn auth_post(&self, url: &str) -> RequestBuilder<WithBody> {
         let req = self.agent.post(url);
         if self.token.is_empty() {
             req
         } else {
-            req.set(DAT_HEADER, &self.token)
+            req.header(DAT_HEADER, &self.token)
         }
     }
 
     /// Attach the DAT header to a PUT request.
-    fn auth_put(&self, url: &str) -> ureq::Request {
+    fn auth_put(&self, url: &str) -> RequestBuilder<WithBody> {
         let req = self.agent.put(url);
         if self.token.is_empty() {
             req
         } else {
-            req.set(DAT_HEADER, &self.token)
+            req.header(DAT_HEADER, &self.token)
         }
     }
 
     /// Attach the DAT header to a DELETE request.
-    fn auth_delete(&self, url: &str) -> ureq::Request {
+    fn auth_delete(&self, url: &str) -> RequestBuilder<WithoutBody> {
         let req = self.agent.delete(url);
         if self.token.is_empty() {
             req
         } else {
-            req.set(DAT_HEADER, &self.token)
+            req.header(DAT_HEADER, &self.token)
         }
     }
 
@@ -222,12 +222,9 @@ impl KoiClient {
 
     /// Quick health check with a 200ms timeout.
     pub fn health(&self) -> Result<()> {
-        let agent = ureq::AgentBuilder::new()
-            .timeout_connect(HEALTH_TIMEOUT)
-            .timeout_read(HEALTH_TIMEOUT)
-            .build();
+        let agent = http_agent(HEALTH_TIMEOUT, HEALTH_TIMEOUT);
         let url = format!("{}/healthz", self.endpoint);
-        agent.get(&url).call().map_err(map_error)?;
+        agent.get(&url).call().checked().map_err(map_error)?;
         Ok(())
     }
 
@@ -239,7 +236,8 @@ impl KoiClient {
             serde_json::to_value(payload).map_err(|e| ClientError::Decode(e.to_string()))?;
         let resp = self
             .auth_post(&url)
-            .send_json(json_val)
+            .send_json_compact(&json_val)
+            .checked()
             .map_err(map_error)?;
         let json: serde_json::Value = resp
             .into_json()
@@ -282,7 +280,7 @@ impl KoiClient {
 
     pub fn unregister(&self, id: &str) -> Result<()> {
         let url = format!("{}/v1/mdns/unregister/{id}", self.endpoint);
-        let response = self.auth_delete(&url).call().map_err(map_error)?;
+        let response = self.auth_delete(&url).call().checked().map_err(map_error)?;
         let json: serde_json::Value = response
             .into_json()
             .map_err(|error| ClientError::Decode(error.to_string()))?;
@@ -298,7 +296,11 @@ impl KoiClient {
 
     pub fn heartbeat(&self, id: &str) -> Result<RenewalResult> {
         let url = format!("{}/v1/mdns/heartbeat/{id}", self.endpoint);
-        let resp = self.auth_put(&url).send_bytes(&[]).map_err(map_error)?;
+        let resp = self
+            .auth_put(&url)
+            .send_empty()
+            .checked()
+            .map_err(map_error)?;
         let json: serde_json::Value = resp
             .into_json()
             .map_err(|e| ClientError::Decode(e.to_string()))?;
@@ -323,6 +325,7 @@ impl KoiClient {
             .auth_get(&url)
             .query("name", instance)
             .call()
+            .checked()
             .map_err(map_error)?;
         let json: serde_json::Value = resp
             .into_json()
@@ -356,12 +359,13 @@ impl KoiClient {
         let url = format!("{}/v1/mdns/discover", self.endpoint);
         let mut req = self.stream_agent().get(&url);
         if !self.token.is_empty() {
-            req = req.set(DAT_HEADER, &self.token);
+            req = req.header(DAT_HEADER, &self.token);
         }
         let resp = req
             .query("type", service_type)
             .query("idle_for", "0")
             .call()
+            .checked()
             .map_err(map_error)?;
         Ok(SseStream::new(Box::new(resp.into_reader())))
     }
@@ -371,12 +375,13 @@ impl KoiClient {
         let url = format!("{}/v1/mdns/subscribe", self.endpoint);
         let mut req = self.stream_agent().get(&url);
         if !self.token.is_empty() {
-            req = req.set(DAT_HEADER, &self.token);
+            req = req.header(DAT_HEADER, &self.token);
         }
         let resp = req
             .query("type", service_type)
             .query("idle_for", "0")
             .call()
+            .checked()
             .map_err(map_error)?;
         Ok(SseStream::new(Box::new(resp.into_reader())))
     }
@@ -386,7 +391,7 @@ impl KoiClient {
     /// Fetch unified status from `/v1/status`.
     pub fn unified_status(&self) -> Result<serde_json::Value> {
         let url = format!("{}/v1/status", self.endpoint);
-        let resp = self.auth_get(&url).call().map_err(map_error)?;
+        let resp = self.auth_get(&url).call().checked().map_err(map_error)?;
         resp.into_json()
             .map_err(|e| ClientError::Decode(e.to_string()))
     }
@@ -396,20 +401,29 @@ impl KoiClient {
     /// Read the authenticated desired and observed Pond state.
     pub fn pond_status(&self) -> Result<PondStatus> {
         let url = format!("{}/v1/pond", self.endpoint);
-        let response = self.auth_get(&url).call().map_err(map_error)?;
+        let response = self.auth_get(&url).call().checked().map_err(map_error)?;
         decode_pond_status(response, "Pond status")
     }
 
     /// Persistently enable Pond and preserve terminal HTTP 503 as typed status.
     pub fn pond_enable(&self) -> Result<PondCommandOutcome> {
         let url = format!("{}/v1/pond", self.endpoint);
-        decode_pond_command(self.auth_put(&url).send_json(serde_json::json!({})))
+        decode_pond_command(
+            self.auth_put(&url)
+                .send_json_compact(&serde_json::json!({}))
+                .checked(),
+        )
     }
 
     /// Persistently disable Pond and preserve terminal HTTP 503 as typed status.
     pub fn pond_disable(&self) -> Result<PondCommandOutcome> {
         let url = format!("{}/v1/pond", self.endpoint);
-        decode_pond_command(self.auth_delete(&url).send_json(serde_json::json!({})))
+        decode_pond_command(
+            self.auth_delete(&url)
+                .force_send_body()
+                .send_json_compact(&serde_json::json!({}))
+                .checked(),
+        )
     }
 
     /// Fetch capability, health, and DNS inventory captured from one daemon
@@ -430,9 +444,9 @@ impl KoiClient {
         let url = format!("{}/v1/catalog/events", self.endpoint);
         let mut request = self.stream_agent().get(&url);
         if !self.token.is_empty() {
-            request = request.set(DAT_HEADER, &self.token);
+            request = request.header(DAT_HEADER, &self.token);
         }
-        let response = request.call().map_err(map_error)?;
+        let response = request.call().checked().map_err(map_error)?;
         let stream = SseStream::new(Box::new(response.into_reader()));
         let current = self.catalog_snapshot()?;
         Ok(CatalogSubscription {
@@ -517,7 +531,7 @@ impl KoiClient {
     /// so a local credential cannot leak when the endpoint names a remote CA.
     pub fn certmesh_bootstrap(&self) -> Result<serde_json::Value> {
         let url = format!("{}/v1/certmesh/bootstrap", self.endpoint);
-        let resp = self.agent.get(&url).call().map_err(map_error)?;
+        let resp = self.agent.get(&url).call().checked().map_err(map_error)?;
         resp.into_json()
             .map_err(|error| ClientError::Decode(error.to_string()))
     }
@@ -540,6 +554,7 @@ impl KoiClient {
             .query("name", name)
             .query("type", record_type)
             .call()
+            .checked()
         {
             Ok(response) => response,
             Err(error) => match map_error(error) {
@@ -567,7 +582,7 @@ impl KoiClient {
 
     pub fn dns_remove(&self, name: &str) -> Result<serde_json::Value> {
         let url = format!("{}/v1/dns/remove/{}", self.endpoint, name);
-        let resp = self.auth_delete(&url).call().map_err(map_error)?;
+        let resp = self.auth_delete(&url).call().checked().map_err(map_error)?;
         resp.into_json()
             .map_err(|e| ClientError::Decode(e.to_string()))
     }
@@ -626,7 +641,7 @@ impl KoiClient {
 
     pub fn health_remove_check(&self, name: &str) -> Result<serde_json::Value> {
         let url = format!("{}/v1/health/remove/{}", self.endpoint, name);
-        let resp = self.auth_delete(&url).call().map_err(map_error)?;
+        let resp = self.auth_delete(&url).call().checked().map_err(map_error)?;
         resp.into_json()
             .map_err(|e| ClientError::Decode(e.to_string()))
     }
@@ -720,7 +735,7 @@ impl KoiClient {
 
     pub fn proxy_remove(&self, name: &str) -> Result<serde_json::Value> {
         let url = format!("{}/v1/proxy/remove/{}", self.endpoint, name);
-        let resp = self.auth_delete(&url).call().map_err(map_error)?;
+        let resp = self.auth_delete(&url).call().checked().map_err(map_error)?;
         resp.into_json()
             .map_err(|e| ClientError::Decode(e.to_string()))
     }
@@ -749,7 +764,7 @@ impl KoiClient {
 
     pub fn udp_unbind(&self, id: &str) -> Result<()> {
         let url = format!("{}/v1/udp/bind/{}", self.endpoint, id);
-        let resp = self.auth_delete(&url).call().map_err(map_error)?;
+        let resp = self.auth_delete(&url).call().checked().map_err(map_error)?;
         let response = resp
             .into_json()
             .map_err(|e| ClientError::Decode(e.to_string()))?;
@@ -784,7 +799,8 @@ impl KoiClient {
         let url = format!("{}{path}", self.endpoint);
         let resp = self
             .auth_post(&url)
-            .send_json(body.clone())
+            .send_json_compact(body)
+            .checked()
             .map_err(map_error)?;
         resp.into_json()
             .map_err(|e| ClientError::Decode(e.to_string()))
@@ -793,7 +809,7 @@ impl KoiClient {
     /// GET JSON from an arbitrary path and return the response as a JSON value.
     pub fn get_json(&self, path: &str) -> Result<serde_json::Value> {
         let url = format!("{}{path}", self.endpoint);
-        let resp = self.auth_get(&url).call().map_err(map_error)?;
+        let resp = self.auth_get(&url).call().checked().map_err(map_error)?;
         resp.into_json()
             .map_err(|e| ClientError::Decode(e.to_string()))
     }
@@ -803,7 +819,8 @@ impl KoiClient {
         let url = format!("{}{path}", self.endpoint);
         let resp = self
             .auth_put(&url)
-            .send_json(body.clone())
+            .send_json_compact(body)
+            .checked()
             .map_err(map_error)?;
         resp.into_json()
             .map_err(|e| ClientError::Decode(e.to_string()))
@@ -814,7 +831,9 @@ impl KoiClient {
         let url = format!("{}{path}", self.endpoint);
         let resp = self
             .auth_delete(&url)
-            .send_json(body.clone())
+            .force_send_body()
+            .send_json_compact(body)
+            .checked()
             .map_err(map_error)?;
         resp.into_json()
             .map_err(|e| ClientError::Decode(e.to_string()))
@@ -824,40 +843,46 @@ impl KoiClient {
 
     pub fn admin_status(&self) -> Result<DaemonStatus> {
         let url = format!("{}/v1/mdns/admin/status", self.endpoint);
-        let resp = self.auth_get(&url).call().map_err(map_error)?;
+        let resp = self.auth_get(&url).call().checked().map_err(map_error)?;
         resp.into_json()
             .map_err(|e| ClientError::Decode(e.to_string()))
     }
 
     pub fn admin_registrations(&self) -> Result<Vec<AdminRegistration>> {
         let url = format!("{}/v1/mdns/admin/ls", self.endpoint);
-        let resp = self.auth_get(&url).call().map_err(map_error)?;
+        let resp = self.auth_get(&url).call().checked().map_err(map_error)?;
         resp.into_json()
             .map_err(|e| ClientError::Decode(e.to_string()))
     }
 
     pub fn admin_inspect(&self, id: &str) -> Result<AdminRegistration> {
         let url = format!("{}/v1/mdns/admin/inspect/{id}", self.endpoint);
-        let resp = self.auth_get(&url).call().map_err(map_error)?;
+        let resp = self.auth_get(&url).call().checked().map_err(map_error)?;
         resp.into_json()
             .map_err(|e| ClientError::Decode(e.to_string()))
     }
 
     pub fn admin_force_unregister(&self, id: &str) -> Result<()> {
         let url = format!("{}/v1/mdns/admin/unregister/{id}", self.endpoint);
-        self.auth_delete(&url).call().map_err(map_error)?;
+        self.auth_delete(&url).call().checked().map_err(map_error)?;
         Ok(())
     }
 
     pub fn admin_drain(&self, id: &str) -> Result<()> {
         let url = format!("{}/v1/mdns/admin/drain/{id}", self.endpoint);
-        self.auth_post(&url).call().map_err(map_error)?;
+        self.auth_post(&url)
+            .send_empty()
+            .checked()
+            .map_err(map_error)?;
         Ok(())
     }
 
     pub fn admin_revive(&self, id: &str) -> Result<()> {
         let url = format!("{}/v1/mdns/admin/revive/{id}", self.endpoint);
-        self.auth_post(&url).call().map_err(map_error)?;
+        self.auth_post(&url)
+            .send_empty()
+            .checked()
+            .map_err(map_error)?;
         Ok(())
     }
 
@@ -870,7 +895,11 @@ impl KoiClient {
     /// generation being torn down and cannot carry that later acknowledgement.
     pub fn shutdown(&self) -> Result<()> {
         let url = format!("{}/v1/admin/shutdown", self.endpoint);
-        let response = self.auth_post(&url).call().map_err(map_error)?;
+        let response = self
+            .auth_post(&url)
+            .send_empty()
+            .checked()
+            .map_err(map_error)?;
         let json: serde_json::Value = response
             .into_json()
             .map_err(|error| ClientError::Decode(error.to_string()))?;
@@ -891,10 +920,7 @@ impl KoiClient {
     /// send keepalive comments before this expires; cancellation and finite
     /// collection deadlines can therefore always reclaim their blocking owner.
     fn stream_agent(&self) -> ureq::Agent {
-        ureq::AgentBuilder::new()
-            .timeout_connect(CONNECT_TIMEOUT)
-            .timeout_read(SSE_CANCELLATION_BOUND)
-            .build()
+        http_agent(CONNECT_TIMEOUT, SSE_CANCELLATION_BOUND)
     }
 }
 
@@ -1295,11 +1321,97 @@ impl Drop for SseStream {
     }
 }
 
+// ── HTTP transport helpers ────────────────────────────────────────
+
+/// Redirect hops followed before a request fails (ureq's default is 10).
+const MAX_REDIRECTS: u32 = 5;
+
+/// Blocking agent with a connect bound and a per-read bound. 4xx/5xx arrive as
+/// responses rather than `ureq::Error::StatusCode`, so [`Exchange::checked`] can
+/// keep the daemon's error body. Proxy environment variables are ignored: the
+/// endpoint is always contacted directly.
+fn http_agent(connect: Duration, per_read: Duration) -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .proxy(None)
+        .max_redirects(MAX_REDIRECTS)
+        .timeout_connect(Some(connect))
+        .timeout_per_read(Some(per_read))
+        .build()
+        .into()
+}
+
+/// Outcome of one exchange: an HTTP error status keeps its response (the
+/// daemon's typed error body); everything else is a transport failure.
+enum HttpError {
+    Status(u16, Box<Response<Body>>),
+    Transport(ureq::Error),
+}
+
+type HttpResult = std::result::Result<Response<Body>, HttpError>;
+
+trait Exchange {
+    /// Split a 4xx/5xx response off as [`HttpError::Status`].
+    fn checked(self) -> HttpResult;
+}
+
+impl Exchange for std::result::Result<Response<Body>, ureq::Error> {
+    fn checked(self) -> HttpResult {
+        match self {
+            Ok(response) if response.status().as_u16() >= 400 => Err(HttpError::Status(
+                response.status().as_u16(),
+                Box::new(response),
+            )),
+            Ok(response) => Ok(response),
+            Err(error) => Err(HttpError::Transport(error)),
+        }
+    }
+}
+
+trait JsonRequest {
+    /// Send `value` as compact JSON with `Content-Type: application/json`
+    /// (ureq's own `send_json` pretty-prints and appends `; charset=utf-8`).
+    fn send_json_compact(
+        self,
+        value: &serde_json::Value,
+    ) -> std::result::Result<Response<Body>, ureq::Error>;
+}
+
+impl JsonRequest for RequestBuilder<WithBody> {
+    fn send_json_compact(
+        self,
+        value: &serde_json::Value,
+    ) -> std::result::Result<Response<Body>, ureq::Error> {
+        self.content_type("application/json")
+            .send(value.to_string())
+    }
+}
+
+/// Response body readers. JSON and raw streams are unbounded; `into_string`
+/// (error bodies) reads at most 10 MB and replaces invalid UTF-8.
+trait ResponseBody {
+    fn into_json<T: serde::de::DeserializeOwned>(self) -> std::result::Result<T, ureq::Error>;
+    fn into_string(self) -> std::result::Result<String, ureq::Error>;
+    fn into_reader(self) -> ureq::BodyReader<'static>;
+}
+
+impl ResponseBody for Response<Body> {
+    fn into_json<T: serde::de::DeserializeOwned>(self) -> std::result::Result<T, ureq::Error> {
+        self.into_body().into_with_config().read_json()
+    }
+
+    fn into_string(self) -> std::result::Result<String, ureq::Error> {
+        self.into_body().read_to_string()
+    }
+
+    fn into_reader(self) -> ureq::BodyReader<'static> {
+        self.into_body().into_reader()
+    }
+}
+
 // ── Error helpers ─────────────────────────────────────────────────
 
-fn decode_pond_command(
-    response: std::result::Result<ureq::Response, ureq::Error>,
-) -> Result<PondCommandOutcome> {
+fn decode_pond_command(response: HttpResult) -> Result<PondCommandOutcome> {
     match response {
         Ok(response) if response.status() == 200 => {
             decode_pond_status(response, "Pond command response").map(PondCommandOutcome::Succeeded)
@@ -1308,15 +1420,15 @@ fn decode_pond_command(
             "unexpected HTTP {} for Pond command; expected 200",
             response.status()
         ))),
-        Err(ureq::Error::Status(503, response)) => {
-            decode_pond_status(response, "Pond unavailable response")
+        Err(HttpError::Status(503, response)) => {
+            decode_pond_status(*response, "Pond unavailable response")
                 .map(PondCommandOutcome::Unavailable)
         }
         Err(error) => Err(map_error(error)),
     }
 }
 
-fn decode_pond_status(response: ureq::Response, context: &str) -> Result<PondStatus> {
+fn decode_pond_status(response: Response<Body>, context: &str) -> Result<PondStatus> {
     response
         .into_json()
         .map_err(|error| ClientError::Decode(format!("invalid {context}: {error}")))
@@ -1346,11 +1458,11 @@ fn decode_versioned<T: serde::de::DeserializeOwned>(
         .map_err(|error| ClientError::Decode(format!("invalid {context} response: {error}")))
 }
 
-fn map_error(e: ureq::Error) -> ClientError {
+fn map_error(e: HttpError) -> ClientError {
     match e {
-        ureq::Error::Status(401, _resp) => ClientError::Unauthorized,
-        ureq::Error::Status(status, resp) => {
-            let body = match resp.into_string() {
+        HttpError::Status(401, _resp) => ClientError::Unauthorized,
+        HttpError::Status(status, resp) => {
+            let body = match (*resp).into_string() {
                 Ok(body) => body,
                 Err(error) => {
                     return ClientError::Transport(format!(
@@ -1411,7 +1523,7 @@ fn map_error(e: ureq::Error) -> ClientError {
                 )),
             }
         }
-        ureq::Error::Transport(t) => ClientError::Unreachable(t.to_string()),
+        HttpError::Transport(t) => ClientError::Unreachable(t.to_string()),
     }
 }
 

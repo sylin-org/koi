@@ -22,6 +22,7 @@ serde_json.workspace = true
 chrono.workspace = true
 thiserror.workspace = true
 reqwest.workspace = true
+webpki-root-certs.workspace = true
 futures-util.workspace = true
 axum.workspace = true
 tracing.workspace = true

@@ -53,7 +53,7 @@ pub fn streamable_http_service<S: KoiSource>(
     allowed_hosts: Vec<String>,
 ) -> McpHttpService<S> {
     // `StreamableHttpServerConfig` is #[non_exhaustive]; build via Default (which
-    // already sets stateful_mode = true) + the host-allowlist builder.
+    // already sets legacy_session_mode = true) + the host-allowlist builder.
     let config = StreamableHttpServerConfig::default().with_allowed_hosts(allowed_hosts);
     StreamableHttpService::new(
         move || Ok(Server::new(Arc::clone(&source))),
