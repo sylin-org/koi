@@ -157,13 +157,56 @@ async fn bind_pair(addr: SocketAddr) -> Result<(UdpSocket, TcpListener, SocketAd
         .map_err(|error| DnsError::Bind(format!("{addr}: {error}")))
 }
 
+/// Kernel-selected ports tried before port zero gives up.
+const PORT_ZERO_ATTEMPTS: usize = 64;
+
 async fn bind_pair_io(addr: SocketAddr) -> std::io::Result<(UdpSocket, TcpListener, SocketAddr)> {
-    // The UDP socket is deliberately exclusive. Port zero is resolved once
-    // and the TCP listener is bound to that same kernel-selected port.
-    let udp = UdpSocket::bind(addr).await?;
-    let bound = udp.local_addr()?;
-    let tcp = TcpListener::bind(bound).await?;
-    Ok((udp, tcp, bound))
+    // The UDP socket is deliberately exclusive.
+    if addr.port() != 0 {
+        let udp = UdpSocket::bind(addr).await?;
+        let bound = udp.local_addr()?;
+        let tcp = TcpListener::bind(bound).await?;
+        return Ok((udp, tcp, bound));
+    }
+
+    // Port zero: the kernel picks a port for one protocol and the other
+    // claims the same number. The kernel never hands out a port that is
+    // taken or reserved for the protocol it picks for, but the other protocol
+    // can still refuse that number: Windows reserves whole ranges (Hyper-V,
+    // WinNAT), and it allocates ports nearly in sequence, so refusals come in
+    // runs. The leading protocol therefore alternates, which escapes a run
+    // either way. Refused sockets stay open until the pair is found, so the
+    // kernel never offers the same port twice.
+    let mut held_tcp = Vec::new();
+    let mut held_udp = Vec::new();
+    let mut attempt = 1;
+    loop {
+        let retry = |error: &std::io::Error| {
+            attempt < PORT_ZERO_ATTEMPTS
+                && matches!(
+                    error.kind(),
+                    std::io::ErrorKind::AddrInUse | std::io::ErrorKind::PermissionDenied
+                )
+        };
+        if attempt % 2 == 1 {
+            let tcp = TcpListener::bind(addr).await?;
+            let bound = tcp.local_addr()?;
+            match UdpSocket::bind(bound).await {
+                Ok(udp) => return Ok((udp, tcp, bound)),
+                Err(error) if retry(&error) => held_tcp.push(tcp),
+                Err(error) => return Err(error),
+            }
+        } else {
+            let udp = UdpSocket::bind(addr).await?;
+            let bound = udp.local_addr()?;
+            match TcpListener::bind(bound).await {
+                Ok(tcp) => return Ok((udp, tcp, bound)),
+                Err(error) if retry(&error) => held_udp.push(udp),
+                Err(error) => return Err(error),
+            }
+        }
+        attempt += 1;
+    }
 }
 
 fn useful_ipv4_addresses() -> Vec<Ipv4Addr> {
