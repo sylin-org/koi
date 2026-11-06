@@ -14,8 +14,7 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use tokio::sync::{mpsc, oneshot, watch};
 use zbus::names::BusName;
-use zbus::zvariant::OwnedObjectPath;
-use zbus::Connection;
+use zbus::{Connection, OwnedObjectPath};
 
 use crate::adapter::{
     failed_assessment, MdnsAdapter, MdnsCapabilities, MdnsProviderReport, ProbeFact, ProviderApi,
@@ -1043,7 +1042,6 @@ impl AvahiActor {
         let result = async {
             let proxy = AvahiEntryGroupProxy::builder(&self.connection)
                 .path(path)
-                .map_err(|error| avahi_protocol(ProviderOperation::Withdraw, error))?
                 .build()
                 .await
                 .map_err(|error| avahi_protocol(ProviderOperation::Withdraw, error))?;
@@ -1190,7 +1188,6 @@ async fn publish(
             .map_err(|error| format!("EntryGroupNew failed: {error}"))?;
         let group = AvahiEntryGroupProxy::builder(connection)
             .path(path.clone())
-            .map_err(|error| format!("invalid Avahi entry-group path: {error}"))?
             .build()
             .await
             .map_err(|error| format!("cannot create Avahi entry-group proxy: {error}"))?;
@@ -1307,16 +1304,14 @@ async fn pump_services(
     tx: mpsc::Sender<ProviderEvent>,
     ready: oneshot::Sender<std::result::Result<(), String>>,
 ) {
-    let proxy = match AvahiServiceBrowserProxy::builder(&connection).path(path) {
-        Ok(builder) => match builder.build().await {
-            Ok(proxy) => proxy,
-            Err(error) => {
-                let _ = ready.send(Err(format!("cannot build Avahi service browser: {error}")));
-                return;
-            }
-        },
+    let proxy = match AvahiServiceBrowserProxy::builder(&connection)
+        .path(path)
+        .build()
+        .await
+    {
+        Ok(proxy) => proxy,
         Err(error) => {
-            let _ = ready.send(Err(format!("invalid Avahi service-browser path: {error}")));
+            let _ = ready.send(Err(format!("cannot build Avahi service browser: {error}")));
             return;
         }
     };
@@ -1461,16 +1456,14 @@ async fn pump_service_types(
     tx: mpsc::Sender<ProviderEvent>,
     ready: oneshot::Sender<std::result::Result<(), String>>,
 ) {
-    let proxy = match AvahiServiceTypeBrowserProxy::builder(&connection).path(path) {
-        Ok(builder) => match builder.build().await {
-            Ok(proxy) => proxy,
-            Err(error) => {
-                let _ = ready.send(Err(format!("cannot build Avahi type browser: {error}")));
-                return;
-            }
-        },
+    let proxy = match AvahiServiceTypeBrowserProxy::builder(&connection)
+        .path(path)
+        .build()
+        .await
+    {
+        Ok(proxy) => proxy,
         Err(error) => {
-            let _ = ready.send(Err(format!("invalid Avahi type-browser path: {error}")));
+            let _ = ready.send(Err(format!("cannot build Avahi type browser: {error}")));
             return;
         }
     };
@@ -1653,7 +1646,6 @@ async fn free_browser_object(
     if is_meta {
         let proxy = AvahiServiceTypeBrowserProxy::builder(connection)
             .path(path.clone())
-            .map_err(|error| avahi_protocol(ProviderOperation::Browse, error))?
             .build()
             .await
             .map_err(|error| avahi_protocol(ProviderOperation::Browse, error))?;
@@ -1664,7 +1656,6 @@ async fn free_browser_object(
     } else {
         let proxy = AvahiServiceBrowserProxy::builder(connection)
             .path(path.clone())
-            .map_err(|error| avahi_protocol(ProviderOperation::Browse, error))?
             .build()
             .await
             .map_err(|error| avahi_protocol(ProviderOperation::Browse, error))?;

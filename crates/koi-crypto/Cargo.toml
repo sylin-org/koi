@@ -33,11 +33,20 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-# OS credential store (Secret Service / D-Bus on Linux, Keychain, Cred Manager) is
-# optional — see the `keyring` feature.
-keyring = { workspace = true, optional = true }
+# OS credential store (Credential Manager, login keychain, Linux kernel keyutils) is
+# optional — see the `keyring` feature. Each store is target-specific.
+keyring-core = { workspace = true, optional = true }
 x25519-dalek.workspace = true
 hkdf.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-native-keyring-store = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+linux-keyutils-keyring-store = { workspace = true, optional = true }
 
 [package.metadata.docs.rs]
 all-features = true
@@ -54,7 +63,12 @@ rcgen.workspace = true
 # rendering) are rarely-run, heavy, single-module dependencies, each with a graceful
 # fallback (vault passphrase backend; otpauth:// URI text). Default-on so the binary and
 # existing consumers are byte-identical; lean library consumers drop them — and the
-# Secret Service/D-Bus + PNG-codec closures — with `default-features = false`.
+# credential-store + PNG-codec closures — with `default-features = false`.
 default = ["keyring", "qr"]
-keyring = ["dep:keyring"]
+keyring = [
+    "dep:keyring-core",
+    "dep:windows-native-keyring-store",
+    "dep:apple-native-keyring-store",
+    "dep:linux-keyutils-keyring-store",
+]
 qr = ["dep:qrcode", "dep:image"]

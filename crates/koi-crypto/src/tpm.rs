@@ -2,12 +2,14 @@
 //!
 //! Protects encrypted CA key material so it can only be decrypted on
 //! the machine where the CA was created.  Uses the OS-native credential
-//! store via the `keyring` crate:
+//! store via `keyring-core` and its per-platform store crates:
 //!
 //! - **Windows** - Credential Manager (DPAPI-backed, TPM-backed on
 //!   modern hardware with vTPM or firmware TPM)
 //! - **macOS** - Keychain (Secure Enclave on Apple Silicon)
-//! - **Linux** - kernel keyutils or Secret Service (D-Bus)
+//! - **Linux** - kernel keyutils
+//!
+//! Other operating systems have no store, so [`is_available`] is `false` there.
 //!
 //! This replaces the original `tss-esapi` TPM stub with a pragmatic
 //! cross-platform approach that achieves the same security goal: the
@@ -35,6 +37,81 @@ pub enum CredentialDelete {
 #[cfg(feature = "keyring")]
 const SERVICE_NAME: &str = "koi-certmesh";
 
+/// The platform credential store, built once per process.
+///
+/// Each store is configured to name credentials exactly as keyring 3 did, so
+/// material sealed by earlier releases is still found.  Entries are built from
+/// this private store rather than keyring-core's process-wide default, which
+/// the embedding application may own.
+#[cfg(feature = "keyring")]
+fn platform_store() -> Result<&'static keyring_core::CredentialStore, TpmError> {
+    use std::sync::{Arc, LazyLock};
+
+    static STORE: LazyLock<Result<Arc<keyring_core::CredentialStore>, String>> =
+        LazyLock::new(|| build_platform_store().map_err(|e| e.to_string()));
+
+    match &*STORE {
+        Ok(store) => Ok(store.as_ref()),
+        Err(e) => Err(TpmError::NotAvailable(e.clone())),
+    }
+}
+
+/// Windows Credential Manager: generic credential `{user}.{service}`.
+#[cfg(all(feature = "keyring", target_os = "windows"))]
+fn build_platform_store() -> keyring_core::Result<std::sync::Arc<keyring_core::CredentialStore>> {
+    Ok(windows_native_keyring_store::Store::new()?)
+}
+
+/// macOS login (User) keychain: generic password keyed by service and account.
+#[cfg(all(feature = "keyring", target_os = "macos"))]
+fn build_platform_store() -> keyring_core::Result<std::sync::Arc<keyring_core::CredentialStore>> {
+    Ok(apple_native_keyring_store::keychain::Store::new()?)
+}
+
+/// Linux kernel keyutils: session keyring, linked into the persistent keyring.
+/// keyring 3 described keys as `keyring-rs:{user}@{service}`; the store's own
+/// default prefix is `keyring:`, so keep the old one.
+#[cfg(all(feature = "keyring", target_os = "linux"))]
+fn build_platform_store() -> keyring_core::Result<std::sync::Arc<keyring_core::CredentialStore>> {
+    let config = std::collections::HashMap::from([("prefix", "keyring-rs:"), ("divider", "@")]);
+    Ok(linux_keyutils_keyring_store::Store::new_with_configuration(
+        &config,
+    )?)
+}
+
+#[cfg(all(
+    feature = "keyring",
+    not(any(target_os = "windows", target_os = "macos", target_os = "linux"))
+))]
+fn build_platform_store() -> keyring_core::Result<std::sync::Arc<keyring_core::CredentialStore>> {
+    Err(keyring_core::Error::NotSupportedByStore(
+        "no platform credential store on this operating system".to_string(),
+    ))
+}
+
+#[cfg(feature = "keyring")]
+fn entry(label: &str) -> Result<keyring_core::Entry, TpmError> {
+    platform_store()?
+        .build(SERVICE_NAME, label, None)
+        .map_err(|e| TpmError::NotAvailable(e.to_string()))
+}
+
+/// Whether an entry error means "no such credential".
+///
+/// keyring 3's keyutils store reported a keyutils access denial as `NoEntry`;
+/// linux-keyutils-keyring-store reports it as `NoStorageAccess`.  On Linux
+/// (where `NoStorageAccess` can only come from that denial once the entry
+/// exists) keep the old meaning.
+#[cfg(feature = "keyring")]
+fn is_no_entry(error: &keyring_core::Error) -> bool {
+    match error {
+        keyring_core::Error::NoEntry => true,
+        #[cfg(target_os = "linux")]
+        keyring_core::Error::NoStorageAccess(_) => true,
+        _ => false,
+    }
+}
+
 /// Check whether the platform credential store is functional.
 ///
 /// Performs a probe write / read / delete cycle with a disposable entry
@@ -50,7 +127,7 @@ pub fn is_available() -> bool {
     }
 
     let probe_user = "koi-probe-test";
-    let entry = match keyring::Entry::new(SERVICE_NAME, probe_user) {
+    let entry = match entry(probe_user) {
         Ok(e) => e,
         Err(_) => return false,
     };
@@ -67,9 +144,7 @@ pub fn is_available() -> bool {
 /// `(SERVICE_NAME, label)`.
 #[cfg(feature = "keyring")]
 pub fn seal_key_material(label: &str, data: &[u8]) -> Result<(), TpmError> {
-    let entry = keyring::Entry::new(SERVICE_NAME, label)
-        .map_err(|e| TpmError::NotAvailable(e.to_string()))?;
-    entry
+    entry(label)?
         .set_secret(data)
         .map_err(|e| TpmError::Failure(format!("seal failed for '{label}': {e}")))?;
     tracing::debug!(label, "Key material sealed in platform credential store");
@@ -79,9 +154,7 @@ pub fn seal_key_material(label: &str, data: &[u8]) -> Result<(), TpmError> {
 /// Unseal (retrieve) key material from the platform credential store.
 #[cfg(feature = "keyring")]
 pub fn unseal_key_material(label: &str) -> Result<Vec<u8>, TpmError> {
-    let entry = keyring::Entry::new(SERVICE_NAME, label)
-        .map_err(|e| TpmError::NotAvailable(e.to_string()))?;
-    entry
+    entry(label)?
         .get_secret()
         .map_err(|e| TpmError::NotFound(format!("unseal failed for '{label}': {e}")))
 }
@@ -91,10 +164,9 @@ pub fn unseal_key_material(label: &str) -> Result<Vec<u8>, TpmError> {
 /// Called during `certmesh destroy` to clean up.
 #[cfg(feature = "keyring")]
 pub fn delete_key_material(label: &str) -> Result<CredentialDelete, TpmError> {
-    let entry = keyring::Entry::new(SERVICE_NAME, label)
-        .map_err(|e| TpmError::NotAvailable(e.to_string()))?;
+    let entry = entry(label)?;
     match entry.get_secret() {
-        Err(keyring::Error::NoEntry) => return Ok(CredentialDelete::Absent),
+        Err(e) if is_no_entry(&e) => return Ok(CredentialDelete::Absent),
         Err(e) => {
             return Err(TpmError::Failure(format!(
                 "cannot inspect credential before deleting '{label}': {e}"
@@ -107,7 +179,7 @@ pub fn delete_key_material(label: &str) -> Result<CredentialDelete, TpmError> {
             tracing::debug!(label, "Sealed key material deleted from credential store");
             Ok(CredentialDelete::Removed)
         }
-        Err(keyring::Error::NoEntry) => Ok(CredentialDelete::Absent),
+        Err(e) if is_no_entry(&e) => Ok(CredentialDelete::Absent),
         Err(e) => Err(TpmError::Failure(format!(
             "delete failed for '{label}': {e}"
         ))),

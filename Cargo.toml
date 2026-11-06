@@ -88,7 +88,9 @@ hostname = "0.4"
 if-addrs = "0.15"
 image = { version = "0.25", default-features = false, features = ["png"] }
 futures-util = "0.3"
-zbus = { version = "5.19", default-features = false, features = ["tokio"] }
+# zbus 6 gates its proxy macro and standard fdo proxies behind `proxy` (on by default
+# before 6.0); koi-mdns's Linux system adapters need both.
+zbus = { version = "6.2.1", default-features = false, features = ["tokio", "proxy"] }
 hickory-server = "0.26"
 hickory-resolver = { version = "0.26", features = ["tokio", "system-config"] }
 hickory-proto = "0.26"
@@ -144,7 +146,14 @@ proptest = "1"
 crossterm = "0.29"
 indicatif = "0.18"
 instant-acme = { version = "0.8.5", features = ["hyper-rustls", "rcgen"] }
-keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
+# OS credential store for koi-crypto's `keyring` feature. keyring 4 is only a facade
+# whose `v1` mode moves Linux to D-Bus Secret Service, so depend on keyring-core and
+# the per-platform stores directly: Windows Credential Manager, macOS login keychain
+# and Linux kernel keyutils, the stores keyring 3 used with the old feature set.
+keyring-core = "1.0.1"
+windows-native-keyring-store = { version = "1.1", default-features = false }
+apple-native-keyring-store = { version = "1.0.2", features = ["keychain"] }
+linux-keyutils-keyring-store = "1"
 x25519-dalek = { version = "3", features = ["static_secrets"] }
 hkdf = "0.13"
 

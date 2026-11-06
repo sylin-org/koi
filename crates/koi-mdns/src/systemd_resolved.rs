@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,8 +18,7 @@ use futures_util::{Stream, StreamExt};
 use tokio::sync::{mpsc, oneshot, watch};
 use zbus::message::{Message, Type as MessageType};
 use zbus::names::BusName;
-use zbus::zvariant::{OwnedObjectPath, Value};
-use zbus::{Connection, MatchRule, MessageStream};
+use zbus::{Connection, MatchRule, MessageStream, OwnedObjectPath, Variant};
 
 use crate::adapter::{
     failed_assessment, MdnsAdapter, MdnsCapabilities, MdnsProviderReport, ProbeFact, ProviderApi,
@@ -322,7 +322,7 @@ async fn publication_authorization(connection: &Connection) -> (bool, String) {
             ));
         }
     };
-    let subject_details = HashMap::from([("name", Value::from(unique_name.as_str()))]);
+    let subject_details = HashMap::from([("name", Variant::from(unique_name.as_str()))]);
     let subject = ("system-bus-name", subject_details);
     let details = HashMap::<&str, &str>::new();
     let result: zbus::Result<(bool, bool, HashMap<String, String>)> = authority
@@ -1095,13 +1095,11 @@ async fn open_conflict_stream(
     let rule = MatchRule::builder()
         .msg_type(MessageType::Signal)
         .sender(owner)
-        .map_err(|error| resolved_protocol(operation, error))?
         .interface(DNSSD_SERVICE_INTERFACE)
-        .map_err(|error| resolved_protocol(operation, error))?
         .member(CONFLICT_MEMBER)
-        .map_err(|error| resolved_protocol(operation, error))?
-        .build();
-    MessageStream::for_match_rule(rule, connection, Some(COMMAND_CAPACITY))
+        .build()
+        .map_err(|error| resolved_protocol(operation, error))?;
+    MessageStream::for_match_rule(rule, connection, NonZeroUsize::new(COMMAND_CAPACITY))
         .await
         .map_err(|error| resolved_protocol(operation, error))
 }

@@ -109,7 +109,7 @@ No call sites change — the APIs stay; only the behavior degrades gracefully:
 From your own crate:
 
 ```bash
-cargo tree -e normal | grep -E ' (bollard|keyring|image|qrcode) '   # empty == lean
+cargo tree -e normal | grep -E ' (bollard|keyring-core|image|qrcode) '   # empty == lean
 ```
 
 > The standalone `koi` binary always ships every backend — these features are a

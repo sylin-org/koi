@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use mdns_sd::{
-    DaemonEvent, DaemonStatus, ResolvedService, ScopedIp, ServiceDaemon,
+    DaemonEvent, DaemonStatus, IfKind, ResolvedService, ScopedIp, ServiceDaemon,
     ServiceEvent as MdnsServiceEvent, ServiceInfo, UnregisterStatus,
 };
 use socket2::{Domain, Protocol, Socket, Type};
@@ -33,6 +33,11 @@ const BROWSE_CHANNEL_CAPACITY: usize = 512;
 const COMMAND_CAPACITY: usize = 256;
 const NATIVE_PRIORITY: u16 = 100;
 const STARTUP_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
+/// Largest outgoing packet the engine builds. mdns-sd 0.21 defaults to 1452
+/// bytes (one Ethernet frame); 0.20 packed packets up to 8972. Keep the old
+/// wire behaviour: 8952 is the most 0.21 accepts (RFC 6762's 9000-byte ceiling
+/// less the IPv6 header).
+const MAX_OUTGOING_PACKET: usize = 8952;
 const PUBLICATION_TIMEOUT: Duration = Duration::from_secs(4);
 const BROWSE_START_TIMEOUT: Duration = Duration::from_secs(2);
 const RESOURCE_RELEASE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -219,6 +224,9 @@ impl NativeSession {
                 error.to_string(),
             )
         })?;
+        daemon
+            .set_max_packet_size(IfKind::All, MAX_OUTGOING_PACKET)
+            .map_err(|error| native_protocol(ProviderOperation::Open, error))?;
         let status = daemon
             .status()
             .map_err(|error| native_protocol(ProviderOperation::Open, error))?
