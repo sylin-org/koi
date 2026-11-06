@@ -1,0 +1,28 @@
+name: koi-operator-preview
+
+services:
+  app:
+    image: node:24-bookworm-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e
+    command: ["node", "/fixture/server.mjs"]
+    environment:
+      KOI_FIXTURE_RUN_ID: "${KOI_FIXTURE_RUN_ID:?set KOI_FIXTURE_RUN_ID in .env}"
+    ports:
+      - target: 8080
+        published: "${KOI_FIXTURE_PORT:-18080}"
+        host_ip: "0.0.0.0"
+        protocol: tcp
+    labels:
+      koi.announce: "${KOI_FIXTURE_NAME:-koi-preview}"
+      koi.health.kind: http
+      koi.health.path: /health
+      koi.health.interval: "5"
+      koi.health.timeout: "2"
+    volumes:
+      - ./server.mjs:/fixture/server.mjs:ro
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 2s
+    restart: "no"

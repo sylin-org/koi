@@ -1,238 +1,117 @@
-# ACME — Get certs from Koi's CA with dns-01 clients
+# ACME integration: prerequisites and current limits
 
-Here's the problem: you already run Caddy, Traefik, or `lego`. They know how to get
-certificates over **ACME** (RFC 8555). Koi has a private CA (the certmesh) that the rest
-of your network already trusts. Wouldn't it be nice if those tools could just *ask Koi* for
-a certificate through their existing ACME support, without replacing the proxy?
+Koi implements a private-CA ACME endpoint for dns-01 clients. It is an advanced
+integration for an operator already using a reverse proxy or certificate client.
+It is not required for the initial [container/LAN trial](../../CONTAINERS.md).
 
-That is exactly what the ACME facade does. Koi runs a small **RFC 8555 server** in front of
-its CA. Point an ACME client at Koi's directory URL, have it trust the CA root once, and
-connect its dns-01 provider to Koi's two-command TXT interface. An operator must also
-grant that exact service name to that ACME account. The client can then obtain and
-renew the one certificate authorized by that grant.
+**Current 1.0.0-dev.0 source is not a complete public ACME setup.** It requires an
+exact service-name grant bound to an ACME account, while the public operator
+workflow creating that grant and composing the listener is incomplete. The
+protocol and provider notes below do not fill that missing step.
 
-You keep Caddy/Traefik, but this is not zero-configuration interoperability: the
-client must support P-256 ACME accounts, a private CA root, and a dns-01 provider
-that maps present/cleanup to Koi's TXT operations. The recipes below state those
-requirements instead of implying every stock client works unchanged.
+Published stable 0.9.0 and prerelease 1.0.0-rc.2 have their own contracts.
+Use [release readiness](../launch/README.md) and matching docs before adopting
+an artifact.
 
----
+## Required pieces
 
-## Scope (what this is, and isn't)
+1. An initialized, unlocked Koi CA and its intended trust/recovery policy.
+2. DNS enabled for the configured Koi zone.
+3. An ACME client with P-256/ES256 account support and private-root configuration.
+4. A DNS provider mapping challenge present/cleanup to Koi TXT operations.
+5. One exact service-name grant bound to that persisted ACME account.
+6. A listener consuming the resulting certificate and a client that trusts it.
 
-- **dns-01 only.** The client's provider publishes through `koi dns txt set`; Koi validates
-  against its own DNS resolver. There is no public-DNS propagation wait. `http-01` and
-  `tls-alpn-01` are out of scope.
-- **EC / ES256 only (v1).** Account keys must be P-256 ECDSA. `RS256` is rejected with
-  `badSignatureAlgorithm`. (Most modern ACME clients default to or support EC keys.)
-- **One exact granted name only.** Being inside the configured Koi DNS zone (default
-  `internal`) is only a prefilter. Every order must contain exactly one non-wildcard
-  service name already bound to that account. Out-of-zone names and wildcards are
-  rejected with `rejectedIdentifier`; an in-zone name owned by another account is
-  rejected with `unauthorized`.
-- **No OCSP, no CT, no pre-authorization.** This is a homelab/LAN CA facade, not a public CA.
-- **Revocation is Koi metadata, not public-PKI status.** `revoke-cert` updates the
-  certmesh roster and signed trust bundle. Koi-aware verification consumes that
-  metadata; ordinary TLS clients do not receive CRL/OCSP and may accept the leaf
-  until its own expiry.
-- **CA-admin ops stay off ACME.** ACME issues leaf certs; it never touches CA creation,
-  unlock, enrollment policy, backup, or revoke-the-CA. Those remain `koi certmesh …`.
+A stock Caddy configuration with only a custom acme_ca URL lacks the required DNS
+provider. Traefik/lego also need a compatible provider and account configuration.
+Format compatibility is not evidence that a complete maintained integration has
+been accepted.
 
----
+## Inspect the server
 
-## How it works
+With a running daemon and CA:
 
-1. The daemon runs a dedicated **server-auth TLS listener** (default port **5643**) mounting
-   `/acme/{directory, new-nonce, new-account, new-order, authz, chall, order/finalize, cert,
-   revoke-cert}`.
-2. The listener's own certificate is a daemon leaf issued by your certmesh CA. Because it
-   chains to the CA root, a client that trusts the root trusts the listener.
-3. A client registers an account (its EC public key). A trusted operator/coordinator
-   binds one stable Koi service and exact configured-zone name to that account's key
-   thumbprint. The client creates an order for exactly that name and receives a
-   `dns-01` challenge.
-4. The client's provider calls `koi dns txt set <name> <value>`. Koi serves that ephemeral
-   value over DNS and the ACME validator reads it through the same DNS core.
-5. The client finalizes with a CSR. Koi signs **only** the order's authorized names — any
-   extra SAN snuck into the CSR is rejected (`badCSR`). The issued leaf + CA chain is
-   returned.
-6. The public fingerprint and expiry are recorded on the durable service-name grant.
-   ACME issuance does not create a mesh member or grant management-plane identity.
-
-The server starts automatically with the daemon when the CA is **initialized + unlocked**.
-Disable it with `--no-acme` / `KOI_NO_ACME=1`. It needs the DNS capability; with
-`--no-dns` it is skipped.
-
-R20 supplies the typed Certmesh grant/issuance facade. The public operator workflow
-that creates the grant and wires its certificate into a listener belongs to R21/R24;
-until that lands, the standalone recipes below describe the ACME client side but are
-not a complete end-user setup by themselves.
-
----
-
-## Quick start
-
-```bash
-# 1. Have a CA (once).
-koi certmesh create
-
-# 2. See the directory URL + bootstrap recipe.
+```sh
 koi certmesh acme enable
-#   Directory URL : https://<daemon-host>:5643/acme/directory
-#   CA root cert  : <data-dir>/certmesh/ca/ca-cert.pem
-#   ...
-
-# 3. Check it's serving.
 koi certmesh acme status
 ```
 
-The **one-time bootstrap** every client needs: distribute the CA root certificate
-(`<data-dir>/certmesh/ca/ca-cert.pem`) and configure the client to trust it for ACME. The
-ACME listener's leaf chains to that root, so once a client trusts the root, it trusts Koi's
-ACME endpoint. Installing the root in the OS store is not proof that a particular ACME
-client reads that store; prefer its explicit private-CA option where available.
+The command prints the directory/bootstrap information. The dedicated server-auth
+TLS listener normally uses port 5643 and /acme/directory. It starts when the CA
+is initialized and unlocked; DNS is required. --no-acme disables it.
 
----
+The listener's own certificate chains to the private CA. Configure the chosen
+ACME client's root source; an OS root installation is not proof that the client
+uses that source.
 
-## Client recipes
+## Authorization and protocol scope
 
-In every recipe below, replace `<dir>` with your directory URL
-(`https://<daemon-host>:5643/acme/directory`) and `<ca-root>` with the path to the CA root
-PEM (`<data-dir>/certmesh/ca/ca-cert.pem`).
+- Only dns-01 challenges are supported; no http-01 or tls-alpn-01 path is provided.
+- Account signatures use ES256/P-256; RSA account signing is rejected.
+- Orders contain one exact account-granted, non-wildcard configured-zone name.
+  Being inside the zone alone is not authority to issue.
+- The grant is checked when an order is created and again before signing.
+- CSR SAN expansion beyond the authorized name is rejected.
+- A service certificate is recorded against its grant, not as a new mesh member.
+- Requests validate JWS signatures, URL binding and replay nonces.
+- Errors use the RFC 8555 application/problem+json shape.
 
-### Provider hook
+Open enrollment permits account registration but grants no names.
+Closed enrollment requires External Account Binding for registration; that also
+does not replace the exact service-name grant.
 
-Every client needs a dns-01 provider. The provider has exactly two Koi operations:
+## DNS provider operations
 
-```bash
-# present
+A provider must present and clean up the exact challenge value:
+
+```sh
 koi dns txt set _acme-challenge.app.internal "$VALUE"
-
-# cleanup — removes only this value, preserving concurrent challenges
 koi dns txt clear _acme-challenge.app.internal "$VALUE"
 ```
 
-Both commands require the daemon access token, just like other DNS mutations. Run the hook
-where `koi` can read the daemon breadcrumb, or pass the normal `--endpoint` and `--token`
-options. Values are memory-only and are not written to Koi's persistent DNS state.
+These POSIX examples assume VALUE is supplied by the provider. The equivalent
+authenticated API uses PUT/DELETE /v1/dns/txt with name and value fields.
+Cleanup removes only its own value, preserving concurrent challenges.
+koi dns add creates address records and is not the challenge operation.
 
-### Caddy
+Run the hook where it can reach Koi with the required credentials. Do not embed
+a daemon token in images or source control. Challenges are ephemeral; hooks need
+error handling and exact cleanup.
 
-Caddy can point its ACME issuer at `<dir>` and trust `<ca-root>`, but Koi offers dns-01
-only. A stock Caddy build without a DNS provider cannot complete this flow. Use a Caddy
-build/provider module that can invoke the two operations above; then configure the site
-issuer with Koi's directory and root. This limitation is explicit: Koi does not pretend
-that `acme_ca` alone supplies a dns-01 provider.
+## Listener and client completion
 
-### Traefik
+A completed integration must place the correct leaf/key/chain in the consuming
+proxy, renew it, verify reload, recover from CA/listener interruptions and
+preserve the working endpoint on replacement failure.
 
-Traefik configures a custom CA server with `caServer`, pins the root with `caCertificates`,
-and needs a dns-01 **provider**:
+Koi's Proxy accepts explicit overrides in its own proxy-certs directory.
+Do not write into Certmesh's private storage to simulate an absent public
+operation. See [Proxy](proxy.md) and [container TLS](recipes/container-trusted-cert.md).
 
-```yaml
-certificatesResolvers:
-  koi:
-    acme:
-      caServer: <dir>
-      caCertificates: <ca-root>
-      email: you@example.invalid
-      storage: /etc/traefik/acme.json
-      dnsChallenge:
-        # Use an exec/HTTP provider that maps present and cleanup to
-        # `koi dns txt set` and `koi dns txt clear`.
-        provider: exec
-```
+The second client must resolve the name and validate the real leaf through the
+intended browser/runtime. Do not declare success based solely on issuance or
+root installation.
 
-`koi dns add` creates address records and is deliberately not used for ACME challenges.
-Provider hooks must use `koi dns txt set/clear` or `PUT/DELETE /v1/dns/txt`.
+## Revocation limits
 
-### lego
+There is no OCSP or CT service. Koi-aware verification can consume signed
+revocation metadata; ordinary TLS clients do not receive CRL/OCSP and may accept
+a copied leaf until its expiry. Account or grant removal is not instant
+revocation in those clients.
 
-`lego` points at a custom server with `--server`, trusts the root via
-`LEGO_CA_CERTIFICATES`, and uses a dns-01 provider (`exec` is the simplest to wire to Koi):
+## Endpoint reference
 
-```bash
-export LEGO_CA_CERTIFICATES=<ca-root>
-export EXEC_PATH=/path/to/koi-dns-hook.sh   # writes the TXT into Koi's DNS
+| Path on the dedicated TLS listener | Purpose |
+| --- | --- |
+| GET /acme/directory | Protocol endpoints and metadata |
+| HEAD/GET /acme/new-nonce | Fresh nonce |
+| POST /acme/new-account | Account registration |
+| POST /acme/new-order | One exact granted service name |
+| POST /acme/authz/{id} | Authorization state |
+| POST /acme/chall/{id} | Trigger validation |
+| POST /acme/order/{id}/finalize | CSR validation and signing |
+| POST /acme/cert/{id} | Certificate download |
+| POST /acme/revoke-cert | Record revocation |
 
-lego \
-  --server <dir> \
-  --email you@example.invalid \
-  --dns exec \
-  --domains grafana.internal \
-  run
-```
-
-The `koi-dns-hook.sh` script maps `present` to `koi dns txt set` and `cleanup` to
-`koi dns txt clear`, passing the challenge FQDN and exact value supplied by the provider.
-
----
-
-## Open vs. closed enrollment
-
-The ACME server mirrors the certmesh enrollment posture:
-
-- **Open** (`koi certmesh open-enrollment`): `new-account` is free, but registration
-  never grants a DNS name. An operator must still bind the exact service name to the
-  registered account.
-- **Closed**: the directory advertises `externalAccountRequired`, and `new-account` without
-  an External Account Binding (EAB) is rejected with `externalAccountRequired`. EAB ties new
-  ACME accounts to a certmesh-minted credential. It does not replace the separate,
-  exact service-name grant. Use this for shared/team meshes.
-
----
-
-## Security model
-
-- Every ACME request is a signed JWS; the signature is verified against the account's EC
-  key. A request signed with the wrong key is rejected (`unauthorized`).
-- Every response carries a fresh `Replay-Nonce`; a reused nonce is rejected (`badNonce`)
-  **with a fresh nonce** so the client recovers.
-- The protected-header `url` must equal the request URL.
-- The configured zone is a prefilter. New-order requires one exact account-bound
-  service grant, rejects wildcards, and finalization repeats the grant check under
-  the signing transition so a revoked grant cannot race a ready order.
-- At finalize, **every CSR SAN must be an authorized identifier of the order** — the CA
-  issues a cert bearing only the authorized names, never the CSR's embedded extras.
-- Errors are RFC 8555 `application/problem+json` (`urn:ietf:params:acme:error:*`), not the
-  flat Koi `{error,message}` shape.
-
-These properties are enforced by the security-gate tests in
-`crates/koi-certmesh/tests/acme.rs`, alongside an `instant-acme` conformance test that
-issues a real certificate end-to-end via dns-01.
-
----
-
-## Commands & endpoints
-
-| Command | Purpose |
-|---|---|
-| `koi certmesh acme enable` | Print the directory URL + the client bootstrap recipe |
-| `koi certmesh acme status` | Show whether the ACME server is serving + the directory URL |
-| `koi dns txt set <name> <value>` | Publish one ephemeral dns-01 value |
-| `koi dns txt clear <name> <value>` | Remove that exact value |
-
-The corresponding authenticated DNS API uses `PUT /v1/dns/txt` and
-`DELETE /v1/dns/txt`, both with `{"name":"…","value":"…"}`.
-
-The ACME protocol endpoints live under `/acme/` on the **dedicated TLS port (5643)**, *not*
-the main HTTP adapter:
-
-| Endpoint | Purpose |
-|---|---|
-| `GET  /acme/directory` | Directory (endpoint URLs + meta) |
-| `HEAD/GET /acme/new-nonce` | Fresh replay nonce |
-| `POST /acme/new-account` | Register an account (JWS + jwk; EAB in closed mode) |
-| `POST /acme/new-order` | Create an order for one exact account-granted service name |
-| `POST /acme/authz/{id}` | Authorization (POST-as-GET) |
-| `POST /acme/chall/{id}` | Trigger dns-01 validation |
-| `POST /acme/order/{id}/finalize` | Submit CSR → issue |
-| `POST /acme/cert/{id}` | Download the leaf + CA chain (POST-as-GET) |
-| `POST /acme/revoke-cert` | Revoke an issued certificate |
-
----
-
-## See also
-
-- [certmesh.md](certmesh.md) — the private CA the ACME server issues from.
-- [proxy.md](proxy.md) — Koi's built-in TLS endpoint, *or* bring your own proxy via ACME.
+[Certmesh](certmesh.md) · [Trust roots](trust.md) ·
+[API authentication](api-authentication.md) · [Release readiness](../launch/README.md)

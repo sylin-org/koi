@@ -1,33 +1,17 @@
 # koi-dns
 
-[![Crates.io](https://img.shields.io/crates/v/koi-dns.svg)](https://crates.io/crates/koi-dns)
-[![Docs.rs](https://docs.rs/koi-dns/badge.svg)](https://docs.rs/koi-dns)
-[![License](https://img.shields.io/crates/l/koi-dns.svg)](https://github.com/sylin-org/koi#license)
+Local DNS domain serving the configured zone, default `internal`, with persistent static entries and transient derived records. The resolver supports controlled upstream resolution and bounded per-client/global query admission.
 
-Local DNS resolver with mDNS, certmesh, and static record integration.
+Clients must actually route the zone to Koi. A record existing in Koi is not proof that another device can resolve it. Keep an existing resolver and delegate the zone where appropriate; Koi does not provide remote network connectivity.
 
-## Overview
+## Development
 
-`koi-dns` runs a local DNS server (built on Hickory DNS) that resolves names
-from multiple sources: static entries, certmesh-enrolled hosts, and mDNS
-discovered services. It supports configurable zones, per-query rate limiting,
-upstream forwarding for non-local names, and an HTTP API for managing entries
-at runtime.
+Read [architecture](../../docs/reference/architecture.md) for ownership boundaries and [launch readiness](../../docs/launch/README.md) for the supported-versus-tested journey matrix. This README describes repository source; it does not assert package publication or physical acceptance.
 
-## Features
+```sh
+cargo test -p koi-dns --locked
+```
 
-- Local DNS server with configurable zone (e.g. `.koi`)
-- Static, certmesh, and mDNS record sources
-- Per-query rate limiting
-- Upstream DNS forwarding for external names
-- HTTP API for add/remove/lookup/list operations
+Platform-dependent tests can require explicit facilities or remain ignored in ordinary runs. See [validation](../../docs/qa/validation-suite.md) before interpreting a green result.
 
-## Part of Koi
-
-This crate is part of the [Koi](https://github.com/sylin-org/koi) workspace.
-See the main repository for architecture details.
-
-## License
-
-Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
-[MIT License](LICENSE-MIT) at your option.
+Licensed under Apache-2.0 OR MIT; see the workspace license files.

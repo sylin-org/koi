@@ -1,395 +1,154 @@
-# Runtime - Container & Service Lifecycle
+# Derive discovery and names from container lifecycle
 
-Docker containers start and stop. Every time one starts, you want it discoverable — announced via mDNS, resolvable by name, health-checked. Every time it stops, all of that should clean up. Automatically.
+Koi observes Docker/Podman inventory and derives resources for opted-in
+containers. The first task is [publish, open from a second machine and verify
+recreation](../../CONTAINERS.md). Current source behavior is described here;
+[release readiness](../launch/README.md) identifies accepted artifacts.
 
-Koi's runtime adapter watches Docker or Podman for lifecycle events and drives the
-currently implemented discovery, DNS, health, and optional host-proxy operations.
-The `koi.certmesh` label is parsed request metadata only: it does not issue or inject
-a workload certificate. Automatic per-workload secure-service composition is planned
-work, not behavior shipped by this adapter.
+The runtime domain is configured by daemon options and inspected through HTTP.
+There is no separate koi runtime CLI command.
 
-```bash
-docker run -d -p 3000:3000 --label koi.announce=grafana grafana/grafana
+## Inspect the engine connection
+
+```sh
+koi status
+curl -fsS http://127.0.0.1:5641/v1/runtime/status
+curl -fsS http://127.0.0.1:5641/v1/runtime/instances
 ```
 
-That single label triggers:
+These examples use the default local HTTP port. In Windows PowerShell, select
+curl.exe rather than an alias, or use Invoke-RestMethod. Adjust the endpoint if
+the installed service uses another port.
 
-1. **mDNS**: `grafana._http._tcp` announced on the LAN (port 3000 → HTTP heuristic)
-2. **DNS**: `grafana.internal` resolves to the host IP
-3. **Health**: TCP check registered on port 3000
+The account running Koi must access the engine socket. A terminal user and
+system service can have different permissions, particularly with rootless Podman
+or Docker Desktop. A retained inventory with an unavailable source is not
+current proof of running applications.
 
-Stop the container → all three are removed. Start it again → all three are recreated.
+## Choose the backend
 
----
+Accepted names are auto, docker and podman. Other values are rejected.
 
-## The lifecycle
-
-The runtime adapter has two layers: **detection** (koi-runtime crate) and **orchestration** (binary crate). Detection watches the container runtime API. Orchestration translates events into domain operations.
-
-```
-┌──────────┐      ┌──────────────┐      ┌───────────────┐
-│  Docker   │─────→│  koi-runtime │─────→│ orchestrator   │
-│  events   │      │  (detection) │      │ (binary crate) │
-└──────────┘      └──────────────┘      └───────┬───────┘
-                                                │
-                         ┌──────────────────────┼──────────────────────┐
-                         ▼                      ▼                      ▼
-                   ┌──────────┐          ┌──────────┐          ┌──────────┐
-                   │ MdnsCore │          │ DnsCore  │          │HealthCore│
-                   │ register │          │ add_entry│          │ add_check│
-                   └──────────┘          └──────────┘          └──────────┘
-```
-
-### What happens when a container starts
-
-1. Docker emits a `start` event
-2. koi-runtime inspects the container: ports, labels, env vars, image
-3. The orchestrator checks opt-in: is `koi.announce`, `koi.enable=true`, or `KOI_MDNS_ANNOUNCE` present?
-4. If yes, for each published TCP port:
-   - Infer service type from the container port (80 → `_http._tcp`, 5432 → `_postgresql._tcp`, etc.)
-   - Call `MdnsCore::register()` with permanent lease — the orchestrator owns the lifecycle
-5. Add a DNS entry: `{name}.{zone}` → host IP
-6. Add a health check: HTTP if `koi.health.path` is set, TCP otherwise
-7. If `koi.proxy.port` is set, configure a TLS-terminating proxy entry
-8. Store all resource IDs in an internal map, keyed by container ID
-
-### What happens when a container stops
-
-1. Docker emits a `die` or `stop` event
-2. The orchestrator looks up the container ID in its resource map
-3. Calls `MdnsCore::unregister()` for each mDNS registration
-4. Calls `DnsCore::remove_entry()` for the DNS name
-5. Calls `HealthCore::remove_check()` for the health check
-6. Calls `ProxyCore::remove()` if a proxy entry was created
-7. Removes the entry from the resource map
-
-### Other scenarios
-
-**Koi starts with containers already running**: The adapter lists all running containers on connect and emits `Started` events for each. The orchestrator treats them identically to live starts.
-
-**Container restarts**: The `Stopped` event arrives first (resources cleaned up), then `Started` (resources recreated). Brief unavailability window — correct behavior.
-
-**Docker daemon disconnects**: The orchestrator keeps existing registrations alive. When Docker reconnects, the adapter reconciles and emits fresh `Started` events. The orchestrator handles duplicates idempotently.
-
-**Koi shuts down**: The orchestrator drains its resource map, removing all mDNS announcements, DNS entries, health checks, and proxy entries before exit.
-
----
-
-## The quick way: announce shorthand
-
-Most containers only need one thing: "make me discoverable under this name."
-
-**As a Docker label:**
-
-```bash
-docker run -d -p 8080:80 --label koi.announce=pi-hole pihole/pihole
-```
-
-**As an environment variable** (works from inside the container too):
-
-```bash
-docker run -d -p 8080:80 -e KOI_MDNS_ANNOUNCE=pi-hole pihole/pihole
-```
-
-Both produce the same result:
-
-- mDNS: `pi-hole._http._tcp` announced on host port 8080 (container port 80 → `_http._tcp` heuristic)
-- DNS: `pi-hole.internal` added to the local resolver
-- Health: TCP check registered on host port 8080
-
-For containers with multiple published ports, each TCP port gets its own mDNS announcement:
-
-```bash
-docker run -d -e KOI_MDNS_ANNOUNCE=pi-hole -p 8080:80 -p 5353:53/udp pihole/pihole
-```
-
-→ `pi-hole._http._tcp` on port 8080 (port 80 is TCP and HTTP)
-
-**Precedence** (highest wins):
-
-1. Explicit `koi.*` labels — full control over every field
-2. `koi.announce` label — shorthand, heuristics fill the rest
-3. `KOI_MDNS_ANNOUNCE` env var — same as the label, lower precedence
-4. No signal — container ignored
-
-The announce shorthand sets `name`, `dns_name`, and `enable=true`. Combine it with explicit labels to override specific fields:
-
-```yaml
-labels:
-  koi.announce: pi-hole
-  koi.type: "_dns._tcp"        # override the port heuristic
-  koi.health.path: "/admin"    # switch from TCP to HTTP health check
-```
-
----
-
-## Full label reference
-
-All labels are optional. Without any `koi.*` labels or `KOI_MDNS_ANNOUNCE` env var, the container is ignored.
-
-| Label | Purpose | Example |
-|-------|---------|---------|
-| `koi.announce` | Announce shorthand (sets name + dns_name + enable) | `koi.announce=pi-hole` |
-| `koi.enable` | Opt in/out (`true`/`false`) | `koi.enable=true` |
-| `koi.type` | mDNS service type | `koi.type=_http._tcp` |
-| `koi.name` | Override service name | `koi.name=My Grafana` |
-| `koi.dns.name` | Override DNS name (without zone suffix) | `koi.dns.name=grafana` |
-| `koi.txt.*` | mDNS TXT record entries | `koi.txt.version=10.4` |
-| `koi.health.path` | HTTP health check path (implies HTTP kind) | `koi.health.path=/api/health` |
-| `koi.health.kind` | Health check type (`http`/`tcp`) | `koi.health.kind=http` |
-| `koi.health.interval` | Check interval in seconds (default: 30) | `koi.health.interval=60` |
-| `koi.health.timeout` | Check timeout in seconds (default: 5) | `koi.health.timeout=10` |
-| `koi.proxy.port` | Enable TLS proxy on this listen port | `koi.proxy.port=443` |
-| `koi.proxy.remote` | Allow remote proxy connections | `koi.proxy.remote=true` |
-| `koi.certmesh` | Reserved — parsed but inert (no per-container cert is issued; the proxy uses the host member cert) | `koi.certmesh=true` |
-
-Environment variable alternative:
-
-| Env var | Equivalent to | Example |
-|---------|---------------|---------|
-| `KOI_MDNS_ANNOUNCE` | `koi.announce` label (lower precedence) | `KOI_MDNS_ANNOUNCE=pi-hole` |
-
----
-
-## Examples
-
-### Minimal: one label
-
-```yaml
-services:
-  grafana:
-    image: grafana/grafana:latest
-    ports:
-      - "3000:3000"
-    labels:
-      koi.announce: grafana
-```
-
-Result: `grafana._http._tcp` on port 3000, `grafana.internal` DNS, TCP health check.
-
-### With health check
-
-```yaml
-services:
-  grafana:
-    image: grafana/grafana:latest
-    ports:
-      - "3000:3000"
-    labels:
-      koi.announce: grafana
-      koi.health.path: "/api/health"
-```
-
-Result: same as above, but health check is HTTP GET on `/api/health` instead of TCP probe.
-
-### Database
-
-```bash
-docker run -d -p 5432:5432 --label koi.announce=db postgres:16
-```
-
-Result: `db._postgresql._tcp` on port 5432 (heuristic), `db.internal` DNS, TCP health check.
-
-### Multiple services
-
-```yaml
-services:
-  web:
-    image: nginx:alpine
-    ports:
-      - "8080:80"
-    labels:
-      koi.announce: web
-
-  api:
-    image: myapp:latest
-    ports:
-      - "3000:3000"
-    labels:
-      koi.announce: api
-      koi.health.path: "/health"
-
-  db:
-    image: postgres:16
-    ports:
-      - "5432:5432"
-    labels:
-      koi.announce: db
-```
-
-`docker compose up` → three mDNS announcements, three DNS entries, three health checks. `docker compose down` → all cleaned up.
-
-### Environment variable (no image changes needed)
-
-```yaml
-services:
-  redis:
-    image: redis:7
-    ports:
-      - "6379:6379"
-    environment:
-      KOI_MDNS_ANNOUNCE: cache
-```
-
-Result: `cache._redis._tcp` on port 6379, `cache.internal` DNS, TCP health check. The Redis image is used unmodified.
-
----
-
-## Port heuristics
-
-When no `koi.type` label is present, the adapter infers the mDNS service type from the **container** port:
-
-| Port | Inferred type |
-|------|--------------|
-| 80, 3000, 5000, 8000, 8080, 8888, 9000 | `_http._tcp` |
-| 443, 8443 | `_https._tcp` |
-| 1883 | `_mqtt._tcp` |
-| 5432 | `_postgresql._tcp` |
-| 3306 | `_mysql._tcp` |
-| 6379 | `_redis._tcp` |
-| 27017 | `_mongodb._tcp` |
-| 5672 | `_amqp._tcp` |
-| 9092 | `_kafka._tcp` |
-| 9090 | `_prometheus._tcp` |
-| 3100 | `_loki._tcp` |
-| 9200 | `_elasticsearch._tcp` |
-| 22 | `_ssh._tcp` |
-| 53 | `_dns._tcp` |
-| Other | `_koi-managed._tcp` |
-
-The mDNS announcement always uses the **host** port (the one reachable from the network). Labels always override heuristics.
-
----
-
-## Docker Compose integration
-
-Docker Compose adds labels that Koi uses for cleaner naming:
-
-| Compose label | How Koi uses it |
-|--------------|-----------------|
-| `com.docker.compose.service` | Preferred service name (over random container name) |
-| `com.docker.compose.project` | Available for namespacing |
-
-When you use Compose, `docker compose up grafana` produces an mDNS announcement named `grafana` (the service name), not `monitoring-grafana-1` (the generated container name).
-
----
-
-## Supported runtimes
-
-The selectable backends are `auto`, `docker`, and `podman`. Any other value is
-rejected at startup with a helpful error (no silent fallback to auto-detection).
-
-| Runtime | Status | Socket | Notes |
-|---------|--------|--------|-------|
-| **Docker** | Implemented | `/var/run/docker.sock` (Unix), named pipe (Windows) | Default, auto-detected |
-| **Podman** | Implemented | `/run/user/{uid}/podman/podman.sock` | Docker-compatible API |
-
-Other runtimes (systemd, Incus/LXC, Kubernetes) are possible future backends but
-are **not** currently selectable; the `RuntimeBackend` trait is the extension point.
-
-Select explicitly:
-
-```
+```sh
 koi --daemon --runtime docker
 koi --daemon --runtime podman
 ```
 
-Or auto-detect (default):
+Use one configuration appropriate to the host. Apply it through the installed
+service if one exists. The Docker backend uses its platform socket/named pipe;
+Podman uses its Docker-compatible API. Do not assume a default socket belongs
+to the service account.
 
-```
-koi --daemon --runtime auto
-```
+--no-runtime disables observation. Runtime is opt-in for embedded consumers;
+daemon defaults do not establish a suitable engine for every installation.
 
----
+## Opt in one application
 
-## Disabling the adapter
-
-```
-koi --daemon --no-runtime
-# or
-KOI_NO_RUNTIME=1 koi --daemon
-```
-
-All other capabilities work without it.
-
----
-
-## Getting started
-
-```
-koi install
+```yaml
+services:
+  app:
+    image: nginx:alpine
+    ports:
+      - "8080:80"
+    labels:
+      koi.announce: app
+      koi.health.path: /
 ```
 
-If Docker is running, the adapter connects automatically. Check with:
+An environment variable can supply the same shorthand:
 
-```
-curl -s http://localhost:5641/v1/runtime/status
-```
-
-Then start a container:
-
-```bash
-docker run -d -p 3000:3000 --label koi.announce=grafana grafana/grafana
+```yaml
+environment:
+  KOI_MDNS_ANNOUNCE: app
 ```
 
-Verify it was announced:
+The shorthand sets name, DNS name and enable metadata. Explicit koi.* values
+override shorthand/derived values. Explicit koi.enable=false opts out.
+Selected Traefik/Caddy labels can also contribute metadata; see
+[integrations](integrations.md). Inspect the resulting inventory rather than
+assuming support for every routing expression.
 
-```bash
-koi mdns discover _http._tcp
-```
+Use a published TCP port. Port/protocol heuristics are metadata guesses, not
+a successful request to the application. Supply an HTTP health path for a known
+web service and verify actual readiness.
 
-You should see `grafana._http._tcp` in the results.
+## Label reference
 
-Check the DNS entry:
+| Label | Purpose |
+| --- | --- |
+| koi.announce | Shorthand name/DNS-name/enable |
+| koi.enable | Explicit opt in/out |
+| koi.type | DNS-SD service type |
+| koi.name | Display/service name |
+| koi.dns.name | DNS name in the configured zone |
+| koi.txt.* | TXT metadata |
+| koi.health.path | HTTP health path |
+| koi.health.kind | Explicit http or tcp check |
+| koi.health.interval | Poll interval, default 30 seconds |
+| koi.health.timeout | Timeout, default 5 seconds |
+| koi.proxy.port | Host TLS listener port |
+| koi.proxy.remote | Permit a non-loopback plaintext backend |
+| koi.certmesh | Request metadata only; no workload certificate issuance/injection |
+| koi.scope | Limit derivation to the corresponding configured daemon scope |
 
-```bash
-koi dns lookup grafana
-```
+Without scope, the base daemon handles its eligible unscoped containers.
+A scoped daemon only derives its matching scope. Scope is not a mechanism for
+running multiple conflicting installed services or bypassing authority.
 
-Check the health status:
+Compose service/project metadata helps derive readable names. Multiple published
+ports, loopback-only bindings and address conflicts require inspection; do not
+present every port as a working HTTP launch destination.
 
-```bash
-koi health status
-```
+## Lifecycle and reconciliation
 
-Stop the container:
+Runtime publishes an authoritative snapshot. The composition layer subscribes
+before reading initial state, reconciles existing containers, retries incomplete
+derived applications and removes resource sets no longer desired.
 
-```bash
-docker stop grafana
-```
+It maintains mDNS registrations, DNS records, health checks and optional proxy
+entries. Those domains own their listeners and persistent/runtime state;
+container metadata does not directly edit their private files.
 
-All registrations are removed within seconds.
+While the watcher is running, waiting temporarily or stopping, the retained
+inventory can remain actionable. Once observably stopped/failed or before a fresh
+generation is reconciled, the inventory is diagnostic history rather than current
+network desire. Reconnection reconciles the engine inventory, not just the next
+event. Verify this behavior for the selected installed artifact.
 
----
+A container running state is separate from application readiness. A daemon-host
+check is separate from second-client access. A client may cache discovery records
+after withdrawal; record timing and actual application behavior.
 
-## HTTP API
+## Verify changes and removal
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/v1/runtime/status` | Revisioned adapter state and full normalized instance inventory |
-| GET | `/v1/runtime/instances` | List all tracked instances with ports, labels, state |
+Follow the [container walkthrough](../../CONTAINERS.md) for stop/start/recreate
+and cleanup. Inspect:
 
-The status response carries `revision`, `active`, `backend`, optional `backend_error`,
-`instance_count`, and `instances`. Consumers can use the revision to detect a changed
-process-local snapshot; it is not a durable container-engine cursor.
+- App response on the host and second client.
+- Correct address and published port in the peer announcement.
+- Current resolver answer and client resolver path.
+- Readiness transitions and freshness.
+- No duplicate or orphaned derived resources after replacement.
+- Recovery after the chosen engine reconnect and Koi restart.
 
----
+Do not manually remove a runtime-owned DNS/proxy resource while expecting
+reconciliation to preserve that removal. Change the owning container metadata
+or stop/remove that workload.
 
-## Embedded usage
+## TLS and existing tools
 
-For Rust applications using `koi-embedded`:
+A proxy label does not produce a matching trusted service certificate.
+The current exact service-name public setup is incomplete. Keep a working
+external proxy/CA when it already meets the task, and read
+[container TLS](recipes/container-trusted-cert.md) before adding this extension.
 
-```rust
-use koi_embedded::{Builder, RuntimeBackendKind};
+## HTTP contract
 
-let koi = Builder::new()
-    .runtime(RuntimeBackendKind::Docker)
-    .mdns(true)
-    .dns(|cfg| cfg.zone("internal"))
-    .build()?;
+| Route | Purpose |
+| --- | --- |
+| GET /v1/runtime/status | Revisioned watcher state and normalized inventory |
+| GET /v1/runtime/instances | Tracked instance details |
 
-let handle = koi.start().await?;
-// Docker containers are now auto-announced.
-```
-
-Runtime is **opt-in** for embedded (unlike the daemon where it's on by default), since embedded consumers may not have a container runtime.
+Use observed state and freshness with the revision. A process-local revision
+is not a durable engine cursor. Non-loopback reads need appropriate credentials;
+see [API authentication](api-authentication.md).

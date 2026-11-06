@@ -290,7 +290,7 @@ pub fn curated_examples(category: KoiCategory) -> &'static [Example] {
         KoiCategory::Core => &[
             Example {
                 command: "koi launch",
-                description: "Open the dashboard",
+                description: "Open Koi's interface",
             },
             Example {
                 command: "koi status",
@@ -586,27 +586,27 @@ output.",
     },
     CommandMeta {
         name: "launch",
-        summary: "Open the dashboard in a web browser",
+        summary: "Open Koi's interface in a web browser",
         long_description: "\
-Opens the Koi dashboard in the default web browser. The dashboard shows
-a live overview of all capabilities, health checks, DNS records, certmesh
-status, proxy entries, and an activity feed.
+Opens Koi's unified interface in the default web browser. Services, Certmesh,
+installation settings and product information use the same destinations as the
+desktop app.
 
-By default opens http://localhost:5641. If you are using a custom port
+By default opens http://localhost:5641/ui. If you are using a custom port
 (--port or KOI_PORT), that port is used instead.
 
-The daemon must be running for the dashboard to load.",
+The daemon must be running for the interface to load.",
         category: KoiCategory::Core,
         tags: &[KoiTag::ReadOnly, KoiTag::CliOnly],
         scope: KoiScope::Public,
         examples: &[
             Example {
                 command: "koi launch",
-                description: "Open dashboard in the default browser",
+                description: "Open Koi in the default browser",
             },
             Example {
                 command: "koi --port 8080 launch",
-                description: "Open dashboard on a custom port",
+                description: "Open Koi on a custom port",
             },
         ],
         see_also: &["status"],

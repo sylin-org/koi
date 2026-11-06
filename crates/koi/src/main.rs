@@ -172,8 +172,8 @@ fn main() -> anyhow::Result<()> {
             }
             Command::Launch => {
                 let port = cli.port;
-                let url = format!("http://localhost:{port}");
-                println!("Opening dashboard at {url}");
+                let url = format!("http://localhost:{port}/ui");
+                println!("Opening Koi at {url}");
                 if let Err(e) = open::that(&url) {
                     eprintln!("Failed to open browser: {e}");
                     eprintln!("Open manually: {url}");

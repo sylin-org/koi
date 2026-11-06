@@ -16,7 +16,7 @@ use std::time::Instant;
 
 use axum::extract::Extension;
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::response::{Html, IntoResponse, Json};
+use axum::response::Json;
 use axum::routing::{get, post};
 use axum::Router;
 use chrono::Utc;
@@ -29,12 +29,11 @@ use tokio_util::sync::CancellationToken;
 use crate::browse_source::{BrowseSource, BrowserEvent};
 use crate::meta_browse::LazyMetaBrowse;
 use koi_common::integration::MdnsDiscoverySnapshot;
+pub use koi_common::mdns_browser::{BrowserSnapshot, BurstStats, ServiceInstance, TypeSummary};
 use koi_common::types::ServiceRecord;
 use koi_common::types::META_QUERY;
 
 // ── HTML asset ──────────────────────────────────────────────────────
-
-const BROWSER_HTML: &str = include_str!("../assets/mdns-browser.html");
 
 // ── Cache model ─────────────────────────────────────────────────────
 
@@ -52,6 +51,7 @@ struct CacheInner {
     /// Last accepted revision from the mDNS domain. `None` distinguishes an
     /// uninitialized projection from the domain's valid revision zero.
     source_revision: Option<u64>,
+    discovery: MdnsDiscoverySnapshot,
     /// Authoritative current membership. `types` may additionally retain removed
     /// instance tombstones briefly for the UI's fade-out presentation.
     active_types: HashSet<String>,
@@ -72,6 +72,7 @@ impl CacheInner {
     fn empty() -> Self {
         Self {
             source_revision: None,
+            discovery: MdnsDiscoverySnapshot::default(),
             active_types: HashSet::new(),
             types: HashMap::new(),
             total_bursts: 0,
@@ -98,8 +99,27 @@ impl CacheInner {
             .filter(|service_type| !service_type.is_empty())
             .collect::<HashSet<_>>();
         let mut records = HashMap::new();
+        let resolved_names = snapshot
+            .records
+            .iter()
+            .map(|record| {
+                (
+                    record.service_type.clone(),
+                    record.name.to_ascii_lowercase(),
+                )
+            })
+            .collect::<HashSet<_>>();
 
-        for record in &snapshot.records {
+        let unresolved = snapshot
+            .observations
+            .iter()
+            .filter_map(|observation| match &observation.value {
+                koi_common::integration::MdnsDiscoveryValue::UnresolvedInstance { record } => {
+                    Some(record)
+                }
+                _ => None,
+            });
+        for record in unresolved.chain(snapshot.records.iter()) {
             let service_type = normalize_type(&record.service_type);
             if service_type.is_empty() || record.name.is_empty() {
                 continue;
@@ -127,7 +147,11 @@ impl CacheInner {
                     continue;
                 };
 
-                let resolved = has_usable_endpoint(record);
+                let resolved = has_usable_endpoint(record)
+                    && resolved_names.contains(&(
+                        record.service_type.clone(),
+                        record.name.to_ascii_lowercase(),
+                    ));
                 let changed = instance.host != record.host
                     || instance.ip != record.ip
                     || instance.port != record.port
@@ -155,10 +179,12 @@ impl CacheInner {
                     first_seen: now.clone(),
                     instances: HashMap::new(),
                 });
-            dtype.instances.insert(
-                name.clone(),
-                service_instance(record, &service_type, name, &now),
-            );
+            let mut instance = service_instance(record, &service_type, name.clone(), &now);
+            instance.resolved &= resolved_names.contains(&(
+                record.service_type.clone(),
+                record.name.to_ascii_lowercase(),
+            ));
+            dtype.instances.insert(name, instance);
         }
 
         self.active_types = active_types;
@@ -167,6 +193,7 @@ impl CacheInner {
             active_types.contains(service_type) || !dtype.instances.is_empty()
         });
         self.source_revision = Some(snapshot.revision);
+        self.discovery = snapshot.clone();
         true
     }
 }
@@ -176,22 +203,6 @@ struct DiscoveredType {
     service_type: String,
     first_seen: String,
     instances: HashMap<String, ServiceInstance>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct ServiceInstance {
-    name: String,
-    instance_name: String,
-    service_type: String,
-    host: Option<String>,
-    ip: Option<String>,
-    port: Option<u16>,
-    txt: HashMap<String, String>,
-    first_seen: String,
-    last_seen: String,
-    resolved: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    removed_at: Option<String>,
 }
 
 impl BrowserCache {
@@ -303,8 +314,8 @@ impl BrowserCache {
                     service_type: dtype.service_type.clone(),
                     count: live_count,
                     first_seen: dtype.first_seen.clone(),
-                    label,
-                    description,
+                    label: label.map(str::to_owned),
+                    description: description.map(str::to_owned),
                 });
             }
             for inst in dtype.instances.values() {
@@ -329,6 +340,8 @@ impl BrowserCache {
         };
 
         BrowserSnapshot {
+            discovery: inner.discovery.clone(),
+            browse_active: false,
             revision: inner.source_revision,
             total_types: type_summaries.len(),
             total_instances: all_instances
@@ -402,51 +415,6 @@ fn has_usable_endpoint(record: &ServiceRecord) -> bool {
 }
 
 // ── Snapshot types ──────────────────────────────────────────────────
-
-#[derive(Debug, Serialize)]
-pub struct BrowserSnapshot {
-    /// Revision of the authoritative mDNS discovery snapshot projected here.
-    /// `None` means no domain snapshot has been accepted yet; revision zero is
-    /// a distinct, valid domain fact.
-    revision: Option<u64>,
-    total_types: usize,
-    total_instances: usize,
-    service_types: Vec<TypeSummary>,
-    instances: Vec<ServiceInstance>,
-    cache_age_secs: u64,
-    /// Burst vs answers counters — the raw material for the deaf-detection
-    /// verdict ("announcing but hearing nothing — firewall, not network").
-    burst: BurstStats,
-}
-
-/// Deaf-detection counters as data (the pane decides, the daemon measures).
-#[derive(Debug, Clone, Serialize)]
-pub struct BurstStats {
-    pub bursts_sent: u64,
-    pub answers_total: u64,
-    /// RFC3339 timestamp of the most recent burst, absent before the first.
-    pub last_burst_at: Option<String>,
-    /// Answers the previous burst heard; zero with a fresh burst is the deaf
-    /// verdict's trigger.
-    pub last_burst_answers: u64,
-    /// Seconds since that burst started, so the pane knows if it is fresh
-    /// enough to judge answers against.
-    pub last_burst_age_secs: Option<i64>,
-}
-
-#[derive(Debug, Serialize)]
-struct TypeSummary {
-    service_type: String,
-    count: usize,
-    first_seen: String,
-    /// Friendly label for a well-known type (`_hap._tcp` → "HomeKit"), absent for
-    /// unrecognized types so the UI falls back to the raw type.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    label: Option<&'static str>,
-    /// One-line description of a well-known type, paired with `label`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    description: Option<&'static str>,
-}
 
 // ── Background worker ───────────────────────────────────────────────
 
@@ -788,6 +756,16 @@ impl Drop for BrowserLifecycle {
 }
 
 impl BrowserState {
+    /// Demand browsing only while an inspector is actively reading. Copy
+    /// projection and provenance together so revisions cannot disagree.
+    pub async fn inspection_snapshot(&self) -> BrowserSnapshot {
+        self.meta.touch();
+        self.cache.reconcile(self.source.snapshot().as_ref()).await;
+        let mut snapshot = self.cache.snapshot().await;
+        snapshot.browse_active = self.meta.is_active();
+        snapshot
+    }
+
     /// Construct route state and own the permanent snapshot projector.
     ///
     /// The projector contains no domain truth; it keeps this presentation cache
@@ -845,18 +823,9 @@ pub fn routes(state: BrowserState) -> Router {
 
 // ── Handlers ────────────────────────────────────────────────────────
 
-/// `GET /mdns-browser` — Serve the mDNS browser SPA with a Content-Security-Policy header.
-pub async fn get_page() -> impl IntoResponse {
-    (
-        [(axum::http::header::CONTENT_SECURITY_POLICY, crate::HTML_CSP)],
-        Html(BROWSER_HTML),
-    )
-}
-
 /// `GET /v1/mdns/browser/snapshot` — Full browser cache as JSON.
 async fn get_snapshot(Extension(state): Extension<BrowserState>) -> Json<BrowserSnapshot> {
-    state.meta.touch();
-    Json(state.cache.snapshot().await)
+    Json(state.inspection_snapshot().await)
 }
 
 /// `GET /v1/mdns/browser/events` — SSE stream of discovery events.

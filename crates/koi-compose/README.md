@@ -1,15 +1,17 @@
 # koi-compose
 
-The composition layer for the [Koi](https://github.com/sylin-org/koi) local
-connectivity substrate: the single source of truth for constructing domain cores,
-wiring the cross-domain integration
-bridges, running the container-runtime orchestrator, assembling capability status, and
-performing ordered shutdown.
+Composition root shared by the command-line daemon, installed service and embedded host. It constructs domain cores, installs typed bridges, maintains coherent product/catalog projections and owns background work and ordered shutdown.
 
-The `koi` daemon, the Windows service, and `koi-embedded` all consume it, so daemon
-parity across platforms and embedding is true *by construction* rather than maintained by
-hand in three diverging places.
+Runtime reconciliation maps accepted container state into mDNS, DNS, health and proxy desire. Certificate issuance is not implied by the `koi.certmesh` label.
 
-This is a **composition crate**, not a domain crate — it depends on every domain it wires.
-Nothing else depends on it, so the `koi-common` kernel and the domain crates keep clean
-dependency closures.
+## Development
+
+Read [architecture](../../docs/reference/architecture.md) for ownership boundaries and [launch readiness](../../docs/launch/README.md) for the supported-versus-tested journey matrix. This README describes repository source; it does not assert package publication or physical acceptance.
+
+```sh
+cargo test -p koi-compose --locked
+```
+
+Platform-dependent tests can require explicit facilities or remain ignored in ordinary runs. See [validation](../../docs/qa/validation-suite.md) before interpreting a green result.
+
+Licensed under Apache-2.0 OR MIT; see the workspace license files.

@@ -1,143 +1,69 @@
 # Koi documentation
 
-## Let everything local find, trust, and talk.
+Koi helps container/LAN developers and capable homelab operators publish, find
+and maintain usable local services. The starting task is one container, one
+second-machine application check, and correct lifecycle through change.
 
-Koi is an open-source local connectivity substrate that makes containers,
-applications, and devices delightfully discoverable, secure, and interconnected.
-It bridges the boundaries between the LAN, container networks, and applications while
-working with the resolvers, proxies, runtimes, and monitoring tools you already use.
+## Start here
 
-New here? **[What is Koi — and is it for you?](overview.md)** is the short orientation
-(the model, the trust boundary, and when *not* to use it). Then the tutorial, then the
-guide for whatever you're doing.
+1. [Choose and install an artifact](guides/install-and-service.md).
+2. [Getting started](tutorials/getting-started.md).
+3. [Publish, open and recreate a container service](../CONTAINERS.md).
+4. [Diagnose the step that failed](guides/troubleshooting.md).
 
-> **Development status:** repository source is `v1.0.0-dev.0` while
-> [observable domain boundaries](adr/043-observable-domain-boundaries.md) are rebuilt and
-> revalidated. `v1.0.0-rc.2` remains the last published prerelease; its validation records do
-> not imply acceptance of current `dev`.
+[Release readiness](launch/README.md) is the authority for supported artifacts and
+verified environments. Published stable is 0.9.0; published prerelease is
+1.0.0-rc.2; current source is 1.0.0-dev.0. These guides describe current source
+unless they identify another version. Use release-matched documentation when
+evaluating an older artifact.
 
----
+## Private-space identity and trust
 
-## Start here (tutorials)
+Certmesh provides a locally governed trust group for machines and participating
+applications, with enrollment, identity renewal and signed membership changes.
+Use it when your services need shared identity alongside discovery.
 
-Learning-oriented, follow top to bottom:
+- [Create and operate a private trust space](guides/certmesh.md).
+- [Back up or recover the authority](guides/certmesh-ha-recovery.md).
+- [Use Certmesh inside an application](guides/certmesh-embedded.md).
+- [Understand identity verification and membership propagation](reference/trust-protocol.md).
 
-- **[Getting started](tutorials/getting-started.md)** — install to a visible result in
-  about a minute, then a first real task.
-- **[Trusted HTTPS across two machines](tutorials/trusted-https.md)** — go from zero to a
-  green `https://` in a browser, no public CA, ~10 minutes.
+## Operate a service
 
----
+| Task | Documentation |
+| --- | --- |
+| Understand the scope and fit | [Overview](overview.md), [user guide](../GUIDE.md) |
+| Publish or discover services | [Containers](../CONTAINERS.md), [runtime](guides/runtime.md), [mDNS](guides/mdns.md) |
+| Configure names clients can resolve | [DNS](guides/dns.md), [existing resolver](guides/dns-coexistence.md) |
+| Check readiness and changes | [Health](guides/health.md), [system operation](guides/system.md) |
+| Run continuously or upgrade | [Installation](guides/install-and-service.md), [upgrading](guides/upgrading.md) |
+| Add TLS for a host member name | [Trusted HTTPS tutorial](tutorials/trusted-https.md), [proxy](guides/proxy.md) |
+| Understand exact container service-name TLS | [Container TLS limits and configuration](guides/recipes/container-trusted-cert.md) |
+| Use an existing monitoring/proxy stack | [Integrations](guides/integrations.md), [ACME prerequisites and limits](guides/acme.md) |
 
-## By goal
+Discovery, reachability and client trust are separate observations. A DNS entry
+inside Koi does not configure the client resolver. A private root in an OS store
+does not establish that every browser or runtime consumes that store.
 
-| I want to… | Go to |
-| ---------- | ----- |
-| **Run it and see my network** | [Getting started](tutorials/getting-started.md) · [mDNS guide](guides/mdns.md) |
-| **Name services on my LAN** | [DNS guide](guides/dns.md) · [coexist with my resolver](guides/dns-coexistence.md) |
-| **Get trusted HTTPS working** | [Trusted-HTTPS tutorial](tutorials/trusted-https.md) · [certmesh](guides/certmesh.md) · [proxy](guides/proxy.md) |
-| **Issue certs to Caddy/Traefik/lego** | [ACME guide](guides/acme.md) |
-| **Let an AI agent see my LAN** | [MCP guide](guides/mcp.md) |
-| **Run Koi with my containers** | [Containers](../CONTAINERS.md) · [runtime](guides/runtime.md) · [recipes](#recipes) |
-| **Call the HTTP API from a script** | [API authentication](guides/api-authentication.md) · [HTTP API reference](reference/http-api.md) · [security model](reference/security-model.md) |
-| **Install it as a service / fix a problem** | [Install & service](guides/install-and-service.md) · [Troubleshooting](guides/troubleshooting.md) · [Upgrading](guides/upgrading.md) |
-| **Embed Koi in a Rust app** | [Embedded guide](guides/embedded.md) |
-| **Keep my existing DNS / proxy** | [DNS coexistence](guides/dns-coexistence.md) · [integrations](guides/integrations.md) |
-| **Distribute a CA root** | [Trust & CA-root distribution](guides/trust.md) |
+## Advanced capabilities
 
----
+The initial container journey needs neither a private CA nor every interface.
+These guides remain available when a concrete integration needs them.
 
-## How-to guides
+| Capability | Guide |
+| --- | --- |
+| HTTP authentication | [API access](guides/api-authentication.md) |
+| CA root management | [Trust](guides/trust.md) |
+| Application-side UDP relay | [UDP](guides/udp.md), [container recipe](guides/recipes/container-udp.md) |
+| Agent interface | [MCP](guides/mcp.md) |
+| Rust integration | [Embedding](guides/embedded.md), [embedded certmesh](guides/certmesh-embedded.md) |
 
-Task-oriented, one goal each.
+## Reference and project direction
 
-**Find** — [mDNS](guides/mdns.md) · [DNS](guides/dns.md) ·
-[DNS coexistence](guides/dns-coexistence.md) · [runtime / containers](guides/runtime.md)
-
-**Trust** — [certmesh (private CA)](guides/certmesh.md) ·
-[certmesh HA & recovery](guides/certmesh-ha-recovery.md) ·
-[embedding certmesh (Rust library)](guides/certmesh-embedded.md) · [ACME server](guides/acme.md) ·
-[trust (root distribution)](guides/trust.md)
-
-**Connect** — [proxy (TLS endpoint)](guides/proxy.md) · [UDP bridging](guides/udp.md) ·
-[containers](../CONTAINERS.md) · [integrations](guides/integrations.md)
-
-**Operate** — [health checks](guides/health.md) · [install & service](guides/install-and-service.md) ·
-[system status & config](guides/system.md) · [troubleshooting](guides/troubleshooting.md) ·
-[upgrading](guides/upgrading.md)
-
-**Expose & extend** — [API authentication](guides/api-authentication.md) ·
-[MCP (for AI agents)](guides/mcp.md) ·
-[embedded (Rust library)](guides/embedded.md)
-
-### Recipes
-
-Cross-cutting journeys that stitch several capabilities together:
-
-- [A container gets a stable name + a trusted cert](guides/recipes/container-trusted-cert.md)
-- [UDP bridging from inside a container](guides/recipes/container-udp.md)
-
----
-
-## Capability cards
-
-One-screen maps of a single capability — the canonical pattern, the flags you'll use, and
-the proof it works. Faster than a guide when you already know what you want. Full list:
-[cards index](reference/cards/index.md).
-
-**Find** — [mDNS discovery](reference/cards/mdns-discovery.md) ·
-[.internal zone](reference/cards/internal-zone.md)
-
-**Trust** — [trusted HTTPS](reference/cards/trusted-https.md) ·
-[certmesh invite](reference/cards/certmesh-invite.md) ·
-[trust doctor & posture](reference/cards/trust-doctor.md) ·
-[ACME issuance](reference/cards/acme-issuance.md)
-
-**Connect & operate** — [TLS proxy](reference/cards/tls-proxy.md) ·
-[UDP bridge](reference/cards/udp-bridge.md) · [health](reference/cards/machine-health.md) ·
-[container auto-wire](reference/cards/container-autowire.md)
-
-**Interfaces & embedding** — [MCP agent door](reference/cards/mcp-agent-door.md) ·
-[install + verify](reference/cards/install-and-verify.md) ·
-[embed Koi](reference/cards/embedded.md)
-
----
-
-## Reference
-
-Information-oriented, dry and exact.
-
-- [HTTP API](reference/http-api.md) — every endpoint, request/response shapes, auth.
-- [CLI](reference/cli.md) — every command, flag, and environment variable.
-- [Wire protocol](reference/wire-protocol.md) — the mDNS NDJSON verb protocol over IPC/stdin.
-- [Security model](reference/security-model.md) — the daemon access token, bind addresses, what is and isn't protected.
-- [Ports & firewall](reference/ports.md) — every listening port, its bind default, the `--no-*` gate, and the firewall story.
-- [Ceremony protocol](reference/ceremony-protocol.md) — the interactive setup engine.
-- [Envelope encryption](reference/envelope-encryption.md) — how the CA key is protected.
-- [Architecture](reference/architecture.md) — crate inventory, boundaries, dependency graph.
-- [Domain template](reference/domain-template.md) — how to add a new domain crate.
-
----
-
-## Understand the decisions
-
-Architecture Decision Records live in [docs/adr/](adr/) — why things are built the way
-they are. Start with [Koi's public identity: Find, Trust, Connect](adr/024-public-identity-find-trust-connect.md);
-then see [artifact-first release channels](adr/025-release-channels-and-bootstrap-contract.md)
-for how one native build reaches installers and package managers;
-the current [observable-domain-boundary decision](adr/043-observable-domain-boundaries.md)
-defines how commands, current state, and semantic events remain distinct;
-the cross-repo [stack canon (STACK-0001)](adr/STACK-0001-sylin-stack-canon.md) defines
-the wider architectural boundary.
-
-## Contributing
-
-See [CONTRIBUTING.md](../CONTRIBUTING.md) for setup, the verification commands, and the
-code/architecture rules.
-
----
-
-> **For maintainers:** the `prompts/`, `assessment/`, `plans/`, `research/`, `proposals/`,
-> `qa/`, `prior-art/`, and `archive/` subtrees under `docs/` are internal working
-> artifacts (the work-order stash, the maturity assessment, design notes) — not
-> user-facing documentation. They are intentionally not linked from this index.
+- [CLI](reference/cli.md), [HTTP API](reference/http-api.md), [wire protocol](reference/wire-protocol.md).
+- [Security model](reference/security-model.md), [route authorization](reference/http-route-auth-matrix.md), [ports](reference/ports.md).
+- [Architecture](reference/architecture.md), [capability cards](reference/cards/index.md).
+- [Contributing](../CONTRIBUTING.md).
+- [Container/LAN adoption decision](adr/046-container-lan-adoption.md).
+- [Experience direction and interactive concept](ux/README.md).
+- [Release readiness](launch/README.md).

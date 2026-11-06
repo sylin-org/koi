@@ -1,50 +1,28 @@
----
-type: REF
-title: "Capability cards — index"
-audience: [operators, developers, ai-agents]
-status: current
-last_updated: 2026-06-22
-koi_version: v1.0.0-rc.2
----
+# Capability reference cards
 
-# Capability cards
+Start with [container discovery and lifecycle](container-autowire.md): label a real application, reach it from a second device, then verify stop/recreate behavior. The [launch gate](../../launch/README.md) distinguishes implemented capabilities, supported platform builds and certified scenarios.
 
-A **capability card** is a one-screen map of a single Koi capability: what it does, the one
-canonical copy-paste pattern, the commands/flags you'll actually use, the limits/escape
-hatch, and the proof it works. Cards are the fastest way to *use* a capability; the
-[guides](../../index.md#how-to-guides) go deeper and the [reference](../../index.md#reference)
-is the exhaustive contract.
+## Initial journey
 
-Each card's frontmatter carries a `validation` block: **verified** means the canonical
-pattern is backed by a named test or the two-box integration suite; **drafted** means it was
-code-reviewed but not independently live-tested.
+- [Install and verify](install-and-verify.md)
+- [Container discovery and lifecycle](container-autowire.md)
+- [mDNS discovery](mdns-discovery.md)
+- [Local DNS names](internal-zone.md)
+- [Health observations](machine-health.md)
 
-> The cards currently record `v1.0.0-rc.2`, the exact last-published line against which
-> their evidence was collected. Repository source is `v1.0.0-dev.0`; those version stamps
-> remain provenance, not a claim that the withdrawn candidate validates current `dev`.
+## Service trust extension
 
-## Discovery & naming
+- [Exact service HTTPS](trusted-https.md)
+- [TLS proxy](tls-proxy.md)
+- [Certmesh enrollment](certmesh-invite.md)
+- [Trust diagnosis](trust-doctor.md)
+- [ACME issuance](acme-issuance.md)
 
-- [mDNS discovery](mdns-discovery.md) — find & announce through the installed service or an explicit one-shot session.
-- [The `.internal` zone](internal-zone.md) — Koi's default local DNS zone and warning-free in-zone TLS.
+## Advanced interfaces
 
-## Trust & serving
+- [UDP bridge](udp-bridge.md)
+- [Webhook events](webhook-events.md)
+- [MCP interface](mcp-agent-door.md)
+- [Embedded Rust interface](embedded.md)
 
-- [Trusted HTTPS on the LAN](trusted-https.md) — a private CA → browser-trusted certs for `<name>.internal`.
-- [Certmesh invite](certmesh-invite.md) — single-use, fingerprint-pinned host enrollment.
-- [Trust doctor & posture](trust-doctor.md) — `koi trust diagnose` + the open/authenticated/confidential posture.
-- [ACME issuance](acme-issuance.md) — RFC 8555 (dns-01) so Caddy / Traefik / lego get certs from your CA.
-- [TLS proxy](tls-proxy.md) — a certmesh TLS endpoint in front of any plaintext backend.
-
-## Operate
-
-- [Health](machine-health.md) — service checks + auto-derived machine health.
-- [UDP bridge](udp-bridge.md) — reach LAN UDP from a bridge-networked container.
-- [Container auto-wire](container-autowire.md) — one Docker label → mDNS + DNS + health + proxy.
-- [Webhook events](webhook-events.md) — every domain event delivered as a signed HTTP POST to your sinks.
-
-## Interfaces & embedding
-
-- [MCP agent door](mcp-agent-door.md) — give an AI agent first-class access to your LAN.
-- [Install + verify](install-and-verify.md) — the one-line install and the build-provenance check.
-- [Embed Koi](embedded.md) — run Koi in-process as a Rust library.
+These interfaces remain documented independently of launch scope. A capability's existence does not make it a prerequisite for the container preview or certify every third-party integration.

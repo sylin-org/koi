@@ -1,360 +1,217 @@
-# Install Koi as a service
+# Install and operate the host service
 
-You ran `koi --daemon` to try it, and it works — but it dies when you close the terminal. To get the daemon that survives reboots, starts before your apps need it, and runs without a console attached, install Koi as a native OS service. This guide is the consolidated service-ops reference: install, manage, and uninstall cleanly on each platform, plus where the data and logs live and how to change the port or bind for the installed service.
+Koi's container/LAN task needs a host daemon with engine access. Installing a
+binary, starting a daemon and proving second-machine application access are
+separate steps. This guide covers the first two; the
+[container walkthrough](../../CONTAINERS.md) covers the outcome.
 
-> **Lifecycle context.** This page is about the *service* — how the OS keeps the daemon running. For what the daemon *does* once it's up (status, dashboard, the module model, factory reset), see [system: daemon lifecycle](./system.md).
+[Release readiness](../launch/README.md) names supported artifacts and scenarios.
+The first target matrix is Windows x64/Docker Desktop and Linux glibc x64/Docker
+Engine with native clients. A target is not an already accepted preview. Other
+platform recipes remain available with their own verification requirements.
 
----
+## Choose the binary
 
-## Get the binary
+| Line | Version | Meaning |
+| --- | --- | --- |
+| Stable | 0.9.0 | Published stable artifact; use matching release docs |
+| Prerelease | 1.0.0-rc.2 | Published explicitly pinned prerelease |
+| Source | 1.0.0-dev.0 | Development; no new public preview implied |
 
-`koi install` assumes the `koi` binary is already on your `PATH`. The fastest way to get it is the one-line installer — it downloads the latest release archive for your OS/arch, verifies its checksum, and puts the binary on your `PATH`. It never compiles anything and doesn't need root for the default per-user location.
+A pinned archive from [GitHub Releases](https://github.com/sylin-org/koi/releases)
+makes the selected bytes clear. Verify its SHA-256 against the release sidecar
+before extraction. On Windows use Get-FileHash; on Linux use sha256sum; on macOS
+use shasum -a 256. Check the supplied filename and digest, not just that hashing
+succeeds.
+
+Release assets with GitHub provenance can additionally be checked using
+gh attestation verify against sylin-org/koi. A checksum detects altered bytes
+relative to the source you trust; it is not independent publisher authentication.
+
+The bootstrap scripts download a matching archive and verify its checksum:
 
 ```sh
-# Linux / macOS
 curl -fsSL https://raw.githubusercontent.com/sylin-org/koi/main/install.sh | sh
 ```
 
 ```powershell
-# Windows
 irm https://raw.githubusercontent.com/sylin-org/koi/main/install.ps1 | iex
 ```
 
-Both installers honor the same knobs as environment variables: `KOI_VERSION` (pin a release tag, e.g. `v1.0.0-rc.2`), `KOI_INSTALL_DIR` (install location), and `KOI_NO_MODIFY_PATH` (skip the PATH change).
-
-These commands download Koi's published native binary; they do not install Rust or
-compile the workspace. The last published candidate (`1.0.0-rc.2`) also supports two thin,
-explicitly-versioned package-manager paths. Current repository source is
-`1.0.0-dev.0`, not an installable release candidate:
-
-- `cargo binstall koi-net --version 1.0.0-rc.2` consumes the same official archive. It
-  is configured to fail rather than fall back to an unofficial binary or source build.
-- `npx @sylin-org/koi@1.0.0-rc.2` verifies and invokes the matching native installer, then
-  leaves `koi` in the same stable location.
-
-Use the exact version (or npm's published `@next` tag) for the published candidate.
-Unqualified package-manager commands intentionally remain on the latest stable release.
-
-Prefer a container? The image runs the daemon via its default command — no install needed:
+Without an override they select the latest stable release, not current development
+source. Select a published prerelease explicitly:
 
 ```sh
-docker run -d --name koi -p 5641:5641 ghcr.io/sylin-org/koi:latest
+curl -fsSL https://raw.githubusercontent.com/sylin-org/koi/main/install.sh | KOI_VERSION=v1.0.0-rc.2 sh
 ```
 
-Just trying Koi out, or want the full first-run walkthrough? Start with the [getting-started tutorial](../tutorials/getting-started.md) — it goes from nothing installed to a visible result in about a minute. Come back here when you're ready to run Koi as a service that survives reboots.
-
----
-
-## Install
-
+```powershell
+$env:KOI_VERSION = 'v1.0.0-rc.2'
+irm https://raw.githubusercontent.com/sylin-org/koi/main/install.ps1 | iex
+Remove-Item Env:KOI_VERSION
 ```
+
+KOI_INSTALL_DIR selects the binary location. KOI_NO_MODIFY_PATH skips the script's
+PATH changes/guidance. The default per-user installation does not need root.
+Open a fresh terminal if PATH changed, then run koi version.
+
+npm is not an available public installation path. Package-manager scaffolds are
+not published channels. Rust users can source-build the published koi-net crate;
+cargo install requires a toolchain. A Koi image behind a bridge is not a substitute
+for a daemon on the LAN host merely because its HTTP port is published.
+
+## Evaluate in the foreground
+
+When no local Koi service already exists:
+
+```sh
+koi --daemon
+```
+
+In another terminal:
+
+```sh
+koi status
+curl -fsS http://127.0.0.1:5641/v1/runtime/status
+```
+
+Bare koi displays status and help. It does not start a daemon. An explicit
+standalone discovery session is available only when no local service owns it.
+
+## Install for persistent use
+
+Use an Administrator terminal on Windows:
+
+```powershell
 koi install
 ```
 
-That's the whole command on every platform. It requires elevation — Koi refuses to install otherwise:
-
-- **Windows**: run from an Administrator terminal (right-click → *Run as administrator*). Koi checks for elevation via `net session` and bails with a clear message if you're not elevated.
-- **Linux / macOS**: run with `sudo`.
-
-`koi install` is idempotent and upgrade-aware. If a service is already registered it stops the old one, replaces the binary/registration, and restarts — so re-running it after a `koi` upgrade is the supported way to update the installed service.
-
-On systemd and OpenRC Linux, replacement is transactional. Koi checkpoints the
-installed binary, service registration, durable port configuration,
-local-operator policy, and prior active/enabled state before stopping the
-service. Enable, start, process-identity, and `/healthz` verification failures
-return non-zero and restore the previous healthy service. If the installer
-itself is interrupted after that checkpoint is armed, the next `koi install`
-recovers it before beginning another change. Do not delete the reported recovery
-manifest or backup files by hand; a corrupt or incomplete checkpoint fails
-closed with its exact path.
-
-On success you'll see the modules-enabled summary and `the local waters are calm`. All capabilities are enabled by default; disable any with `--no-<name>` at install time (see [Changing the port or bind](#changing-the-port-or-bind) — the same mechanism applies to capability flags).
-
-### What `koi install` does, per OS
-
-| OS | Service manager | Name / label | Registration |
-| -- | --------------- | ------------ | ------------ |
-| **Windows** | Service Control Manager (`sc.exe`) | service `koi` (display name *Koi Network Toolkit*) | Stages the binary to `%ProgramFiles%\Koi\koi.exe` (never the source checkout), own-process service, **AutoStart**, recovery policy: restart after 5s, then 10s, then stop (failure count resets after 24h). The install is transactional: the prior binary, service registration, operator policy, config substrate, and Koi-owned firewall rules roll back together if the health check fails, and an interrupted install recovers on the next `koi install`. |
-| **Linux (systemd)** | systemd (`systemctl`) | unit `koi.service` | Copies the binary to `/usr/local/bin/koi`, writes `/etc/systemd/system/koi.service` (`Type=notify`, `Restart=on-failure`, `RestartSec=5s`), runs `daemon-reload`, `enable` (start on boot), and `start` |
-| **Linux (OpenRC)** | OpenRC (`supervise-daemon`) | service `koi` | Preserves package ownership when run from `/usr/bin/koi`, otherwise copies to `/usr/local/bin/koi`; writes `/etc/init.d/koi`, enables the default runlevel, starts, and verifies one exact daemon plus `/healthz`. Three crashes inside 60 seconds are retried after 5 seconds before OpenRC marks the service failed; a periodic local status check restarts an unhealthy daemon. Requires `logrotate`. |
-| **macOS** | launchd (`launchctl`) | LaunchDaemon `org.sylin.koi` | Copies the binary to `/usr/local/bin/koi` (root:wheel, 755), writes `/Library/LaunchDaemons/org.sylin.koi.plist` (root:wheel, 644), bootstraps it into the `system` domain. `RunAtLoad` + `KeepAlive` on non-success exit |
-
-Every supported service recipe registers Koi to **start on boot** and starts it immediately. The service runs the binary as `<binary> --daemon`.
-
-> **macOS note:** Koi installs a system-wide **LaunchDaemon** (under `/Library/LaunchDaemons`, loaded into the `system` domain), not a per-user LaunchAgent. It runs at boot before any user logs in.
-
----
-
-## Verify it's running
-
-```
-koi status            # what each module is doing
-koi launch            # open the web dashboard in your browser
-```
-
-You can also ask the native service manager directly:
-
-```powershell
-# Windows
-sc query koi
-```
+On Linux/macOS:
 
 ```sh
-# Linux
-systemctl status koi
-
-# macOS
-sudo launchctl list | grep org.sylin.koi
+sudo koi install
 ```
 
-On OpenRC Linux, use `rc-service koi status`.
-
----
-
-## Manage the service
-
-Use the native manager for start/stop/restart. `koi` doesn't wrap these — once installed, the service belongs to the OS.
-
-### Windows (SCM)
-
-```powershell
-sc start koi
-sc stop koi
-sc query koi          # current state + last exit code
-```
-
-`net start koi` / `net stop koi` work too. The recovery policy auto-restarts the service if it crashes (5s, then 10s, then gives up until you intervene).
-
-### Linux (systemd)
-
-```sh
-sudo systemctl start koi
-sudo systemctl stop koi
-sudo systemctl restart koi
-sudo systemctl status koi
-```
-
-The unit is `Restart=on-failure`, so systemd restarts the daemon if it exits with an error.
-
-### Linux (OpenRC)
-
-```sh
-sudo rc-service koi start
-sudo rc-service koi stop
-sudo rc-service koi restart
-sudo rc-service koi status
-```
-
-OpenRC's `supervise-daemon` restarts unexpected exits with a bounded policy and
-runs Koi's local status check every 30 seconds after an initial 10-second delay.
-An intentional `rc-service koi stop` stops both supervisor and daemon.
-
-### macOS (launchd)
-
-```sh
-sudo launchctl kickstart -k system/org.sylin.koi   # restart
-sudo launchctl bootout system/org.sylin.koi        # stop/unload
-sudo launchctl bootstrap system /Library/LaunchDaemons/org.sylin.koi.plist   # start/load
-```
-
-`KeepAlive` (on non-success exit) means launchd restarts the daemon if it crashes.
-
----
-
-## Logs and data locations
-
-### Data directory (per OS)
-
-All Koi data is machine-scoped — CA keys, certs, DNS records, health/proxy config, state, and logs live here, not in a user profile.
-
-| OS | Data directory |
-| -- | -------------- |
-| **Windows** | `%ProgramData%\koi\` (typically `C:\ProgramData\koi`) |
-| **Linux** | `/var/lib/koi/` |
-| **macOS** | `/Library/Application Support/koi/` |
-
-Inside that directory: `certs/`, `state/`, and `logs/`. Override the root for testing with the `KOI_DATA_DIR` environment variable.
-
-### Logs
-
-| OS | Service logs |
-| -- | ------------ |
-| **Windows** | `%ProgramData%\koi\logs\koi.log` |
-| **Linux (systemd)** | `journalctl -u koi` (the systemd journal) |
-| **Linux (OpenRC)** | `/var/log/koi/daemon.log`, rotated at 1 MiB with five compressed generations |
-| **macOS** | `/var/log/koi.log` (stdout) and `/var/log/koi.err` (stderr) |
-
-```powershell
-# Windows — tail the service log
-Get-Content "$env:ProgramData\koi\logs\koi.log" -Tail 40 -Wait
-```
-
-```sh
-# Linux — follow the journal
-journalctl -u koi -f
-
-# macOS — follow the log
-tail -f /var/log/koi.log
-```
-
-The log level defaults to `info`; set `KOI_LOG` (e.g. `KOI_LOG=debug`) to change it (see [Changing the port or bind](#changing-the-port-or-bind) for where to set environment for the service).
-
----
-
-## The Windows firewall rule
-
-On Windows, `koi install` manages inbound firewall rules with `netsh advfirewall` (best-effort — install never aborts if a rule fails). Rules are opened **only for ports that are actually reachable from off-box**:
-
-- **mDNS** (UDP 5353) and **DNS** (when the DNS capability is enabled) — these bind broadly, so they get rules.
-- **The HTTP API port — only when it's exposed.** By default the HTTP API binds loopback (`127.0.0.1`), and loopback traffic never crosses the firewall, so **no HTTP rule is created**. A rule is added only when you bind it off-loopback (`--http-bind bridge`, a specific NIC IP, or `0.0.0.0`).
-- **Pond** (TCP `http_port + 3`, normally 5644) — the rule is installed in
-  advance because the separately armed read-only listener is deliberately
-  reachable from the LAN. When Pond is disabled no socket is behind the rule;
-  enabling it later does not need elevation or mutate firewall policy.
-
-`koi uninstall` removes the rules it created (and cleans up rules from older versions). Linux and macOS don't auto-manage the firewall. Pond observes firewalld and UFW on Linux, reporting blocked or unknown state without changing either; operators retain control of that policy.
-
-> Exposing the HTTP port does **not** relax authentication. Mutating requests still require the daemon access token regardless of bind address — see the [security model](../reference/security-model.md).
-
----
-
-## Changing the port or bind
-
-`koi install` records its interactive local operator with `--operator`; daemon
-configuration still comes from the global flags and environment variables read at
-startup.
-
-### At install time, with global flags
-
-Put the daemon flags **before** the subcommand:
-
-```powershell
-# Windows: install on a custom port (Administrator)
-koi --port 5642 install
-```
-
-```sh
-# Linux/macOS: expose the HTTP API to the LAN, custom port
-sudo koi --port 5642 --http-bind 0.0.0.0 install
-```
-
-For a direct-root/package installation, name the desktop/CLI user explicitly so
-the machine service can authenticate it on local control:
+For a direct-root or package installation, name the intended local operator:
 
 ```sh
 sudo koi install --operator alice
 ```
 
-The relevant knobs:
+Replace alice with the actual account. On supported systemd hosts, a user service
+can use koi install --user; do not assume that option works under every init system.
 
-| Flag | Env var | Default | Effect |
-| ---- | ------- | ------- | ------ |
-| `--port <n>` | `KOI_PORT` | `5641` | HTTP API port |
-| `--http-bind <v>` | `KOI_HTTP_BIND` | `loopback` | `loopback` / `bridge` / `<ip>` / `0.0.0.0` — where the HTTP API binds |
-| `--log-level <l>` | `KOI_LOG` | `info` | Log verbosity |
-| `--no-<name>` | `KOI_NO_<NAME>` | off | Disable a capability (e.g. `--no-udp`, `--no-proxy`) |
+| Platform | Native service | Operational distinction |
+| --- | --- | --- |
+| Windows | SCM service koi | Stages the executable under Program Files; use sc.exe in PowerShell |
+| Linux/systemd | koi.service | Machine service; account/environment can differ from an interactive shell |
+| Linux/OpenRC | koi with supervise-daemon | Respects native package ownership; recipe requires its declared logging dependencies |
+| macOS | launchd org.sylin.koi | System LaunchDaemon, not a login LaunchAgent |
 
-`--http-bind` values and their exposure trade-offs are documented in the [security model](../reference/security-model.md#listeners). Non-loopback binds also surface in `koi status` (the `Bind:` line) and trigger the Windows HTTP firewall rule above.
+A successful recipe enables startup and verifies the installed daemon.
+Transactional Windows and Linux recipes preserve prior executable, registration,
+configuration and owned policy during a failed replacement. An interrupted
+install recovers through the supported installer path; do not delete its
+checkpoint/backup files manually.
 
-> **Persistence caveat — Linux/macOS:** flags baked into the unit/plist at install time persist because the install writes `ExecStart=… --daemon` / `ProgramArguments` to disk. On Linux, command-line flags you pass to `koi install` are **not** copied into the generated unit — the cleanest way to make settings stick is environment (below) or editing the unit. Re-running `koi --port … install` rewrites the registration, so it's also a valid way to change the installed configuration.
+Platform support and installed lifecycle acceptance remain separate. Check the
+actual generated service identity, binary and configuration.
 
-### After install, with environment
-
-The daemon reads its environment variables at startup, so setting them for the service makes the change permanent across restarts.
-
-**Linux (systemd):**
+## Verify the installed process
 
 ```sh
-sudo systemctl edit koi
+koi version
+koi status
+curl -fsS http://127.0.0.1:5641/v1/runtime/status
 ```
 
-Add an override:
-
-```ini
-[Service]
-Environment=KOI_PORT=5642
-Environment=KOI_HTTP_BIND=0.0.0.0
-```
-
-Then `sudo systemctl daemon-reload && sudo systemctl restart koi`.
-
-**Windows:** set a machine-scoped environment variable and restart the service:
+Also inspect the native manager:
 
 ```powershell
-[Environment]::SetEnvironmentVariable('KOI_PORT', '5642', 'Machine')
-sc stop koi; sc start koi
+sc.exe query koi
+sc.exe qc koi
 ```
 
-**macOS:** add the variables to the plist under an `EnvironmentVariables` dict (edit `/Library/LaunchDaemons/org.sylin.koi.plist`), then `bootout` + `bootstrap` to reload.
-
-After changing the port, the breadcrumb the CLI uses for auto-discovery is rewritten on restart, so `koi status` and the other commands follow automatically.
-
----
-
-## Uninstall
-
+```sh
+systemctl status koi
+systemctl cat koi
 ```
+
+Use rc-service koi status on OpenRC or launchctl print system/org.sylin.koi on
+macOS. The shell's koi version identifies that CLI binary; compare it with the
+installed service's executable/version. Runtime socket access must work for the
+service account, including after login or reboot as applicable.
+
+Then perform the real [container trial](../../CONTAINERS.md). Healthz or service
+manager success does not prove application access from another machine.
+
+## Logs and data
+
+| Platform | Default data root | Service logs |
+| --- | --- | --- |
+| Windows | %ProgramData%\koi | %ProgramData%\koi\logs\koi.log |
+| Linux | /var/lib/koi | systemd journal or OpenRC /var/log/koi/daemon.log |
+| macOS | /Library/Application Support/koi | /var/log/koi.log and /var/log/koi.err |
+
+A configured KOI_DATA_DIR changes the data root; inspect the actual service
+configuration. Certificate material, persistent state, operator policy and
+configuration outside the data root all matter during recovery.
+
+```powershell
+Get-Content "$env:ProgramData\koi\logs\koi.log" -Tail 40
+```
+
+```sh
+journalctl -u koi -n 40
+```
+
+Use debug logging for a bounded investigation and avoid sharing secrets or
+private network inventories in logs.
+
+## Ports, bind and engine access
+
+Management HTTP defaults to loopback. For a participating container on native
+Linux, configure the existing service with a deliberate bridge bind. Off-loopback
+exposure does not relax authentication and HTTP is still plaintext.
+[API authentication](api-authentication.md) and [security](../reference/security-model.md)
+state the exact route rules.
+
+Common daemon options are --port / KOI_PORT, --http-bind / KOI_HTTP_BIND,
+--dns-port / KOI_DNS_PORT and --runtime / KOI_RUNTIME. Capabilities can be disabled
+with their --no-* options. Apply settings through the recipe's durable configuration
+or native service environment, then inspect what the restarted service actually uses.
+A variable set only in your terminal does not configure an existing service.
+
+On systemd, use a unit override when appropriate, inspect it with systemctl cat,
+reload the manager and restart the named service. On Windows/macOS use the native
+service configuration. Preserve existing overrides instead of assuming defaults.
+
+Windows installation manages Koi-owned firewall rules. Inspect actual rules and
+listener reachability; a rule does not prove that a socket or an application is
+available. Linux/macOS firewall policy remains operator-owned. Engine/socket
+permissions are separate from firewall permissions.
+
+## Upgrade, stop or uninstall
+
+Read [upgrading](upgrading.md) before replacing an existing binary or state.
+Use the selected artifact's install recipe; service paths should not point to
+a temporary checkout or package cache.
+
+Stop/start through the native manager. In PowerShell use sc.exe, not the sc alias.
+On OpenRC use rc-service; on systemd use systemctl.
+
+```sh
 koi uninstall
 ```
 
-Requires elevation (Administrator / `sudo`), same as install. It checks whether a service is actually registered *before* asking for elevation, so running it on a machine with no service just reports *nothing to uninstall*.
+Uninstall removes the service and Koi-owned registration/policy according to the
+recipe while preserving application data for reinstallation. It is not a factory
+reset and does not intentionally destroy a CA. Review
+[system lifecycle](system.md) before destructive cleanup.
 
-Uninstall is intentionally **conservative**:
+## If setup fails
 
-1. Sends a graceful shutdown to the running daemon (so it sends mDNS goodbyes and finishes in-flight work), then stops it via the service manager.
-2. Removes the service registration:
-   - Windows: deletes the SCM service and the firewall rules Koi created.
-   - Linux: `stop` → `disable` → removes `/etc/systemd/system/koi.service` → `daemon-reload`.
-   - macOS: `bootout` the LaunchDaemon → removes the plist; deletes the log files only if they're empty.
-3. Removes the discovery breadcrumb.
-4. **Preserves all your data.** CA keys, certificates, DNS records, health/proxy config, and audit logs stay in the data directory. The installed binary at `/usr/local/bin/koi` is preserved on Linux/macOS.
-
-   Linux also preserves `/etc/koi/config.toml`, including a port run migrated
-   from older `koi.service.d` drop-ins, so uninstall followed by reinstall keeps
-   the same operator endpoints even though obsolete drop-ins are removed.
-
-So reinstalling later picks up exactly where you left off. Removing the service does **not** remove what the service managed.
-
-> To actually wipe state — CA keys, certs, every record — that's [`koi factory-reset`](./system.md#factory-reset), not uninstall. It's irreversible and prompts for confirmation.
-
----
-
-## Troubleshooting
-
-### "requires Administrator privileges" / permission denied
-
-`koi install` and `koi uninstall` need elevation. On Windows, start the terminal with *Run as administrator*; on Linux/macOS prefix with `sudo`.
-
-### The service won't start
-
-Check the platform logs (above) — the daemon logs the reason. The most common cause is a **port conflict**: another process already holds 5641. Reinstall on a different port:
-
-```
-koi --port 5642 install
-```
-
-On Windows, if `sc query koi` shows a non-zero exit code, also check **Event Viewer → Windows Logs → System** for SCM-level errors.
-
-### The CLI can't reach the daemon after a port change
-
-The CLI finds the daemon via a breadcrumb file written at startup. After changing the port, restart the service so the breadcrumb is rewritten:
-
-```sh
-sudo systemctl restart koi          # Linux
-```
-```powershell
-sc stop koi; sc start koi           # Windows
-```
-
-If the daemon was killed ungracefully (power loss, `taskkill /F`), the breadcrumb can go stale — restarting the service fixes it.
-
----
-
-## See also
-
-- [Getting started](../tutorials/getting-started.md) — install and a first visible result in about a minute.
-- [System: daemon lifecycle](./system.md) — status, dashboard, modules, factory reset.
-- [Security model](../reference/security-model.md) — bind addresses, the daemon access token, what's exposed when you bind off-loopback.
-- [CLI reference](../reference/cli.md) — every flag and environment variable.
-- [certmesh](./certmesh.md) — initialize the CA after the service is up.
-- [Documentation index](../index.md).
+Capture the exact artifact, native manager error, service log, generated
+configuration and failing stage. Do not report an unavailable engine as an empty
+network or rerun a failed installation without inspecting its restoration result.
+[Troubleshooting](troubleshooting.md) provides the investigation path.

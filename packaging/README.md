@@ -1,31 +1,23 @@
-# Packaging channel scaffolds (ADR-034 D6)
+# Distribution packaging
 
-Drafts for the ratified package-manager channels, in implementation order.
-**Every version string and SHA-256 here is a placeholder by design**: these
-channels debut at stable `1.0.0` (prereleases do not belong in them), and
-hashes are computed from the real release artifacts at release time — never
-guessed (RL-2: registries are immutable; a wrong pin is forever).
+This directory contains release-channel recipes and templates. A file here does not establish that its channel is published or that installation works. [Launch readiness](../docs/launch/README.md) lists available entry points and the scenario evidence required before promotion.
 
-| Channel | File | Fill at release with |
-|---|---|---|
-| Homebrew tap | [`homebrew/Formula/koi.rb`](homebrew/Formula/koi.rb) | archive URLs + sha256 per macOS/Linux target from the release manifest; push to `sylin-org/homebrew-tap` repo under `Formula/koi.rb` |
-| winget | [`winget/README.md`](winget/README.md) | generate the three manifests with `wingetcreate new <installer-url>` against the signed NSIS/archive URL, then PR to `microsoft/winget-pkgs` |
-| AUR | [`aur/PKGBUILD`](aur/PKGBUILD) | `pkgver=1.0.0`, sha256sums from the Linux archives; publish as `koi-bin` (or hand to a community maintainer) |
-| Scoop | [`scoop/koi.json`](scoop/koi.json) | Windows archive URLs + hashes into a `sylin-org/scoops`-style bucket |
+The preview prioritizes one reproducible installation path for Windows x64/Docker Desktop and Linux glibc x64/Docker Engine. Existing build targets remain governed by repository support policy; adding package-manager entries is not a prerequisite for proving the container/second-device journey.
 
-The [`alpine/APKBUILD`](alpine/APKBUILD) is the physically verified pre-release
-recipe for Alpine's native `koi` and `koi-openrc` packages. It builds from a
-pinned source commit; `koi-openrc` owns the init script and bounded log-rotation
-policy. Package installation does not guess an interactive operator: run
-`sudo koi install --operator <desktop-user>` once to transactionally enable,
-start, and verify the service.
+| Recipe | Purpose |
+| --- | --- |
+| [Homebrew formula](homebrew/Formula/koi.rb) | Tap recipe requiring real artifact URLs/hashes |
+| [winget notes](winget/README.md) | Windows manifest generation/submission workflow |
+| [AUR recipe](aur/PKGBUILD) | Linux binary package recipe |
+| [Scoop manifest](scoop/koi.json) | Windows archive package metadata |
+| [Alpine APKBUILD](alpine/APKBUILD) | Native Alpine/OpenRC packaging source |
 
-## Release-day checklist (per channel)
+## Promote a channel
 
-1. Tag → hosted release workflow produces archives + checksums + manifest + attestations.
-2. Copy each artifact's exact URL and SHA-256 **from the release manifest** into the
-   channel file (never re-type a hash).
-3. Push/submit; record the submission in SESSION-HANDOFF.md.
-4. Verify an end-to-end install (`brew install sylin/tap/koi`, `winget install ...`,
-   `yay -S koi-bin`, `scoop install koi`) before flipping the landing page state
-   from *planned* to *available* (ADR-025 §6 honesty states).
+1. Select the exact accepted source and release artifact; confirm the repository's version/channel policy.
+2. Populate URLs, versions and SHA-256 values from real release metadata. Reject placeholder or mismatched values.
+3. Validate with the channel's current tooling and submit/publish through the approved release process.
+4. Confirm registry availability and perform a clean installation from that public entry point.
+5. Exercise the intended installed-service/application journey and record source, package/artifact identity, result and cleanup in [the launch ledger](../fleet/launch/LEDGER.md).
+
+Do not advertise an installation command before those facts exist. Packaging checks and provenance attestations establish different facts from native service acceptance. Keep operator selection explicit where installation cannot recover the interactive user's identity; never make a package guess or publish a daemon token.

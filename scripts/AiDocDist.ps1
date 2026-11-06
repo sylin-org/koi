@@ -7,8 +7,9 @@ Dynamically discovers all folders and .md files under docs/ and consolidates the
 into namespaced files suitable for flat-folder AI ingestion. Merges related documents
 by folder while preserving all essential content.
 
-ADRs (docs/adr/) are excluded by default - they document historical decisions and
-add noise for most LLM tasks. Use -IncludeADRs to override.
+The default bundle contains current operating documentation and the current
+decision/epic/ledger. Dated ADR and research corpora are opt-in. Navigation-only
+retired plan directories are never consolidated into the current reading path.
 
 New folders added under docs/ are automatically discovered and consolidated.
 
@@ -18,6 +19,9 @@ Target directory for AI distribution. Default: dist/ai-context
 .PARAMETER IncludeADRs
 Include Architecture Decision Records (docs/adr/) in the distribution.
 
+.PARAMETER IncludeResearch
+Include dated assessments, research and prior-art evidence.
+
 .PARAMETER Validate
 Run validation checks after generation.
 
@@ -25,11 +29,13 @@ Run validation checks after generation.
 .\scripts\AiDocDist.ps1
 .\scripts\AiDocDist.ps1 -Validate
 .\scripts\AiDocDist.ps1 -IncludeADRs -Validate
+.\scripts\AiDocDist.ps1 -IncludeResearch -Validate
 #>
 
 param(
     [string]$OutputDir = "dist/ai-context",
     [switch]$IncludeADRs,
+    [switch]$IncludeResearch,
     [switch]$Validate
 )
 
@@ -43,19 +49,25 @@ if (-not [System.IO.Path]::IsPathRooted($OutputDir)) {
     $OutputDir = Join-Path $RootDir $OutputDir
 }
 
-# Folders to skip (always)
-$SkipFolders = @("adr")
+# Current navigation does not ingest retired-plan landing pages.
+$SkipFolders = @("archive", "plans", "prompts", "proposals")
+$SkipRootFiles = @()
+if (-not $IncludeADRs) { $SkipFolders += "adr" }
+if (-not $IncludeResearch) {
+    $SkipFolders += @("assessment", "research", "prior-art")
+    $SkipRootFiles += "distribution-prior-art.md"
+}
 
 Write-Host "=== Koi AI Distribution Generator ===" -ForegroundColor Cyan
 Write-Host "Source: docs/"
 Write-Host "Target: $OutputDir"
 if ($IncludeADRs) {
-    $SkipFolders = @()
     Write-Host "ADRs:   included" -ForegroundColor Yellow
 }
 else {
-    Write-Host "ADRs:   excluded (use -IncludeADRs to include)"
+    Write-Host "ADR corpus: excluded (current decision is included; use -IncludeADRs for all)"
 }
+Write-Host "Research corpus: $(if ($IncludeResearch) { 'included' } else { 'excluded (use -IncludeResearch)' })"
 Write-Host ""
 
 # ============================================================================
@@ -65,7 +77,7 @@ Write-Host ""
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 
 # Clean old distribution files
-$oldFiles = Get-ChildItem -Path $OutputDir -Filter "*.md" -File
+$oldFiles = Get-ChildItem -Path $OutputDir -Filter "$Namespace-*.md" -File
 if ($oldFiles.Count -gt 0) {
     $oldFiles | Remove-Item -Force
     Write-Host "Cleaned $($oldFiles.Count) old files" -ForegroundColor Gray
@@ -91,63 +103,187 @@ function Extract-Title {
     return ($Fallback -replace '-', ' ').Trim() | ForEach-Object { (Get-Culture).TextInfo.ToTitleCase($_) }
 }
 
-function Build-LinkMap {
-    <#
-    .SYNOPSIS
-    Dynamically builds a link transformation map from discovered docs/ folders
-    and root-level markdown files. Maps original doc paths to consolidated filenames.
-    #>
-    param(
-        [string[]]$Folders,
-        [string[]]$RootFiles
-    )
-
-    $map = @{}
-
-    foreach ($folder in $Folders) {
-        $key = "docs/$folder/"
-        $target = "$Namespace-$folder-all.md#"
-        $map[$key] = $target
+function Get-MarkdownLines {
+    # Fenced examples must not supply headings, anchors, or navigable links.
+    param([string]$Content)
+    $fence = $null
+    foreach ($line in ($Content -split '\r?\n')) {
+        $prose = -not $fence
+        if ($line -match '^\s{0,3}(`{3,}|~{3,})') {
+            $marker = $Matches[1]
+            if (-not $fence) { $fence = $marker }
+            elseif ($marker[0] -eq $fence[0] -and $marker.Length -ge $fence.Length -and
+                $line -match '^\s{0,3}(`{3,}|~{3,})\s*$') { $fence = $null }
+            $prose = $false
+        }
+        [pscustomobject]@{ Text = $line; Prose = $prose }
     }
+}
 
-    # Root-level doc files
-    foreach ($file in $RootFiles) {
-        $baseName = [System.IO.Path]::GetFileNameWithoutExtension($file).ToLower()
-        $map["$file"] = "$Namespace-$baseName.md"
+function Get-HeadingSlug {
+    param([string]$Title, [hashtable]$Counts)
+    $plain = $Title.Trim() -replace '\s+#+\s*$', ''
+    $plain = $plain -replace '\[([^]]+)\]\([^)]+\)', '$1' -replace '<[^>]+>', ''
+    $plain = [System.Net.WebUtility]::HtmlDecode($plain).ToLowerInvariant()
+    $slug = $plain -replace '[^\p{L}\p{N}\p{M}_\s-]', '' -replace '\s', '-'
+    $anchor = $slug
+    $suffix = 0
+    while ($Counts.ContainsKey($anchor)) {
+        $suffix++
+        $anchor = "$slug-$suffix"
     }
+    $Counts[$anchor] = $true
+    return $anchor
+}
 
-    # Common relative references from within docs/
-    $map["../GUIDE.md"] = "$Namespace-guide.md"
-    $map["../README.md"] = "$Namespace-readme.md"
-    $map["../CONTAINERS.md"] = "$Namespace-containers.md"
-    $map["../CONTRIBUTING.md"] = "$Namespace-contributing.md"
+function Get-RepositoryPath {
+    param([string]$Path)
+    # Uri works on Windows PowerShell 5.1 as well as PowerShell 7.
+    $rootUri = [uri]($RootDir.TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar)
+    return [uri]::UnescapeDataString($rootUri.MakeRelativeUri([uri]$Path).ToString())
+}
 
-    return $map
+function Register-Source {
+    param([string]$Source, [string]$Target, [bool]$Merged = $false)
+    $path = [System.IO.Path]::GetFullPath((Join-Path $RootDir $Source))
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return }
+    $content = Strip-Frontmatter (Get-Content -LiteralPath $path -Raw -Encoding UTF8)
+    $prefix = 'doc-' + ((Get-RepositoryPath $path) -replace '\.md$', '' -replace '[^a-zA-Z0-9-]', '-').ToLowerInvariant()
+    $anchors = @{}
+    $counts = @{}
+    $lines = foreach ($line in (Get-MarkdownLines $content)) {
+        $text = $line.Text
+        if ($line.Prose) {
+            if ($text -match '^\s{0,3}#{1,6}\s+(.+)$') {
+                $anchor = Get-HeadingSlug $Matches[1] $counts
+                $anchors[$anchor] = if ($Merged) { "$prefix--$anchor" } else { $anchor }
+                if ($Merged) { '<a id="' + $anchors[$anchor] + '"></a>' }
+            }
+            $text = [regex]::Replace($text, '<a\s+(?:id|name)=["'']([^"'']+)["'']\s*>', {
+                param($match)
+                $anchor = $match.Groups[1].Value
+                $anchors[$anchor] = if ($Merged) { "$prefix--$anchor" } else { $anchor }
+                return '<a id="' + $anchors[$anchor] + '">'
+            })
+        }
+        $text
+    }
+    # Explicit source-prefixed anchors make repeated headings in merged files
+    # unambiguous, independently of a renderer's automatic heading suffixes.
+    $sourceMap[$path] = @{
+        Source = $path; Target = $Target; Content = ($lines -join "`n")
+        Title = Extract-Title $content ([System.IO.Path]::GetFileNameWithoutExtension($path))
+        Section = $(if ($Merged) { $prefix } else { '' }); Anchors = $anchors
+    }
+}
+
+function Edit-MarkdownLinks {
+    param([string]$Content, [scriptblock]$Rewrite)
+    # Inline/image links (including angle destinations and titles), reference
+    # definitions, and inline code. Code is matched first and left untouched.
+    $pattern = '(?<code>`+[^`]*`+)|(?<prefix>!?\[[^\]\r\n]*\]\(\s*)(?<destination><[^>\r\n]+>|(?:\\.|[^()\s\\]|\((?:\\.|[^()\\])*\))+)(?<suffix>\s+(?:"[^"\r\n]*"|''[^''\r\n]*''|\([^)\r\n]*\))\s*\)|\s*\))|(?<reference>^\s{0,3}\[[^\]^\r\n]+\]:\s*)(?<refdestination><[^>\r\n]+>|\S+)'
+    $lines = foreach ($line in (Get-MarkdownLines $Content)) {
+        if (-not $line.Prose) { $line.Text; continue }
+        [regex]::Replace($line.Text, $pattern, {
+            param($match)
+            if ($match.Groups['code'].Success) { return $match.Value }
+            $reference = $match.Groups['reference'].Success
+            $group = if ($reference) { 'refdestination' } else { 'destination' }
+            $raw = $match.Groups[$group].Value
+            $angle = $raw.StartsWith('<')
+            $url = if ($angle) { $raw.Substring(1, $raw.Length - 2) } else { $raw }
+            $rewritten = & $Rewrite $url
+            if ($angle) { $rewritten = "<$rewritten>" }
+            if ($reference) { return $match.Groups['reference'].Value + $rewritten }
+            return $match.Groups['prefix'].Value + $rewritten + $match.Groups['suffix'].Value
+        })
+    }
+    return $lines -join "`n"
+}
+
+function Get-RepositoryUrl {
+    param([string]$Path, [string]$Suffix)
+    $relative = Get-RepositoryPath $Path
+    $encoded = ($relative.Split('/') | ForEach-Object { [uri]::EscapeDataString($_) }) -join '/'
+    $kind = if (Test-Path -LiteralPath $Path -PathType Container) { 'tree' } else { 'blob' }
+    return "https://github.com/sylin-org/koi/$kind/dev/$encoded$Suffix"
 }
 
 function Transform-Links {
-    param(
-        [string]$Content,
-        [hashtable]$LinkMap
-    )
-
-    foreach ($pattern in $LinkMap.Keys) {
-        $replacement = $LinkMap[$pattern]
-
-        if ($pattern -match '/$') {
-            # Folder pattern: docs/guides/file.md → koi-guides-all.md#file
-            $escaped = [regex]::Escape($pattern)
-            $Content = $Content -replace "\]\($escaped([^/)]+)\.md\)", "]($replacement`$1)"
-            $Content = $Content -replace "\]\($escaped([^/)]+)\.md#([^)]+)\)", "]($replacement`$1)"
+    param([hashtable]$Document)
+    return Edit-MarkdownLinks $Document.Content {
+        param($url)
+        if ($url -match '^[a-zA-Z][a-zA-Z0-9+.-]*:|^//') { return $url }
+        if ($url -notmatch '^(?<path>[^?#]*)(?<query>\?[^#]*)?(?:#(?<fragment>.*))?$') { return $url }
+        $relative = [uri]::UnescapeDataString($Matches['path']) -replace '\\([ ()])', '$1'
+        $query = $Matches['query']
+        $fragment = [uri]::UnescapeDataString($Matches['fragment'])
+        $suffix = $query + $(if ($fragment) { "#$fragment" } else { '' })
+        $path = if (-not $relative) { $Document.Source }
+        elseif ($relative.StartsWith('/')) { [System.IO.Path]::GetFullPath((Join-Path $RootDir $relative.TrimStart('/'))) }
+        else { [System.IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $Document.Source) $relative)) }
+        $directoryKey = $path.TrimEnd('\', '/')
+        if (-not $fragment -and $folderMap.ContainsKey($directoryKey)) {
+            return $folderMap[$directoryKey] + $query
         }
-        else {
-            # Exact file pattern
-            $escaped = [regex]::Escape($pattern)
-            $Content = $Content -replace "\]\($escaped\)", "]($replacement)"
+        if ($sourceMap.ContainsKey($path)) {
+            $target = $sourceMap[$path]
+            $anchor = $target.Section
+            if ($fragment) {
+                if (-not $target.Anchors.ContainsKey($fragment)) {
+                    $sourceLinkWarnings.Add("$(Get-RepositoryPath $Document.Source): $url (source anchor does not exist)") | Out-Null
+                    return Get-RepositoryUrl $path $suffix
+                }
+                $anchor = $target.Anchors[$fragment]
+            }
+            return $target.Target + $query + $(if ($anchor) { "#$anchor" } else { '' })
+        }
+        if (-not (Test-Path -LiteralPath $path)) {
+            $sourceLinkWarnings.Add("$(Get-RepositoryPath $Document.Source): $url (source path does not exist)") | Out-Null
+        }
+        # Excluded corpora and code remain repository links, not missing files
+        # inside the flat bundle. These external destinations are not certified.
+        return Get-RepositoryUrl $path $suffix
+    }
+}
+
+function Test-DistributionLinks {
+    param([string]$Directory)
+    $files = @(Get-ChildItem -LiteralPath $Directory -Filter "$Namespace-*.md" -File)
+    $documents = @{}
+    foreach ($file in $files) {
+        $content = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8
+        $anchors = @{}
+        $counts = @{}
+        foreach ($line in (Get-MarkdownLines $content)) {
+            if (-not $line.Prose) { continue }
+            if ($line.Text -match '^\s{0,3}#{1,6}\s+(.+)$') {
+                $anchors[(Get-HeadingSlug $Matches[1] $counts)] = $true
+            }
+            foreach ($match in [regex]::Matches($line.Text, '<a\s+(?:id|name)=["'']([^"'']+)["'']\s*>')) {
+                $anchors[$match.Groups[1].Value] = $true
+            }
+        }
+        $documents[$file.FullName] = @{ Content = $content; Anchors = $anchors }
+    }
+    $errors = [System.Collections.Generic.List[string]]::new()
+    foreach ($file in $files) {
+        $null = Edit-MarkdownLinks $documents[$file.FullName].Content {
+            param($url)
+            if ($url -match '^[a-zA-Z][a-zA-Z0-9+.-]*:|^//') { return $url }
+            $parts = $url -split '#', 2
+            $relative = [uri]::UnescapeDataString(($parts[0] -split '\?', 2)[0])
+            $path = if ($relative) { [System.IO.Path]::GetFullPath((Join-Path $Directory $relative)) } else { $file.FullName }
+            if (-not $documents.ContainsKey($path)) { $errors.Add("$($file.Name): missing bundled file $url") }
+            elseif ($parts.Count -gt 1 -and $parts[1] -and
+                -not $documents[$path].Anchors.ContainsKey([uri]::UnescapeDataString($parts[1]))) {
+                $errors.Add("$($file.Name): missing bundled anchor $url")
+            }
+            return $url
         }
     }
-
-    return $Content
+    if ($errors.Count) { throw "Generated navigation failed validation:`n$($errors -join "`n")" }
+    Write-Host "Local navigation:        all generated files and anchors resolve" -ForegroundColor Green
 }
 
 function Merge-Folder {
@@ -158,8 +294,7 @@ function Merge-Folder {
     #>
     param(
         [string]$FolderName,
-        [string]$FolderPath,
-        [hashtable]$LinkMap
+        [string]$FolderPath
     )
 
     $outputName = "$Namespace-$FolderName-all.md"
@@ -185,10 +320,12 @@ function Merge-Folder {
     $sections = @()
 
     foreach ($file in $files) {
-        $fileContent = Get-Content $file.FullName -Raw -Encoding UTF8
-        $stripped = Strip-Frontmatter $fileContent
-        $stripped = Transform-Links $stripped $LinkMap
-        $fileTitle = Extract-Title $stripped $file.BaseName
+        $document = $sourceMap[$file.FullName]
+        if ($FolderName -eq 'adr' -and $file.Name -eq '046-container-lan-adoption.md') {
+            $document = $mergedCurrentDecision
+        }
+        $stripped = Transform-Links $document
+        $fileTitle = $document.Title
 
         # Note subfolder origin for files in nested directories
         $relativePath = $file.FullName.Substring($FolderPath.Length).TrimStart('\', '/')
@@ -200,10 +337,10 @@ function Merge-Folder {
             $tocSubfolder = " ($subfolder)"
         }
 
-        $anchor = $fileTitle.ToLower() -replace '[^a-z0-9\s-]', '' -replace '\s+', '-'
+        $anchor = $document.Section
 
         $tocEntries += "- [$fileTitle$tocSubfolder](#$anchor)"
-        $sections += "`n## $fileTitle$subfolderNote`n`n$stripped`n`n---`n"
+        $sections += "`n<a id=""$anchor""></a>`n`n## $fileTitle$subfolderNote`n`n$stripped`n`n---`n"
     }
 
     $dateStr = Get-Date -Format "MMMM dd, yyyy"
@@ -235,11 +372,36 @@ Sort-Object Name
 
 $folderNames = $allFolders | ForEach-Object { $_.Name }
 
-# Root-level special files
-$rootSpecialFiles = @("README.md", "GUIDE.md", "CONTAINERS.md", "CONTRIBUTING.md")
+$currentContracts = @(
+    @{ Source = "docs/adr/046-container-lan-adoption.md"; Target = "$Namespace-current-decision.md" }
+    @{ Source = "fleet/epics/004-container-lan-adoption.md"; Target = "$Namespace-launch-epic.md" }
+    @{ Source = "fleet/launch/LEDGER.md"; Target = "$Namespace-launch-ledger.md" }
+)
+$specialFiles = @(
+    @{ Source = "README.md"; Target = "$Namespace-readme.md" }
+    @{ Source = "GUIDE.md"; Target = "$Namespace-guide.md" }
+    @{ Source = "CONTAINERS.md"; Target = "$Namespace-containers.md" }
+    @{ Source = "CONTRIBUTING.md"; Target = "$Namespace-contributing.md" }
+) + $currentContracts
 
-# Build the link map dynamically
-$linkMap = Build-LinkMap -Folders $folderNames -RootFiles $rootSpecialFiles
+# Register the complete corpus before rendering any links. The always-included
+# current decision takes precedence over its duplicate in the optional ADR book.
+$sourceMap = @{}
+$folderMap = @{}
+$sourceLinkWarnings = [System.Collections.Generic.HashSet[string]]::new()
+foreach ($folder in $allFolders) {
+    $folderMap[$folder.FullName] = "$Namespace-$($folder.Name)-all.md"
+    foreach ($file in (Get-ChildItem -LiteralPath $folder.FullName -Filter '*.md' -File -Recurse | Sort-Object FullName)) {
+        Register-Source (Get-RepositoryPath $file.FullName) "$Namespace-$($folder.Name)-all.md" $true
+    }
+}
+$rootDocFiles = @(Get-ChildItem -LiteralPath $SourceRoot -Filter '*.md' -File |
+    Where-Object { $SkipRootFiles -notcontains $_.Name })
+foreach ($file in $rootDocFiles) {
+    Register-Source (Get-RepositoryPath $file.FullName) "$Namespace-docs-$($file.BaseName.ToLower()).md"
+}
+$mergedCurrentDecision = $sourceMap[(Join-Path $RootDir $currentContracts[0].Source)]
+foreach ($spec in $specialFiles) { Register-Source $spec.Source $spec.Target }
 
 Write-Host "Discovered $($allFolders.Count) doc folders: $($folderNames -join ', ')" -ForegroundColor Cyan
 Write-Host ""
@@ -257,7 +419,7 @@ foreach ($folder in $allFolders) {
     $stepNum++
     Write-Host "`n$stepNum. $($folder.Name)/" -ForegroundColor Cyan
 
-    $result = Merge-Folder -FolderName $folder.Name -FolderPath $folder.FullName -LinkMap $linkMap
+    $result = Merge-Folder -FolderName $folder.Name -FolderPath $folder.FullName
     $processedFiles += $result.Files
 }
 
@@ -266,7 +428,7 @@ foreach ($folder in $allFolders) {
 # ============================================================================
 
 $rootDocFiles = Get-ChildItem -Path $SourceRoot -Filter "*.md" -File |
-Where-Object { $processedFiles -notcontains $_.FullName }
+Where-Object { $processedFiles -notcontains $_.FullName -and $SkipRootFiles -notcontains $_.Name }
 
 if ($rootDocFiles.Count -gt 0) {
     $stepNum++
@@ -274,9 +436,7 @@ if ($rootDocFiles.Count -gt 0) {
 
     foreach ($file in $rootDocFiles) {
         $targetName = "$Namespace-docs-$($file.BaseName.ToLower()).md"
-        $content = Get-Content $file.FullName -Raw -Encoding UTF8
-        $content = Strip-Frontmatter $content
-        $content = Transform-Links $content $linkMap
+        $content = Transform-Links $sourceMap[$file.FullName]
 
         Set-Content -Path (Join-Path $OutputDir $targetName) -Value $content -Encoding UTF8
         Write-Host "    ✓ $targetName" -ForegroundColor Green
@@ -291,18 +451,10 @@ if ($rootDocFiles.Count -gt 0) {
 $stepNum++
 Write-Host "`n$stepNum. Root project files..." -ForegroundColor Cyan
 
-$specialFiles = @(
-    @{ Source = "README.md"; Target = "$Namespace-readme.md" }
-    @{ Source = "GUIDE.md"; Target = "$Namespace-guide.md" }
-    @{ Source = "CONTAINERS.md"; Target = "$Namespace-containers.md" }
-    @{ Source = "CONTRIBUTING.md"; Target = "$Namespace-contributing.md" }
-)
-
 foreach ($spec in $specialFiles) {
     $sourcePath = Join-Path $RootDir $spec.Source
     if (Test-Path $sourcePath) {
-        $content = Get-Content $sourcePath -Raw -Encoding UTF8
-        $content = Transform-Links $content $linkMap
+        $content = Transform-Links $sourceMap[$sourcePath]
         Set-Content -Path (Join-Path $OutputDir $spec.Target) -Value $content -Encoding UTF8
         Write-Host "    ✓ $($spec.Target)" -ForegroundColor Green
     }
@@ -333,15 +485,18 @@ $distReadme = @"
 
 **Documentation set optimized for LLM ingestion.**
 
-Koi is a cross-platform local network toolkit - service discovery, local DNS,
-certificate mesh, health monitoring, and TLS proxy in a single binary.
+Koi helps container/LAN operators label a container, open its application from
+another computer, and keep names and state correct when the container changes.
+The operator preview precedes the optional trusted-service extension.
 
 ## Reading Order
 
 1. **$Namespace-readme.md** - what Koi is and why it exists
-2. **$Namespace-guide.md** - tutorial walkthrough
-3. **$Namespace-reference-all.md** - architecture, HTTP API, CLI, wire protocol
-4. **$Namespace-guides-all.md** - per-capability deep-dives
+2. **$Namespace-current-decision.md** - product scope and evidence requirements
+3. **$Namespace-launch-epic.md** and **$Namespace-launch-ledger.md** - current work
+4. **$Namespace-launch-all.md** - artifact readiness, proof and user trials
+5. **$Namespace-guide.md** and **$Namespace-guides-all.md** - supported tasks
+6. **$Namespace-reference-all.md** - precise architecture and protocol contracts
 
 ## Consolidated Docs
 
@@ -358,9 +513,10 @@ All files follow: ``$Namespace-[category].md``
 Consolidated folder docs end with ``-all``. Root project files use their
 lowercase name (e.g., ``$Namespace-readme.md``).
 
-## ADRs
+## Evidence corpora
 
-$(if ($IncludeADRs) { "Architecture Decision Records are **included** in this distribution." } else { "Architecture Decision Records (``docs/adr/``) are **excluded** from this distribution.`nRe-generate with ``-IncludeADRs`` to include them." })
+The current decision is always included. $(if ($IncludeADRs) { "The full ADR corpus is included as dated evidence." } else { "Use -IncludeADRs to include the full ADR corpus." })
+$(if ($IncludeResearch) { "Research and assessments are included as dated evidence, not current task instructions." } else { "Use -IncludeResearch to include research and assessments." })
 
 ## Generated
 
@@ -413,13 +569,13 @@ if ($Validate) {
     $includedSourceFiles = $allSourceFiles | Where-Object {
         $relativePath = $_.FullName.Substring($SourceRoot.Length).TrimStart('\', '/')
         $topFolder = ($relativePath -split '[\\/]')[0]
-        $SkipFolders -notcontains $topFolder
+        $SkipFolders -notcontains $topFolder -and $SkipRootFiles -notcontains $relativePath
     }
 
     Write-Host ""
     Write-Host "Source files in docs/:   $($allSourceFiles.Count)" -ForegroundColor White
     Write-Host "  Included:              $($includedSourceFiles.Count)" -ForegroundColor Green
-    Write-Host "  Skipped (ADRs):        $($allSourceFiles.Count - $includedSourceFiles.Count)" -ForegroundColor $(if ($IncludeADRs) { "Gray" } else { "Yellow" })
+    Write-Host "  Skipped corpora:       $($allSourceFiles.Count - $includedSourceFiles.Count)" -ForegroundColor Yellow
     Write-Host "Distribution files:      $($finalFiles.Count)" -ForegroundColor Green
 
     # Namespace check
@@ -443,7 +599,13 @@ if ($Validate) {
         $emptyFiles | ForEach-Object { Write-Warning "  $($_.Name) ($($_.Length) bytes)" }
     }
 
+    Test-DistributionLinks $OutputDir
     Write-Host "`nValidation complete." -ForegroundColor Green
+}
+
+if ($sourceLinkWarnings.Count) {
+    Write-Warning "Pre-existing source references need review ($($sourceLinkWarnings.Count)); retained as repository URLs, not validated bundle links:"
+    $sourceLinkWarnings | Sort-Object | ForEach-Object { Write-Warning "  $_" }
 }
 
 # ============================================================================

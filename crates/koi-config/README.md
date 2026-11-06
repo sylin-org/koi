@@ -1,24 +1,17 @@
 # koi-config
 
-[![Crates.io](https://img.shields.io/crates/v/koi-config.svg)](https://crates.io/crates/koi-config)
-[![Docs.rs](https://docs.rs/koi-config/badge.svg)](https://docs.rs/koi-config)
-[![License](https://img.shields.io/crates/l/koi-config.svg)](https://github.com/sylin-org/koi#license)
+Configuration discovery, data-root conventions and endpoint/breadcrumb support for Koi's daemon and clients.
 
-Configuration, breadcrumb discovery, and state persistence for Koi.
+Configuration roots and a discovered endpoint are different concerns. An installed service can grant its recorded local operator access through authenticated local IPC without making its token file public.
 
-## Overview
+## Development
 
-`koi-config` handles runtime configuration and daemon discovery for Koi. It
-manages the breadcrumb file that lets CLI clients auto-discover a
-running daemon, persists DNS entries and proxy state to disk, and provides the
-configuration types shared across the workspace.
+Read [architecture](../../docs/reference/architecture.md) for ownership boundaries and [launch readiness](../../docs/launch/README.md) for the supported-versus-tested journey matrix. This README describes repository source; it does not assert package publication or physical acceptance.
 
-## Part of Koi
+```sh
+cargo test -p koi-config --locked
+```
 
-This crate is part of the [Koi](https://github.com/sylin-org/koi) workspace.
-See the main repository for architecture details.
+Platform-dependent tests can require explicit facilities or remain ignored in ordinary runs. See [validation](../../docs/qa/validation-suite.md) before interpreting a green result.
 
-## License
-
-Licensed under either of [Apache License, Version 2.0](../../LICENSE-APACHE) or
-[MIT License](../../LICENSE-MIT) at your option.
+Licensed under Apache-2.0 OR MIT; see the workspace license files.

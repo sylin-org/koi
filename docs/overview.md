@@ -1,179 +1,115 @@
-# What is Koi, and is it for you?
+# Is Koi useful for your network?
 
-This page is orientation, not instructions. It explains what Koi is, the problem it
-solves, who it's for, and — just as importantly — when you should reach for something
-else. If you already know you want it, skip to [where to go next](#where-to-go-next).
+Koi is an open-source host service for container/LAN developers and capable
+homelab operators, with particular focus on Windows and Linux. It connects
+opted-in container lifecycle to service discovery, local names and health checks.
 
----
+Certmesh is its private-space identity and trust capability: create a locally
+governed trust group for machines and participating applications. Container
+discovery is the first task; shared identity is available when the service needs it.
 
-## The promise
+Use it when you repeatedly configure where a container service lives, how another
+machine finds it, and what should disappear when the container is replaced.
 
-> **Let everything local find, trust, and talk.**
+## The first task
 
-Koi is an open-source local connectivity substrate that makes containers,
-applications, and devices delightfully discoverable, secure, and interconnected.
-It runs as one cross-platform binary, has no hosted control plane, and continues to
-work when the internet does not.
+Run an application in a bridge-networked container with a published port.
+Add `koi.announce` or `KOI_MDNS_ANNOUNCE`, confirm Koi's runtime
+observation, discover the service from a second machine, and open its actual
+application endpoint. Stop, restart and recreate it, checking the app and derived
+state at each step.
 
-A local network gives participants addresses, but very little shared context. Devices
-may advertise over mDNS while bridge-networked containers cannot hear them. Applications
-accumulate IP addresses and ports in configuration. Private services need useful names,
-yet those names still produce certificate warnings unless every machine shares a trust
-root. Each layer has a point solution; the boundaries between them become repeated work.
+The [container guide](../CONTAINERS.md) is the working path. The
+[release-readiness record](launch/README.md) states which artifact and environment
+have completed that path. CLI and HTTP are sufficient; a polished workbench is
+not a prerequisite for this initial task.
 
-Koi owns that connective tissue.
+## What runs where
 
-## How Koi grew
+Koi runs on the host that can observe the engine and participate on the LAN.
+Containers keep their bridge network. Koi can publish their reachable host ports,
+and participating applications can ask Koi's HTTP API about LAN services.
 
-Koi began as a host-side mDNS bridge for containers. The host could participate in
-multicast while isolated workloads used ordinary HTTP, preserving container network
-isolation without making every image carry platform-specific discovery machinery.
+This does not give every unmodified application transparent multicast access.
+A program must use the API or a protocol-specific adapter for that direction of
+discovery. UDP relay is an explicit application interface, not a general VPN.
 
-Making containers first-class network citizens revealed the adjacent gaps. Something
-that arrives needs a name. Something found needs a reliable way to be reached. A name
-needs identity before people and applications can trust it. Health and lifecycle must
-keep the entire picture honest when the participant changes or leaves.
+The daemon runs locally without a hosted account or control plane. Discovery
+still depends on the interfaces, firewall and broadcast domain. A VLAN or wireless
+isolation boundary may require network configuration outside Koi.
 
-Those are not unrelated features. They are the missing seams in one local-participation
-lifecycle:
+## Keep existing tools
 
-`arrive → receive a name → be discovered → be reached → be trusted → report health → change → leave cleanly`
+- Keep Docker or Podman. Koi reads opted-in runtime metadata and selected existing routing labels.
+- Keep your resolver. Delegate the Koi zone or import an export; verify client resolution.
+- Keep your reverse proxy. Koi's built-in proxy is a TLS byte forwarder, not a path router.
+- Keep monitoring. Prometheus HTTP service discovery can consume Koi targets.
 
-## Find. Trust. Connect.
+These are integration points with prerequisites, not a promise that every existing
+configuration works unchanged. [Integration guides](guides/integrations.md)
+state the configuration boundaries.
 
-### Find
+<a id="add-trust-when-the-task-needs-it"></a>
 
-Koi speaks mDNS/DNS-SD, gives services meaningful names in a local DNS zone
-(`.internal` by default), observes container runtime events, and maintains leases so
-departed services disappear instead of becoming stale ghosts. A participant can be
-found whether it began as a device announcement, a container label, a static record,
-or a certificate identity.
+## Private-space identity and trust
 
-### Trust
+Use Certmesh to establish your own CA, admit machines to a trust group and manage
+their identity lifecycle. It provides enrollment, certificate renewal, signed
+membership/revocation information and backup/recovery. The authority and member
+identities stay under your control, without a hosted account or public CA.
 
-Koi provides a private certificate authority, guided enrollment, automatic renewal,
-OS trust-store installation, mTLS, signing and verification, and a trust doctor that
-makes failures explicit. The result is locally governed identity and warning-free HTTPS
-for in-zone services without pretending that an unverified discovery announcement is
-proof. Security is one pillar of Koi, not its entire identity.
+Koi-aware applications can verify peer identities and signed messages, consume
+membership changes and apply their own access rules. This supports a private
+trust space for a homelab, small team or lab alongside Koi's discovery APIs.
+Applications must integrate those identity checks; joining a mesh does not
+automatically configure every service's authentication or isolate its network.
 
-### Connect
+See [Certmesh](guides/certmesh.md), [recovery](guides/certmesh-ha-recovery.md)
+and [application embedding](guides/certmesh-embedded.md). You can start with
+discovery and add shared identity when it solves a recurring need.
 
-Koi bridges the boundaries that normally keep local participants apart. Containers can
-announce, discover, and watch mDNS without host networking; applications can use the
-CLI, HTTP, IPC, or an embedded Rust API; UDP can cross a container bridge; and existing
-proxies, resolvers, monitoring systems, runtimes, and agents can consume standard
-interfaces. This is bidirectional participation, not merely an inbound route.
+### HTTPS for a service name
 
-The familiar `discover → name → trust → serve → watch` pipeline remains one useful
-end-to-end journey beneath these outcomes. It is evidence that Koi's capabilities
-compose, not the boundary of what Koi enables.
+A usable HTTPS URL requires a reachable listener, a certificate covering that
+exact name, an unexpired valid chain, and trust in the actual client. Member
+certificates cover host identities; a container label does not add a service's
+vanity name to that certificate.
 
-## Who it's for
+Source contains exact service-name grants and certificate lifecycle primitives.
+The public operation composing these with Proxy and a complete external ACME
+workflow remains unfinished. See [container TLS](guides/recipes/container-trusted-cert.md)
+and [ACME](guides/acme.md). Do not substitute a TLS warning bypass for successful
+setup.
 
-Koi is built for people who own the network they run on:
+## Where Koi fits poorly
 
-- **Homelabbers and self-hosters** who want `https://grafana.internal` to just work.
-- **Developers on a LAN** who need services to find each other and carry trusted certs
-  without a public DNS name or a Let's Encrypt round-trip.
-- **Small teams** running a handful of machines who want naming and trust without standing
-  up enterprise DNS or PKI.
-- **Container hosts**, where bridge networks cannot carry multicast — the host daemon
-  lets workloads announce, discover, and watch the LAN through ordinary interfaces.
+Koi's current primary scope is an owner-operated LAN. Consider another approach
+when the main requirement is public hosting, remote overlay routing, enterprise
+identity governance, or transparent support for an unmodified multicast protocol.
 
-## Works with the stack you already have
+If existing DNS, proxy and discovery tools already solve your task, Koi needs to
+remove a specific remaining burden to justify another service. A public domain
+with externally automated certificates may also be preferable when client root
+installation is the main obstacle.
 
-Koi is connective infrastructure, not a demand to replace working tools:
+Nontechnical households need supported client setup and diagnostics that current
+development does not yet establish. macOS implementation and release artifacts
+exist, but a platform claim still needs evidence for the selected journey.
 
-- Keep Pi-hole, AdGuard, dnsmasq, or Unbound and delegate only the Koi zone.
-- Keep Caddy, Traefik, or another reverse proxy and let its ACME client obtain local
-  certificates from Koi.
-- Keep Tailscale or another overlay and route `.internal` lookups to Koi through its
-  split-DNS mechanism.
-- Keep Docker or Podman labels, Prometheus service discovery, and MCP clients; Koi
-  consumes or exports the formats those tools already speak.
+## Security and operation
 
-Koi can be the authority for a small greenfield network or the feeder beneath an
-existing stack. Every capability can be disabled independently.
+Management HTTP is loopback by default. Exposing it to a container bridge or LAN
+is deliberate and does not relax authentication. A bearer token does not encrypt
+plaintext HTTP. Use the [security model](reference/security-model.md).
 
-## Ways to use it
+Private-CA membership is not a fine-grained multi-tenant authorization system.
+Ordinary TLS clients do not consume Koi's revocation metadata and may accept
+a copied leaf until expiry. Check client-specific trust and revocation needs.
 
-The same binary supports four explicit access shapes:
+## Choose your next step
 
-- **Daemon** — `koi --daemon` (or installed as a service). The composed capabilities,
-  HTTP API on `127.0.0.1:5641`, dashboard, and trust plane.
-- **Standalone** — `koi --standalone mdns discover` deliberately owns a one-shot local
-  composition and exits; it is refused beside a live local service.
-- **Client** — capability commands use the healthy local service or an explicit endpoint.
-- **Embedded** — `koi-embedded` is a Rust library that puts the same cores inside your own
-  application, no separate process.
-
-Koi discovers the authoritative local service, but never infers permission to create
-one. Bare `koi` shows live status and the command catalog.
-
-## The trust boundary
-
-Koi's threat model is simple and worth stating plainly: **Koi is a LAN tool operated by
-the machine's owner.** That single sentence is the boundary.
-
-- **Loopback by default.** The HTTP API binds `127.0.0.1:5641`. Other machines and
-  bridge-networked containers on native Linux can't reach it until you expose it
-  deliberately with `--http-bind` (`bridge`, `<ip>`, or `0.0.0.0`).
-- **Mutations require a token.** Every non-`GET` request carries the daemon access token
-  (`x-koi-token`); the CLI handles this for you. Exposing the API never relaxes that.
-  Reads are open on loopback by design — local processes are trusted readers.
-- **Between nodes it's mTLS.** Certmesh inter-node traffic runs on a separate mutually
-  authenticated listener (`5642`), with client certificates and CN-based authorization.
-
-The full, exact rules — every carve-out, every bind value — live in the
-[security model](reference/security-model.md).
-
-## When *not* to use it
-
-Koi is honest about its edges. Reach for something else when:
-
-- **You're on the public internet / WAN.** Koi is a LAN substrate. It is not a
-  public-facing edge, and its private CA is not a public CA. Use real public DNS and a
-  public ACME CA (Let's Encrypt) for anything internet-facing.
-- **You need an overlay network or application traffic policy.** Koi does not create
-  routes between subnets, encrypt arbitrary host traffic, inject sidecars, or manage
-  application-level routing. Keep Tailscale, WireGuard, Cilium, or a service mesh for
-  those responsibilities and integrate Koi where local discovery, identity, or naming
-  is useful.
-- **You need enterprise PKI or DNS at scale.** One token per daemon, one CA. Koi gives
-  every non-human caller a named, individually revocable identity (ADR-026 principals)
-  but still no per-caller scopes or RBAC — for org-wide identity policy and large
-  authoritative DNS, use the tools built for that.
-- **The host is untrusted or multi-tenant.** Koi treats every local process as a trusted
-  reader and assumes the machine owner runs it. It does not defend against a hostile
-  process already running as your user, or against other tenants on a shared box.
-- **You need certificate revocation that TLS verifiers honor.** Revocation in Koi is
-  **roster-level**: revoking a member stops Koi-mediated renewal and enrollment and is
-  enforced at Koi's own boundaries, but it does **not** invalidate an already-issued
-  certificate for generic TLS verifiers. There is no CRL or OCSP distribution. Instead Koi
-  bounds the exposure by default: new meshes issue **7-day leaves renewed automatically at
-  3 days remaining**, so a revoked leaf's residual validity is ≤ 8 days (ADR-027). If
-  real-time revocation is a requirement, Koi's CA is the wrong tool.
-
-Koi is also pre-1.0 and consolidating — play with it, but don't run it as load-bearing
-infrastructure yet.
-
-A note on destructive commands, since the boundary above is about protecting state:
-`koi certmesh destroy` (requires typing `DESTROY`) tears down certmesh state, and
-`koi factory-reset` deletes the **entire** data directory — CA keys, certs, the audit log,
-DNS entries, all of it — irreversibly. Back up first with `koi certmesh backup` if you
-might want any of it again.
-
-## Where to go next
-
-- **Just want to see it?** [Getting started](tutorials/getting-started.md) — install to a
-  visible result in about a minute.
-- **The headline journey:** [Trusted HTTPS across two machines](tutorials/trusted-https.md)
-  — zero to a green `https://`, no public CA.
-- **Know what you want?** The [capability cards](reference/cards/index.md) are one-screen
-  maps of a single capability.
-- **Have a specific goal?** The [by-goal table](index.md#by-goal) routes you straight to
-  the right guide.
-
-The positioning and product-boundary decision behind this model is recorded in
-[ADR-024: Public Identity — Find, Trust, Connect](adr/024-public-identity-find-trust-connect.md).
+- [Getting started](tutorials/getting-started.md) for a first evaluation.
+- [Containers](../CONTAINERS.md) for the full task and application-side API use.
+- [User guide](../GUIDE.md) for operation and diagnosis.
+- [Installation](guides/install-and-service.md) and [upgrading](guides/upgrading.md) for artifact selection.
+- [Release readiness](launch/README.md) for supported scope and evidence.

@@ -1,130 +1,59 @@
-﻿# JSON Wire Protocol
+# mDNS JSON and local IPC
 
-Koi's mDNS commands use the same JSON vocabulary across HTTP and authenticated
-local IPC (Named Pipe / Unix Domain Socket). The top-level key is the verb - the JSON _is_ the
-intent. The authenticated local IPC transport additionally accepts the small,
-versioned local-control contract documented below; those requests are not HTTP commands.
+Koi's discovery interfaces share service-record vocabulary. HTTP uses route-specific payloads; local IPC uses newline-delimited JSON commands. The small versioned local-control requests are an additional authenticated IPC contract, not HTTP commands.
 
----
+## mDNS requests
 
-## Requests
+Each line is one complete JSON request:
 
-The top-level key determines the operation:
-
-```json
-{ "browse": "_http._tcp" }
-{ "register": { "name": "My App", "type": "_http._tcp", "port": 8080 } }
-{ "unregister": "a1b2c3d4" }
-{ "resolve": "My App._http._tcp.local." }
-{ "subscribe": "_http._tcp" }
-{ "heartbeat": "a1b2c3d4" }
+```jsonl
+{"browse":"_http._tcp"}
+{"register":{"name":"My App","type":"_http._tcp","port":8080}}
+{"unregister":"a1b2c3d4"}
+{"resolve":"My App._http._tcp.local."}
+{"subscribe":"_http._tcp"}
+{"heartbeat":"a1b2c3d4"}
 ```
 
-## Responses
+Successful messages use operation-specific fields such as `found`, `registered`, `resolved`, `unregistered` and `renewed`. Errors contain `error` and `message`. Streaming requests keep the connection open and emit individual records/events; clients must parse framing rather than treating a whole stream as one JSON document.
 
-### Success
+## Service record
 
-```json
-{ "found": { "name": "Server A", "type": "_http._tcp", "host": "server.local", "ip": "192.168.1.42", "port": 8080, "txt": {} } }
-{ "registered": { "id": "a1b2c3d4", "name": "My App", "type": "_http._tcp", "port": 8080, "mode": "heartbeat", "lease_secs": 90 } }
-{ "unregistered": "a1b2c3d4" }
-{ "resolved": { "name": "...", "type": "...", "host": "...", "ip": "...", "port": 8080, "txt": {} } }
-{ "event": "found", "service": { "name": "...", "type": "...", ... } }
-{ "renewed": { "id": "a1b2c3d4", "lease_secs": 90 } }
+| Field | Meaning |
+| --- | --- |
+| `name` | Human-readable instance label |
+| `type` | Canonical DNS-SD type such as `_http._tcp` |
+| `host` | Resolved hostname when known |
+| `ip` | Address when known |
+| `port` | Port when known |
+| `txt` | Key/value metadata |
+
+Early `found` observations can be incomplete; `resolved` adds endpoint facts, and `removed` withdraws an observed service. Unresolved data must not be rendered as a verified reachable endpoint. mDNS names and TXT are untrusted observations.
+
+Type input normalization accepts shorthand such as `http` or `_http`, supplies `._tcp` when missing, and handles trailing dot/`.local.`. Output uses canonical DNS-SD forms. Instance/service identity and display text must remain distinct.
+
+## Registration lifetime
+
+HTTP announcements use heartbeat leases (default 90 seconds, with a 30-second grace); the daemon-backed CLI renews while its announcement command remains alive. IPC registrations are session-scoped, with connection loss initiating grace. Explicit standalone announcement owns its local registration until its session ends.
+
+Use the returned ID/lease facts for heartbeat and release. A disconnected observer is not authority to remove another owner's registration. See [HTTP API](http-api.md) for the corresponding routes.
+
+## Authenticated local transport
+
+| Platform | Default endpoint |
+| --- | --- |
+| Windows | `\\\\.\\pipe\\koi` |
+| Linux/macOS | `$XDG_RUNTIME_DIR/koi.sock`, otherwise `/var/run/koi.sock` |
+
+The installed service verifies the recorded operator through the OS peer identity before parsing/returning access information. Version 1 supports:
+
+```jsonl
+{"request":"access","version":1}
+{"request":"info","version":1}
 ```
 
-### Errors
+`access` returns the running daemon's matching HTTP endpoint/token and optional resolved data root; HTTP-disabled state produces `http_disabled`. `info` returns non-secret resolved data/configuration paths even when HTTP is disabled. These facts are local-only; they are not exported through public HTTP/Pond.
 
-```json
-{ "error": "invalid_type", "message": "Service type must be _name._tcp or _name._udp" }
-{ "error": "not_found", "message": "No registration with id 'xyz'" }
-{ "error": "resolve_timeout", "message": "Could not resolve within 5s" }
-```
+Windows combines a protected DACL with exact recorded-operator SID verification. Unix admits root and the recorded UID. Clients then use the supplied endpoint/DAT for catalog and preference HTTP operations; these do not introduce another IPC dialect. Treat returned access bytes as credentials.
 
----
-
-## Service record schema
-
-The canonical representation of a discovered or registered service:
-
-| Field  | Type    | Required | Notes                                                     |
-| ------ | ------- | -------- | --------------------------------------------------------- |
-| `name` | string  | yes      | Human-readable instance name                              |
-| `type` | string  | yes      | DNS-SD service type (`_name._tcp` or `_name._udp`)        |
-| `host` | string  | no       | Hostname (e.g., `server.local`). Present after discovery. |
-| `ip`   | string  | no       | IPv4 or IPv6 address. May be absent if unresolved.        |
-| `port` | integer | no       | Service port. May be absent in early browse events.       |
-| `txt`  | object  | yes      | TXT record key-value pairs. Empty `{}` if none.           |
-
----
-
-## Response shape
-
-A response serializes as its body via `#[serde(flatten)]` — no envelope, no
-wrapper key. Consumer logic:
-
-```
-if "error" key present → something broke (carries a code + message)
-otherwise              → clean result (the data is the top-level object)
-```
-
----
-
-## Event types
-
-Lifecycle events from `subscribe`:
-
-| Event      | Meaning                                                 |
-| ---------- | ------------------------------------------------------- |
-| `found`    | Service instance discovered (may be partially resolved) |
-| `resolved` | Fully resolved with IP, port, and TXT                   |
-| `removed`  | Service gone (goodbye packet or TTL expiry)             |
-
----
-
-## IPC transport
-
-| Platform      | Transport          | Default path                                       |
-| ------------- | ------------------ | -------------------------------------------------- |
-| Windows       | Named Pipe         | `\\.\pipe\koi`                                     |
-| Linux / macOS | Unix Domain Socket | `$XDG_RUNTIME_DIR/koi.sock` or `/var/run/koi.sock` |
-
-Protocol: NDJSON (newline-delimited JSON). One JSON object per line. Streaming operations keep the connection open.
-
-IPC registrations use **session-based leases**. The OS connection lifecycle is the liveness signal - when the connection drops, Koi starts a grace period.
-
-An installed machine service also uses this transport to hand facts to its recorded
-interactive operator without making its breadcrumb world-readable. Version 1 accepts:
-
-```json
-{ "request": "access", "version": 1 }
-{ "request": "info", "version": 1 }
-```
-
-`access` returns the running daemon's matching endpoint and token, plus its optional
-resolved data root. It fails with `http_disabled` when the daemon has no HTTP adapter.
-`info` returns the non-secret resolved data root and launch-selected configuration
-path even when HTTP is disabled. The pipe/socket authenticates the peer before parsing
-either request. Windows gives the pipe a protected DACL for SYSTEM, Administrators,
-and the recorded operator, then returns bytes only when the connected process token
-has the exact recorded operator SID. Unix admits root and the one recorded UID.
-Neither response is exposed by Pond or public HTTP status.
-Catalog snapshots, catalog subscriptions, and preference commands do not add another
-IPC dialect. After `access`, local clients use the returned endpoint and DAT with the
-schema-1 HTTP routes documented in [HTTP API Reference](http-api.md).
-
----
-
-## Service type normalization
-
-Koi normalizes input liberally and emits canonical output strictly:
-
-| Input               | Normalized to |
-| ------------------- | ------------- |
-| `http`              | `_http._tcp`  |
-| `_http`             | `_http._tcp`  |
-| `_http._tcp`        | `_http._tcp`  |
-| `_http._tcp.`       | `_http._tcp`  |
-| `_http._tcp.local.` | `_http._tcp`  |
-
-Missing `_` prefix is added. Missing `._tcp` suffix is assumed. Trailing `.local.` is handled internally.
+For identity messages use the separate [trust protocol](trust-protocol.md). For supported-versus-certified workflow evidence use [launch readiness](../launch/README.md).

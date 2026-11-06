@@ -1,37 +1,19 @@
 # koi-certmesh
 
-[![Crates.io](https://img.shields.io/crates/v/koi-certmesh.svg)](https://crates.io/crates/koi-certmesh)
-[![Docs.rs](https://docs.rs/koi-certmesh/badge.svg)](https://docs.rs/koi-certmesh)
-[![License](https://img.shields.io/crates/l/koi-certmesh.svg)](https://github.com/sylin-org/koi#license)
+Private CA and mesh identity domain: CA creation/unlock, CSR-based enrollment, single-use invitations, member renewal, signed trust bundles, revocation metadata, encrypted backup/restore and manual authority promotion.
 
-Zero-config private CA, certificate enrollment, and mesh trust for the local network.
+Enrollment uses open/closed and approval-required state. It does not provide timed enrollment windows, CIDR/domain enrollment restrictions or automatic CA election.
 
-## Overview
+The domain also implements exact service-name grants and a restricted ACME server. The public workflow that creates those grants and binds exact service certificates to listeners is incomplete. Ordinary TLS clients do not consume Koi's revocation metadata through CRL/OCSP.
 
-`koi-certmesh` implements a lightweight private Certificate Authority that runs
-on your LAN. It handles CA creation with passphrase-protected keys, TOTP-based
-enrollment authentication, automatic certificate issuance and renewal, roster
-management with signed manifests, primary/standby failover, encrypted backups,
-and a full audit log. Enrollment scope can be constrained by domain suffix or
-CIDR subnet.
+## Development
 
-## Features
+Read [architecture](../../docs/reference/architecture.md) for ownership boundaries and [launch readiness](../../docs/launch/README.md) for the supported-versus-tested journey matrix. This README describes repository source; it does not assert package publication or physical acceptance.
 
-- Private CA with envelope-encrypted key (AES-256-GCM + Argon2id)
-- TOTP-based enrollment authentication
-- Automatic certificate renewal with configurable thresholds
-- Primary/standby failover with signed roster manifests
-- Enrollment windows with deadline auto-close
-- Domain and subnet scope constraints
-- Encrypted backup and restore
-- HTTP API with axum routes
+```sh
+cargo test -p koi-certmesh --locked
+```
 
-## Part of Koi
+Platform-dependent tests can require explicit facilities or remain ignored in ordinary runs. See [validation](../../docs/qa/validation-suite.md) before interpreting a green result.
 
-This crate is part of the [Koi](https://github.com/sylin-org/koi) workspace.
-See the main repository for architecture details.
-
-## License
-
-Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
-[MIT License](LICENSE-MIT) at your option.
+Licensed under Apache-2.0 OR MIT; see the workspace license files.

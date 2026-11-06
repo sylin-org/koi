@@ -1,50 +1,25 @@
-# @sylin-org/koi-client (beta)
+# TypeScript/JavaScript client
 
-JavaScript/TypeScript client for [Koi](https://github.com/sylin-org/koi)'s versioned
-HTTP API. Zero runtime dependencies — Node 18+ built-ins only.
+In-tree client for Koi's versioned HTTP API, using Node built-ins with no runtime dependencies. The package covers status, health, Certmesh bootstrap/status/posture, MCP discovery metadata, events and enrollment. It is not a complete wrapper for every domain command.
 
-**Scope**: status, health, certmesh status/bootstrap/posture, the Agent-Door discovery
-card, the `/v1/events` SSE stream, and enrollment — `generateKeyPairAndCsr()`
-keeps the private key in your process (ADR-015 F1) while `join()` / 
-`enrollWithLocalDaemon()` drive the versioned wire contract. A `"client"` role
-enrolls a non-serving principal (ADR-026).
-
-Shapes are pinned by the repository's conformance vectors
-(`docs/reference/vectors/`) and the language-neutral wire contract
-(`docs/reference/trust-protocol.md`) — the test suite executes the same
-Agent-Door vector as Rust, and the SDK's CSRs are accepted by the real CA
-issuance path (`crates/koi-certmesh/tests/sdk_csr.rs`).
-
-## Use
+Use the local source while developing; registry availability is tracked in [launch readiness](../../docs/launch/README.md).
 
 ```js
-import { KoiClient, generateKeyPairAndCsr } from "@sylin-org/koi-client";
+import { KoiClient } from "./lib/client.js";
 
-const koi = new KoiClient("http://127.0.0.1:5641", { token: process.env.KOI_TOKEN });
-const card = await koi.serverCard();   // Agent-Door discovery (no token needed)
-const posture = await koi.posture();   // { signed, encrypted, level }
-const status = await koi.certmeshStatus(); // role/posture/identity + optional authority
-
-// A remote joiner uses the deliberately minimal public preflight (without a DAT):
-const remoteCa = new KoiClient(process.env.KOI_CA_ENDPOINT);
-const bootstrap = await remoteCa.certmeshBootstrap();
-if (!bootstrap.authority_available) throw new Error("selected Koi daemon is not an authority");
-
-// Raw-custody enrollment against a remote CA:
-const keys = generateKeyPairAndCsr("agent-7");     // key stays with you
-const joined = await remoteCa.join({                // client points at the CA
-  hostname: "agent-7", csr: keys.csrPem,
-  inviteToken: process.env.KOI_INVITE, role: "client",
+const koi = new KoiClient("http://127.0.0.1:5641", {
+  token: process.env.KOI_TOKEN,
 });
-// persist keys.privateKeyPem (0600) — never send it anywhere
-
-for await (const ev of koi.events()) console.log(ev.id, ev.event, ev.data);
+const status = await koi.certmeshStatus();
+for await (const event of koi.events()) console.log(event.id, event.event, event.data);
 ```
 
-Errors: non-2xx responses throw `KoiHttpError` (`error.status`, `error.body`).
+Run this example from this package directory. Confirm the actual export path in `package.json` when integrating from another project. Non-success responses throw `KoiHttpError` with status/body.
 
-## Not published yet
+Enrollment can retain the private key in the client process through `generateKeyPairAndCsr()`, or use `enrollWithLocalDaemon()` for local-daemon custody. Do not send private keys to the authority. A client-role principal is non-serving but has coarse management authority; it is not a scoped read-only identity.
 
-Publication is gated on Koi's stable `1.0.0` release and an explicit
-external-publication decision (see `SESSION-HANDOFF.md`). Until then this
-package lives in-tree and is exercised by its tests only.
+```sh
+node --test packages/ts/test/client.test.js
+```
+
+Run tests from the workspace root. Wire and trust semantics are in [trust protocol](../../docs/reference/trust-protocol.md); conformance vectors live beside that document.

@@ -1,462 +1,147 @@
-# Upgrade & migration
+# Upgrade and migration
 
-You want to move a running Koi to a newer build without losing your certificate mesh,
-DNS records, or proxy config — and without getting surprised by a breaking change. Current
-repository source is **1.0.0-dev.0**, an architecture-development line after withdrawal of
-the former rc.2 freeze. It is not a drop-in release candidate. `1.0.0-rc.2` remains the last
-published prerelease; its release-to-release migration notes are retained below.
-This guide is the safe upgrade procedure and what to check before you run it.
+Upgrade a known artifact while preserving the installed service, application
+access and any certificate identity. The [release-readiness page](../launch/README.md)
+names the supported destination and its migration evidence.
 
-The short version: **read the [CHANGELOG](../../CHANGELOG.md) first, back up if anything
-looks risky, then upgrade.** The rest of this page is the detail.
+Stable 0.9.0 and prerelease 1.0.0-rc.2 are published. Source 1.0.0-dev.0 is
+development, not a replacement release candidate. A new source commit or passing
+CI is not an instruction to replace an installed service.
 
----
+## Establish the starting point
 
-## The development-line reality (read this before every upgrade)
+Record the CLI version and the installed service's executable/version separately:
 
-Do not replace an installed candidate with a `1.0.0-dev.0` checkout merely because it is
-the current source. Development builds may intentionally change public and embedded APIs
-while [ADR-043](../adr/043-observable-domain-boundaries.md) is implemented. Wait for a named
-candidate and its migration note unless you are deliberately participating in development
-validation. Published `1.0.0-rc.x` builds remain prereleases and may also correct a contract
-that proves unsafe or misleading in real use; each correction is called out in the changelog.
-
-The current development line deliberately replaces the embedded adaptive-serving API:
-`KoiHandle::serve` is now async and returns the real bound `SocketAddr`; callers add `.await`
-and use that address (especially when requesting port 0). `KoiHandle::try_serve` and the public
-`serve_adaptive` re-export are removed because they formed parallel readiness contracts.
-`participate` likewise returns the actual address only after both listener bind and its initial
-mDNS registration succeed.
-
-So the rule is simple and it has no exceptions:
-
-> **Always read the [CHANGELOG](../../CHANGELOG.md) for every version between the one
-> you're running and the one you're upgrading to — before you upgrade.**
-
-## The 1.0.0-rc.2 upgrade
-
-rc.1 -> rc.2 is drop-in for data: no state format changed, and meshes created under
-rc.1 keep their stored cert policy.
-
-Three behavior changes deserve attention before you upgrade:
-
-1. **New meshes now issue 7-day leaves** renewed at 3 days remaining (ADR-027). An
-   existing rc.1 mesh is untouched - its roster policy travels with it. If you want
-   the short-lived posture on an old mesh, that is a CA-side `CertPolicy` change.
-2. **Healthy leaves inside the renewal window now diagnose `Ok`**, not `Warn` - the
-   old "expires soon" warning mislabeled steady-state under short-lived defaults.
-3. **The mTLS listener may now serve `/v1/mcp`** to certificate-bearing principals
-   (ADR-026). If your deployment never exposes non-loopback management access,
-   nothing changes; to disable, pass `--no-mgmt-mcp`. Loopback + DAT is unchanged.
-
----
-
-Look specifically for:
-
-- A **`Removed (breaking)`** or **`Breaking`** section.
-- Any mention of **on-disk state**, the **roster**, **certmesh**, or **data directory**
-  formats.
-- Changes to **CLI commands or flags** you script against.
-
-Check what you're running now:
-
-```
-koi version
-```
-
-If a release between you and your target says nothing about breaking changes, the
-upgrade is a binary swap (below) and you're done. If it *does*, [back up](#back-up-before-a-risky-upgrade)
-first and read the specific migration note.
-
----
-
-## How to upgrade
-
-There are two shapes of install: a binary you run by hand, and the daemon installed as
-an OS service. The service case is the common one.
-
-### If Koi is installed as a service
-
-First refresh the native binary using the same channel that installed it. The direct
-installer is idempotent and accepts `KOI_VERSION` when you need an exact release:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/sylin-org/koi/main/install.sh | sh
-```
-
-```powershell
-irm https://raw.githubusercontent.com/sylin-org/koi/main/install.ps1 | iex
-```
-
-For the last published candidate, use an explicit version: `cargo binstall koi-net --version
-1.0.0-rc.2` or `npx @sylin-org/koi@1.0.0-rc.2`. Unqualified installs intentionally remain
-on the latest stable release; the `1.0.0-dev.0` workspace is source-only development.
-
-`koi install` is the upgrade command. Running it again against a newer binary **stops
-the existing service, swaps in the new binary, rewrites the service definition, and
-restarts** — on every platform. You don't have to do the stop/swap/start dance by hand;
-`install` does it for you.
-
-```
-# from the directory containing the new koi binary
-# (run as root on Linux/macOS, as Administrator on Windows)
-koi install
-```
-
-On Linux this stops the `koi` systemd unit, copies the binary into place, reloads
-systemd, and restarts the service. Windows and macOS mirror the same UX through the
-Service Control Manager and launchd respectively. See
-[system.md](./system.md#installing-the-daemon) for what `install` registers on each OS.
-
-If you want to do it explicitly — for example, to run a few `koi status` checks while
-the daemon is down — the manual sequence per OS is:
-
-```bash
-# Linux (systemd)
-sudo systemctl stop koi
-sudo cp ./koi /usr/local/bin/koi      # replace the installed binary
-sudo systemctl start koi
-```
-
-```powershell
-# Windows (PowerShell as Administrator)
-Stop-Service koi
-# replace the installed koi.exe, then:
-Start-Service koi
-```
-
-```bash
-# macOS (launchd) — re-running install is the supported path:
-sudo koi install
-```
-
-In all cases, running `koi install` from the new binary is the supported, least
-error-prone route — prefer it unless you have a reason to step through manually.
-
-> **Custom port?** If you originally installed on a non-default port (e.g.
-> `koi --port 5651 install`), re-run `install` with the same flag so the rewritten
-> service definition keeps it. (Avoid 5642/5643 for `--port` — those are the
-> certmesh mTLS and ACME ports.)
-
-### If you run the binary by hand
-
-If you launch the daemon yourself (`koi --daemon`) or only use the CLI, upgrading is
-just replacing the binary on your `PATH` (or rebuilding from source) and restarting any
-foreground daemon:
-
-```
-# foreground daemon: stop it (Ctrl+C), replace the binary, start it again
-koi --daemon
-```
-
-To rebuild from source:
-
-```
-cargo install --path crates/koi      # or: cargo build --release
-```
-
-Verify afterwards:
-
-```
+```sh
 koi version
 koi status
+curl -fsS http://127.0.0.1:5641/v1/runtime/status
 ```
 
-`koi uninstall` is **not** part of upgrading — it removes the service registration but
-preserves your data, and you'd only use it if you wanted to stop running Koi as a
-service entirely. See [system.md](./system.md#uninstalling).
+Record the data root, durable configuration, native service definition, runtime
+account/socket, Koi-owned firewall policy and a known application's second-client
+result. Preserve the current artifact and checksum for restoration.
 
----
+Read the destination's release notes and migration instructions. In their
+absence, a development installation is an explicit evaluation with its own
+rollback plan, not a routine upgrade.
 
-## Back up before a risky upgrade
+## Back up before changing state
 
-When the CHANGELOG flags breaking changes that touch on-disk state, back up first. The
-single most valuable thing to protect is the **certificate mesh** — losing the CA key
-is unrecoverable.
+If operating a CA, make an encrypted backup with the matching supported command:
 
-**Back up certmesh with the built-in command** (it produces an encrypted, restorable
-bundle — far better than copying files by hand):
-
-```
+```sh
 koi certmesh backup mesh-pre-upgrade.koi
 ```
 
-This bundles the CA keypair, CA certificate, enrollment auth credential, the full
-roster, and the audit log. Store it off the host and remember the backup passphrase —
-the full procedure, what's *not* in the bundle, and how to restore is in
-[certmesh-ha-recovery.md](./certmesh-ha-recovery.md). (`backup`/`restore` are mutating
-HTTP operations: over the API they need the `x-koi-token` header — see
-[the security model](../reference/security-model.md).)
+Keep the backup and its passphrase available independently of the host.
+[CA recovery](certmesh-ha-recovery.md) explains its contents and exclusions;
+the CA bundle is not a full service/configuration backup.
 
-**Back up the rest of the on-disk state** by copying the data directory while the daemon
-is stopped. Everything Koi persists lives under one machine-scoped root:
+For a consistent whole-state copy, stop the daemon through its native manager
+and preserve the actual data directory and relevant service/configuration/policy.
+Default roots are /var/lib/koi on Linux, /Library/Application Support/koi on macOS
+and %ProgramData%\koi on Windows. KOI_DATA_DIR may override them.
+Protect member private keys and backups with appropriate permissions.
 
-| Platform | Data directory |
-| -------- | -------------- |
-| Linux | `/var/lib/koi/` |
-| macOS | `/Library/Application Support/koi/` |
-| Windows | `%ProgramData%\koi\` |
+## Replace through the owning installer
 
-(Override with `KOI_DATA_DIR` — if you set it, back up *that* path instead.) The
-subtrees that matter for a risky upgrade:
+Download the chosen release archive and verify its checksum/provenance.
+Bootstrap scripts default to stable unless KOI_VERSION is supplied. npm is not
+an available installation path.
 
-- **`certmesh/`** — the certificate mesh: `certmesh/ca/` (CA key, cert, enrollment auth),
-  `certmesh/roster.json` (the member roster), and the audit log. This is the part the
-  `koi certmesh backup` bundle covers; the raw directory is a belt-and-braces copy.
-- **`certs/`** — issued/installed certificates, including each member's
-  `certs/<hostname>/` cert and key.
-- **`state/`** — runtime state (DNS records, health checks, proxy entries, etc.).
-- **`logs/`** — diagnostic logs (not needed to restore, but cheap to keep).
+For installed services, run the selected binary's supported koi install recipe
+with required platform elevation. Preserve explicit local-operator and runtime
+settings. Current transactional recipes verify replacement and restore the
+previous state on a failed operation; interrupted operations recover through the
+installer. Inspect the result instead of deleting recovery files by hand.
 
-A simple recursive copy of the data directory, taken with the daemon stopped, captures
-all of it.
+For a foreground process, stop it, preserve state and the old binary, then launch
+the chosen replacement with the intended configuration. Do not run both against
+the same state or LAN identity.
 
----
+## Compatibility checks for current source
 
-## The 0.9.0 upgrade
+| Area | Required review |
+| --- | --- |
+| Standalone/client behavior | Normal commands use the installed service; standalone operation is explicit and refuses an existing local owner |
+| Status/catalog/UI | Rebuild consumers against current schemas and observed-state semantics; stale/unavailable is not empty success |
+| Proxy certificates | Explicit overrides belong under proxy-certs/<entry-name>; Proxy consumes member identity through composition |
+| Exact-name ACME | An in-zone name alone no longer authorizes issuance; current source requires one account-bound service grant |
+| Public setup | The exact service-name grant/listener operation is incomplete; do not migrate a working proxy integration by assuming a replacement public path exists |
+| Certificate SANs | Inspect actual issued names; older .local, hostname and persisted certificates can differ from current configured-zone issuance |
+| Embedded serving | KoiHandle::serve is async and returns the bound SocketAddr; try_serve and public serve_adaptive are removed |
+| Participation | participate returns its actual address after listener bind and initial publication succeed |
 
-**0.9.0 is a no-op upgrade — there are no runtime or library changes.** The crates and the
-binary are functionally identical to 0.8.0; the release carries only repo release tooling
-(`scripts/bump-version.ps1`, `scripts/release.ps1`). Swap the binary, or don't — nothing on
-disk, on the CLI, at the network edge, or in the JSON / Rust API changes.
+Existing service grants are not created by hand-editing the roster. A missing
+public operation is a limit to plan around.
 
----
+## Published-prerelease behavior to preserve
 
-## The 1.0.0-rc.1 upgrade (membership-intrinsic trust, ADR-023)
+When moving from rc.1 to rc.2, stored mesh policy is retained. Newly created meshes
+use seven-day leaves renewed with three days remaining. A healthy certificate
+inside its normal renewal window is not itself a warning.
 
-**One breaking change, and it is Rust-embedders-only.** Nothing on disk, on the CLI, at the
-network edge, or in the JSON wire shapes changes incompatibly — `member.json` gains two
-optional fields that default cleanly on old files. The daemon is unchanged. The certmesh CA
-and roster need no migration.
+The certificate-authenticated management listener can expose /v1/mcp; inspect
+the configured authority and use --no-mgmt-mcp where appropriate.
+These published behavior notes do not certify later development source.
 
-Review this only if you **embed Koi** via `koi-embedded`:
+## Older installations and consumers
 
-- **`Builder::certmesh_background(true)` (opt-in) → `Builder::certmesh_managed(bool)`
-  (opt-out, default on).** Embedded certmesh is now **self-managed by default** once the node
-  is a member — it pulls the signed trust bundle (policy refresh + cross-member revocation
-  honoring), renews its leaf, and stands itself down if revoked, the same loop the daemon runs.
-  The loop is a no-op until the node joins a mesh.
-  - **If you called `.certmesh_background(true)`:** it no longer exists — delete the call (you
-    already get the loop) or replace it with `.certmesh_managed(true)` (the default).
-  - **If you drive renewal/revocation yourself over your own plane** (and never opened Koi's
-    CA HTTP/mTLS ports to every member): add **`.certmesh_managed(false)`** to keep driving —
-    otherwise Koi's role loop now runs and will try to reach the CA. Then pull trust yourself
-    with `pull_trust_bundle()` or, carrying the bundle over your own transport,
-    `apply_trust_bundle(&SignedBundle)` (Koi still verifies pin + signature + anti-rollback).
-- **Membership now propagates revocation.** If you relied on the old (broken) behavior where a
-  revoked member's envelopes kept verifying on other members, they no longer do — a member
-  honors the CA's full revoked set. This is the fix, not a regression.
+The following are migration facts for installations that still depend on older
+contracts, not an implementation campaign or a claim of current acceptance.
 
----
+- **Very old rosters:** pre-0.4.2 state may need an explicit compatibility/recovery
+  plan. Do not re-run CA creation as generic repair: creating a new root can break
+  every member and client. Preserve an encrypted backup and inspect the roster
+  error before choosing restore or deliberate replacement.
+- **Removed interfaces:** FIDO2 enrollment, automatic CA failover, enrollment
+  deadline/CIDR scope, compliance endpoints and stub runtime backend names are
+  not current supported interfaces. Promotion is an explicit operation; supported
+  backend names are auto, docker and podman.
+- **Remote reads:** current authorization distinguishes loopback from remote or
+  unknown peers. Full certmesh status and DNS inventory need appropriate remote
+  credentials; enrollment preflight uses /v1/certmesh/bootstrap. The signed trust
+  bundle remains public. Audit and UDP reads require authentication.
+- **UDP exposure:** loopback is the default. Non-loopback binding or destinations
+  require the explicit remote option. Recheck existing consumers' lease and token
+  handling.
+- **Embedded exposure:** an announced HTTP endpoint requires the configured token;
+  do not preserve an older insecure exposure pattern.
+- **Embedded management:** replace certmesh_background with certmesh_managed.
+  Management is on by default for a member; use false only when the application
+  deliberately owns trust refresh and renewal itself.
+- **Embedded trust shapes:** CertmeshHandle::posture is async. Assurance::Rejected
+  includes optional signer_cn; exhaustive matches need the current fields.
+  Removed RejectReason values include no_signature, clock_skew and name_mismatch.
+  Unsigned/stale envelopes use the current assurance model.
+- **Request authorization:** use the request-bound identity/verification APIs when
+  authorizing an envelope. Presence of an identity alone is not sufficient binding
+  to the request being authorized.
 
-## The 0.8.0 upgrade
+For Rust or cross-language consumers, compile/run meaningful integration tests
+against the selected version. [Embedding](embedded.md) and the
+[trust protocol](../reference/trust-protocol.md) define current interfaces.
 
-**0.8.0 is a drop-in — no breaking changes.** Nothing on disk, on the CLI, at the network
-edge, or in the JSON / Rust API changes incompatibly. Swap the binary and you're done.
+## Verify the result or restore
 
-The release is cert-lifecycle reliability — trust that maintains itself on a long-lived node:
+After replacement:
 
-- A continuously-up CA now renews **its own** leaf on the timer (it used to refresh only at
-  restart), and the inter-node mTLS (5642) + ACME (5643) listeners **hot-reload** the renewed
-  leaf with no restart and no dropped connections.
-- The certmesh background renewal loop runs a pass **immediately at startup**, so a node that
-  boots with an already-overdue leaf refreshes at once instead of serving a stale cert.
-- A malformed `CertPolicy` (`renew_threshold_days >= leaf_lifetime_days`, or a zero
-  lifetime/threshold) is rejected back to the default on load instead of churning re-issues.
-
-No certmesh re-create, roster migration, or data-directory change is required for 0.8.0. If
-you **embed Koi** and run `Builder::certmesh_background(true)`, you now get CA self-renewal
-and listener hot-reload for free — drop any hand-rolled CA-leaf renewal and any startup
-`ensure_identity()` ritual.
-
----
-
-## The 0.7.0 upgrade
-
-**0.7.0 is a near-drop-in — one narrow breaking change, only for Rust embedders that
-exhaustively match the `Assurance` verdict.** Nothing on disk, on the CLI, at the network
-edge, or in the JSON wire shapes changes incompatibly. Swap the binary and you're done.
-
-Review this if you **embed Koi** and `match` on `Assurance`:
-
-- **`Assurance::Rejected` gained a field:** `Rejected { reason, signer_cn: Option<String> }`.
-  An exhaustive match on the old shape no longer compiles — add `, ..` (or read the new
-  field):
-  ```rust
-  // before: Assurance::Rejected { reason } => …
-  Assurance::Rejected { reason, .. } => …
-  ```
-  `signer_cn` is the **authoritative** signer CN when the rejected leaf chained to the
-  pinned CA but is stale (`Expired` / `Revoked`) — useful for audit and a "your identity
-  expired — rejoin" prompt — and `None` otherwise. The JSON shape is unchanged for the
-  common case (the field is omitted when absent), so **non-Rust readers need no change**.
-
-Everything else in 0.7.0 is additive:
-
-- **`Assurance::identity_for(env, expected)`** — the request-bound identity door. The safe
-  way to authorize a request from an envelope (closes a silent-impersonation footgun where
-  `identity().is_some()` would accept a captured envelope replayed against a different
-  request). Existing `identity()` callers are unaffected.
-- **`leaf_not_after_utc(pem)` / `leaf_cn(pem)`** — new public stateless leaf readers.
-- **`RenewResponse.policy`** — the renew response now carries the CA's `CertPolicy`
-  (`#[serde(default)]`, so a 0.7.0 member still parses an older CA's response).
-
-No certmesh re-create, roster migration, or data-directory change is required for 0.7.0.
-
-## The 0.6.0 upgrade
-
-**0.6.0 is a clean drop-in — no breaking changes.** Despite the minor bump, nothing on
-disk, on the CLI, at the network edge, or in the embedded API changes incompatibly. Swap
-the binary and you're done; no certmesh re-create, roster migration, or data-directory
-change is required.
-
-Everything in 0.6.0 is additive or an internal refactor:
-
-- **`CertmeshCore::renew_member(authenticated_cn, csr_pem)`** (ADR-021) — new CA-side
-  domain method for transport-agnostic member renewal. The `/renew` mTLS endpoint is
-  unchanged on the wire; it now delegates to this method internally.
-- **`KoiHandle::sign()` / `verify()`** and **`CertmeshCore::member_cert_expiry()`** — new
-  additive embedded conveniences. Existing `certmesh().sign()/verify()` calls keep working.
-- **Network-browser type labels** and the **first-run getting-started hint** are
-  presentation-only.
-
-One behavioral fix worth noting: a `/renew` request from a **non-active** member now
-returns **403** instead of a 500 (the request was always refused; only the status code
-was wrong). No client that handled the refusal needs to change.
-
-## The 0.5.1 upgrade
-
-**0.5.1 is a binary swap for operators — nothing on disk, on the CLI, or at the network
-edge changes.** Despite the patch version it carries two breaking changes, but both are
-narrow: they affect **embedders** (the `koi-embedded` crate) and **cross-implementation
-readers** of the trust wire contract, not a normal daemon/CLI deployment. If you run Koi
-as a service and drive it from the CLI, upgrade and you're done.
-
-Review these if you **embed Koi** or implement the trust protocol in another language:
-
-- **`CertmeshHandle::posture()` is now `async`.** An embedder calling
-  `handle.certmesh()?.posture()` must add `.await`:
-  ```rust
-  // before: let p = handle.certmesh()?.posture()?;
-  let p = handle.certmesh()?.posture().await?;
-  ```
-  It now also works in **remote (client) mode** — it queries `GET /v1/certmesh/posture`,
-  which is DAT-gated, so a remote handle must carry a token (set `Builder::service_token(..)`,
-  or let it adopt the local breadcrumb token automatically when the endpoint matches).
-- **Three `RejectReason` values are gone:** `no_signature`, `clock_skew`, `name_mismatch`.
-  The verifier never produced them — an unsigned envelope is `anonymous`, an out-of-window
-  timestamp is `authenticated { freshness: "stale" }`. Rust code that `match`ed those
-  variants won't compile (delete the arms); a non-Rust reader of the published
-  `RejectReason` set should drop them from its enum
-  ([trust-protocol.md §2](../reference/trust-protocol.md)).
-
-Everything else in 0.5.1 is additive (the `GET /v1/events` SSE stream, `GET /v1/certmesh/posture`,
-the cert-lifecycle events, `require_auth_with`, `reqwest_client_for`, `try_serve`,
-`on_posture`, `service_token`) — no action needed to keep an existing integration working.
-
-No certmesh re-create, roster migration, or data-directory change is required for 0.5.1.
-
----
-
-## The 0.5.0 upgrade
-
-**0.5.0 changes behavior at the network edge — nothing on disk needs migrating.** The
-breaking changes are about *who can call what* once the daemon is exposed off-loopback, and
-about embedding. If you run Koi loopback-only and drive it from the CLI, you're unaffected.
-Review these if you expose the daemon (`--http-bind`), script against it from another host,
-or embed it:
-
-- **Some GET reads now need the token from a remote peer.** `GET /v1/certmesh/diagnose` and
-  `/v1/dns/{list,zone,entries}` stay token-free on loopback, but a **non-loopback** caller
-  must send `-H "x-koi-token: $TOKEN"` (read it with `koi token show`). A remote script that
-  polled `…/v1/dns/zone` unauthenticated now gets a `401` — add the header.
-  At 0.5.0, `/v1/certmesh/status` and `/v1/certmesh/trust-bundle` both remained open.
-  Current `1.0.0-dev.0` supersedes that status detail: enrollment preflight now uses public
-  `/v1/certmesh/bootstrap`, full `/v1/certmesh/status` requires the DAT from remote or
-  unknown peers, and the signed trust bundle remains public.
-- **The audit log and the UDP surface are token-gated on every method.** `GET /v1/certmesh/log`,
-  `GET /v1/udp/status`, and `GET /v1/udp/recv/{id}` now require the token.
-- **UDP binds loopback by default.** `koi udp bind` (and `send` to a non-loopback destination)
-  now needs `--allow-remote`. A binding that used to listen on `0.0.0.0` must pass it explicitly.
-- **Embedding is secure-by-default.** If you build with `announce_http()`, you must now also set
-  `http_token(..)` or `start()` returns `KoiError::InsecureConfig` (it used to warn and continue).
-  Loopback-only embedders are unaffected.
-
-No certmesh re-create or roster migration is required for 0.5.0 (that was a 0.4.2 caveat, below).
-
----
-
-## The 0.4.2 upgrade (specific caveat)
-
-**0.4.2 carries breaking changes despite the patch version.** The
-[CHANGELOG](../../CHANGELOG.md) calls this out directly — it's a large lean-and-reach
-release, and its `Removed (breaking)` / `Changed` sections apply even though the version
-only ticked from `0.4.1` to `0.4.2`.
-
-The one to plan around if you run a certificate mesh:
-
-> Existing certmesh **`roster.json`** files written by an older version **may need a
-> `koi certmesh create` re-run.**
-
-Be cautious here. `koi certmesh create` initializes a CA — so before you go anywhere near
-it on an existing mesh, **take a backup**:
-
-```
-koi certmesh backup mesh-pre-0.4.2.koi
+```sh
+koi status
+curl -fsS http://127.0.0.1:5641/v1/runtime/status
+koi mdns discover _http._tcp
+koi health status
 ```
 
-Then upgrade, and check whether the mesh still reads its roster cleanly:
+Verify the installed executable identity, not just the CLI on PATH.
+Repeat the [second-client application and lifecycle checks](../../CONTAINERS.md)
+for the actual workload. If using TLS, verify the intended browser/runtime,
+certificate SAN/chain/expiry and renewal/recovery.
 
-```
-koi certmesh status
-```
+A passing healthz response does not prove these outcomes. If a required result
+fails, follow the destination's documented restoration procedure using the
+preserved artifact and state; record both the failure and restoration result.
 
-If the roster loads and the members are present, you're done — nothing to migrate. Only
-if the older `roster.json` doesn't read correctly should you follow the CHANGELOG's
-note and re-run `koi certmesh create`; with the backup in hand you can
-[restore](./certmesh-ha-recovery.md#2b-restore-from-backup-onto-a-fresh-ca-host) if the
-re-run isn't what you wanted. The CHANGELOG states this as a *may* — it does not list a
-mechanical field-by-field migration, so treat the backup as mandatory rather than
-optional.
-
-Other 0.4.2 breaking changes that may affect scripts rather than on-disk state (read the
-CHANGELOG for the full list):
-
-- **FIDO2 enrollment is removed** (the `AuthAdapter` re-entry path stays).
-- **Automatic CA failover is gone** — manual `koi certmesh promote` remains the only
-  promotion path (see [certmesh-ha-recovery.md](./certmesh-ha-recovery.md)).
-- **Enrollment deadline / CIDR-domain scope** (`set-policy`) and the **certmesh
-  compliance** endpoint/CLI are removed.
-- **`--runtime k8s`** (and other stub backends) is now a parse error instead of a silent
-  fallback.
-
----
-
-## After upgrading
-
-```
-koi version      # confirms the new binary is the one running
-koi status       # all capabilities report their state
-```
-
-If you run a mesh, also confirm the CA is healthy:
-
-```
-koi certmesh status
-```
-
-If something is wrong after a service upgrade, the platform-native logs usually explain
-it — see [system.md](./system.md#when-things-go-wrong) for where to look on each OS.
-
----
-
-## See also
-
-- [system.md](./system.md) — installing, running, and uninstalling the daemon as a
-  service; status and logs.
-- [certmesh-ha-recovery.md](./certmesh-ha-recovery.md) — `backup`/`restore`/`promote` in
-  full, and the disaster-recovery runbook.
-- [certmesh.md](./certmesh.md) — creating, joining, and unlocking the CA.
-- [../reference/security-model.md](../reference/security-model.md) — the daemon access
-  token for mutating HTTP calls, bind addresses, and data locations.
-- [../index.md](../index.md) — all guides and reference docs.
+Uninstall is not required for routine upgrades. Factory reset and CA destruction
+are destructive operations, not rollback tools.

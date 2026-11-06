@@ -13,14 +13,12 @@ use std::time::Instant;
 
 use axum::extract::Extension;
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::response::{Html, IntoResponse, Json};
+use axum::response::{IntoResponse, Json};
 use serde::Serialize;
 use tokio::sync::broadcast;
 use tokio_stream::Stream;
 
 // ── HTML asset ──────────────────────────────────────────────────────
-
-const DASHBOARD_HTML: &str = include_str!("../assets/dashboard.html");
 
 // ── Public types ────────────────────────────────────────────────────
 
@@ -160,14 +158,6 @@ fn dashboard_event_stream(state: DashboardState) -> impl Stream<Item = Result<Ev
 
 // ── Handlers ────────────────────────────────────────────────────────
 
-/// `GET /` — Serve the dashboard SPA with a Content-Security-Policy header.
-pub async fn get_dashboard() -> impl IntoResponse {
-    (
-        [(axum::http::header::CONTENT_SECURITY_POLICY, crate::HTML_CSP)],
-        Html(DASHBOARD_HTML),
-    )
-}
-
 /// `GET /v1/dashboard/snapshot` — System-level JSON snapshot.
 pub async fn get_snapshot(Extension(state): Extension<DashboardState>) -> impl IntoResponse {
     let details = (state.snapshot_fn)().await;
@@ -269,17 +259,6 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
     use tokio_stream::StreamExt;
-
-    #[test]
-    fn dashboard_uses_current_snapshot_fields() {
-        assert!(DASHBOARD_HTML.contains("c.authority"));
-        assert!(DASHBOARD_HTML.contains("identity.condition"));
-        assert!(DASHBOARD_HTML.contains("a.requires_approval"));
-        assert!(DASHBOARD_HTML.contains("listener.state"));
-        assert!(!DASHBOARD_HTML.contains("c.ca_initialized"));
-        assert!(!DASHBOARD_HTML.contains("c.profile"));
-        assert!(!DASHBOARD_HTML.contains("listener.running"));
-    }
 
     #[tokio::test]
     async fn lagged_dashboard_stream_rereads_the_authoritative_snapshot() {

@@ -1,26 +1,16 @@
-# Integrations
+# Connect Koi to existing tools
 
-Koi is the substrate *under* the tools you already run. It speaks **their** formats
-so you never have to teach those tools that Koi exists — point them at a Koi
-endpoint or hand them a file in the shape they expect, and they work. Every door
-here has an easy exit: stop pointing the tool at Koi and nothing breaks.
+Adopt Koi for a specific remaining task in an existing container/LAN setup.
+Keep a working resolver, proxy and monitoring system. The interfaces below have
+prerequisites; consuming a familiar format does not prove a complete integration.
 
-- [Prometheus](#prometheus) — scrape Koi-managed services via HTTP service discovery.
-- [Traefik & Caddy labels](#traefik--caddy-labels) — Koi reads the routing labels you
-  already wrote.
-- [Trust & CA-root distribution](./trust.md) — install any CA root into the OS trust
-  store, and export the certmesh root for ACME bootstrap (now its own guide).
-
----
+First establish [second-machine application access](../../CONTAINERS.md).
+Use [release readiness](../launch/README.md) for named artifacts and accepted
+partner versions. No new integration preview is implied by these source notes.
 
 ## Prometheus
 
-Koi exposes a [Prometheus HTTP service discovery](https://prometheus.io/docs/prometheus/latest/http_sd/)
-endpoint at `GET /v1/sd/prometheus`. Prometheus polls it, Koi answers with the
-current set of targets — no exporter sidecar, no per-service scrape config, no Koi
-plugin on the Prometheus side.
-
-### `prometheus.yml`
+Koi exposes HTTP service discovery at GET /v1/sd/prometheus:
 
 ```yaml
 scrape_configs:
@@ -29,132 +19,108 @@ scrape_configs:
       - url: "http://127.0.0.1:5641/v1/sd/prometheus"
 ```
 
-That is the entire integration. Prometheus re-polls on its `refresh_interval`
-(default 60s) and always receives the full target list (it does not diff). On a
-fresh daemon the endpoint returns `[]`.
+This assumes Prometheus can reach that local endpoint. A container or remote
+Prometheus needs the correct host route and [authentication](api-authentication.md).
+The default response includes managed targets; include=discovered additionally
+includes observed HTTP services. A discovered HTTP service is not necessarily a
+Prometheus metrics endpoint. Relabel/filter targets and metrics paths accordingly.
 
-To also scrape services Koi merely *discovered* on the LAN (mDNS `_http._tcp`),
-not just the ones it manages, add the query parameter:
+An empty result may reflect no eligible targets, not proof that all services are
+absent. Verify a known app and an actual successful scrape.
 
-```yaml
-      - url: "http://127.0.0.1:5641/v1/sd/prometheus?include=discovered"
-```
-
-### What gets exported
-
-- **Default (Koi-managed):** every health-checked service and every runtime
-  (container) instance that publishes a port. These are the services *you* told
-  Koi about.
-- **`?include=discovered`:** additionally, LAN-discovered `_http._tcp` mDNS records.
-
-A target with no recoverable `host:port` is silently skipped rather than emitted
-broken.
-
-### Labels
-
-Each target group carries `__meta_koi_*` labels. Like all `__meta_*` labels they
-exist only during the relabel phase — use `relabel_configs` to promote the ones
-you want onto the final series.
-
-| Label                          | Meaning                                                        |
-| ------------------------------ | -------------------------------------------------------------- |
-| `__meta_koi_name`              | Service name (label/announce name, else the instance name).    |
-| `__meta_koi_source`            | `health`, `runtime`, or `mdns` — where Koi learned the target. |
-| `__meta_koi_service_type`      | mDNS service type (e.g. `_http._tcp`) when known.              |
-| `__meta_koi_health`            | `up`, `down`, or `unknown` (health-checked targets only).      |
-| `__meta_koi_cert_expiry_days`  | Days until the certmesh cert for this name expires.            |
-
-`__meta_koi_cert_expiry_days` is **unique to Koi** — no other LAN service-discovery
-source (Consul, Docker, file SD, …) knows your private-CA certificate lifetimes.
-It is attached only when the target's name matches an active certmesh member with a
-known expiry, and omitted otherwise. It lets you alert on soon-to-expire mesh certs
-straight from Prometheus:
+Available metadata includes name, source, service type, health and, when matched,
+certificate expiry. __meta_* labels exist during relabeling:
 
 ```yaml
-    relabel_configs:
-      - source_labels: [__meta_koi_cert_expiry_days]
-        target_label: koi_cert_expiry_days
+relabel_configs:
+  - source_labels: [__meta_koi_source]
+    target_label: koi_source
+  - source_labels: [__meta_koi_cert_expiry_days]
+    target_label: koi_cert_expiry_days
 ```
 
-```promql
-# Members whose Koi mesh cert expires within a week.
-min_over_time(koi_cert_expiry_days[1h]) < 7
+Certificate metadata is present only when Koi can associate the target with a
+known certmesh identity. It is not a handshake check of every target's TLS leaf.
+
+## Existing routing labels
+
+Koi can derive metadata from selected Traefik and caddy-docker-proxy labels.
+Explicit koi.* metadata takes precedence; koi.enable=false opts out.
+Reading labels can lead to derived discovery/naming resources: it is not merely
+a passive inventory operation.
+
+For Traefik, the parser reads the first Host value from a router rule and a
+load-balancer server port. traefik.enable=false is respected.
+For caddy-docker-proxy, it reads the first caddy hostname and a numeric port in
+the reverse_proxy upstream directive.
+
+The parser does not implement the full semantics of either routing engine.
+Multiple hosts/rules, unsupported expressions and unpublished ports require
+inspection. Check source metadata in /v1/runtime/instances, the derived endpoint,
+and actual peer access before relying on it.
+
+Labels do not automatically supply a matching service certificate.
+[Runtime](runtime.md) and [container TLS](recipes/container-trusted-cert.md)
+describe the boundary.
+
+## Existing DNS
+
+[Conditional forwarding](dns-coexistence.md) lets an existing resolver query
+Koi's local zone. /v1/dns/zone can also export hosts, dnsmasq or JSON formats.
+
+Forwarding tracks live answers; static imports need an update/removal mechanism.
+Verify the client's ordinary DNS path and application URL. Removing a forwarding
+rule ends this dependency; plan for services using those names.
+
+## Existing certificate tooling
+
+koi trust can manage a known CA root in the OS store. Test the actual browser or
+language runtime, which may use another root source.
+
+Koi's private ACME implementation needs P-256 account support, a DNS provider and
+an exact account-bound grant. The current public grant/listener operation is
+incomplete. [ACME](acme.md) describes its prerequisites; a stock proxy custom-CA
+setting is not sufficient.
+
+A maintained partner integration must prove initial setup, actual second-client
+access, renewal, reload, interruption recovery and removal for named versions.
+
+## Outbound webhooks
+
+A daemon can send signed event envelopes to declared sinks. Select a JSON
+manifest with --webhooks PATH or KOI_WEBHOOKS:
+
+```json
+[
+  {
+    "url": "https://receiver.example.invalid/koi",
+    "secret": "<replace-with-a-private-random-shared-secret>",
+    "enabled": true
+  }
+]
 ```
 
----
+Replace the non-routable example URL and secret. Restrict manifest permissions.
+It is read at daemon startup, not hot-reloaded. No manifest leaves fan-out off;
+--no-webhooks disables it explicitly.
 
-## Trust (root distribution)
+The envelope contains v:1, event:{id,type,data}, and provenance with node, zone
+and seen_at. The x-koi-event-id header carries the event id. x-koi-signature is
+sha256= followed by an HMAC-SHA256 of the exact body bytes using the shared secret.
+Verify before parsing or acting; deduplicate repeated event ids.
 
-`koi trust` installs CA roots into the operating system's trust store and exports the
-certmesh root — so the tools you already use for local TLS (step-ca, mkcert, Caddy's
-internal CA, a corporate root) become trusted system-wide, and Koi's own mesh root can
-seed those same tools.
+Delivery is best effort, with at most three attempts per event and bounded
+backoff/request timeout. There is no durable queue. A slow sink can lose events
+without blocking the other sinks or source. Consumers should reread authoritative
+state after reconnect or suspected loss. HMAC does not encrypt payloads; use a
+properly trusted HTTPS receiver when privacy matters.
 
-This now has its own guide: **[Trust & CA-root distribution](./trust.md)** —
-`install` / `list` / `remove` / `export --ca`, the per-platform behavior, and the
-step-ca / mkcert / Caddy interop recipes.
+## Application and agent clients
 
----
+[HTTP authentication](api-authentication.md) supports scripts and applications.
+[Embedding](embedded.md) provides Rust APIs; [MCP](mcp.md) exposes observations
+and selected actions to agent hosts. These are optional paths, not prerequisites
+for the initial operator trial.
 
-## Traefik & Caddy labels
-
-If you already label your containers for Traefik or Caddy, Koi reads those labels
-and gives the service a local DNS name and a proxy port — no extra `koi.*` labels
-required. The labels you wrote for your reverse proxy do double duty.
-
-This is passive and safe (Koi only *reads* labels you already wrote), so it is on
-by default. Opt a container out with `koi.enable=false`.
-
-**Precedence:** explicit `koi.*` labels win, then Traefik/Caddy-derived values,
-then port heuristics. `koi.enable=false` overrides everything.
-
-### Traefik (v3)
-
-Koi reads the **first** ``Host(`…`)`` from any
-`traefik.http.routers.<r>.rule` and the
-`traefik.http.services.<s>.loadbalancer.server.port`. Containers with
-`traefik.enable=false` are ignored.
-
-```yaml
-services:
-  grafana:
-    image: grafana/grafana
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.grafana.rule=Host(`grafana.lab.internal`)"
-      - "traefik.http.services.grafana.loadbalancer.server.port=3000"
-```
-
-```sh
-koi dns lookup grafana.lab.internal     # resolves to the container — no koi.* labels
-```
-
-`Host(...)` is matched on the rule value only — the arbitrary `<r>`/`<s>` segment
-names are never used as the hostname. `&&`, `||`, and `PathPrefix(...)` are
-tolerated; the first `Host` wins; a rule with no `Host` contributes no name.
-
-### Caddy (caddy-docker-proxy)
-
-Koi reads the **first** comma-separated entry of the `caddy` label as the
-hostname, and the numeric port from `caddy.reverse_proxy`'s
-`{{upstreams …}}` directive.
-
-```yaml
-services:
-  grafana:
-    image: grafana/grafana
-    labels:
-      caddy: grafana.lab.internal
-      caddy.reverse_proxy: "{{upstreams 3000}}"
-```
-
-```sh
-koi dns lookup grafana.lab.internal
-```
-
-`{{upstreams https}}` (no port) contributes a hostname but no port; `{{upstreams
-http 8080}}` and `{{upstreams 8080}}` both contribute port `8080`.
-
-The inventory marks these instances with `source: traefik-labels` /
-`caddy-labels` so you can see where the routing came from
-(`GET /v1/runtime/instances`).
+Test one concrete consumer, its authority, failure behavior and cleanup.
+Avoid making broad interoperability claims from a sample response alone.

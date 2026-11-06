@@ -1,7 +1,11 @@
-# Certmesh HA & disaster recovery
+# Recover a private CA and verify dependent services
 
-Your certmesh CA host is one machine. When it dies — disk failure, a reinstall, a
-laptop left at the office — already-issued member certificates remain usable only
+CA operation is optional for the initial [container trial](../../CONTAINERS.md).
+When a service depends on it, establish recovery ownership, material and a known
+application client before deployment. Use [release readiness](../launch/README.md)
+for accepted artifact and recovery scope.
+
+When the CA is unavailable, already-issued certificates remain usable only
 until each certificate's real `NotAfter`. New meshes default to 7-day leaves,
 renewal below 3 days remaining, and a 1-day post-expiry *renewal authorization*
 grace. A persisted mesh can carry a different policy. Read the `policy` and every
@@ -278,3 +282,9 @@ Knowing the limits keeps the runbook from over-promising under pressure:
 - [acme.md](./acme.md) — the RFC 8555 facade; ACME-issued certs are reissued the same way after recovery.
 - [proxy.md](./proxy.md) — the TLS proxy picks up the recovered member cert automatically once it lands on disk.
 - [../reference/security-model.md](../reference/security-model.md) — the daemon access token, bind addresses, and the revocation trade-off.
+## Verify the dependent application
+
+After recovery, open the service's actual URL from its intended browser/runtime,
+verify the certificate name/chain and exercise renewal/reload. A restored roster
+or healthy CA alone does not establish service continuity. Record missing client
+or platform evidence in the selected artifact's readiness result.

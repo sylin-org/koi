@@ -1,455 +1,93 @@
-# Koi - Agentic Context
-
-> **Tool-agnostic AI context.** Claude, Cursor, Copilot, and other AI assistants bootstrap from here.
-
----
-
-## Active Fleet Epic
-
-When the user says **"run fleet/task.md"**, execute
-[`fleet/task.md`](../fleet/task.md). It is the universal self-routing entry point:
-the local hostname selects the hat and brief, and
-[`fleet/epics/003-delight-realignment.md`](../fleet/epics/003-delight-realignment.md)
-supplies the current objective, dependencies, and exit gates. Do not ask the user to
-restate an OS assignment already encoded there.
-
-## Linux delight realignment
-
-The owner delegated [Epic 003](../fleet/epics/003-delight-realignment.md) to the Linux
-machines through the universal dispatcher on 2026-09-04.
-[Routing](../fleet/delight-dispatch.md) and the
-[ledger](../docs/prompts/delight/LEDGER.md) fix owners and dependency readiness.
-Its [execution prompts](../docs/prompts/delight/README.md) provide bounded sessions,
-source contracts and evidence rules without prior conversation.
-
-R01 prepares the contract and reconciles Epic 002's actual native run/restoration.
-Implementation waits for that handover, not another routine approval. Preserve
-the historical run while active. Native Windows proof remains reserved; Linux
-implementation cannot be reported as Windows acceptance.
-
-## Historical v1 resume
-
-When the user says **"continue the epic to v1"**, read
-[`SESSION-HANDOFF.md`](../SESSION-HANDOFF.md) before doing new discovery or implementation.
-That ledger preserves the earlier v1 campaign and its release-gated residue. It does
-not supersede the active fleet epic when the fleet-task prompt is used. Verify either ledger against
-Git and the live lab before relying on historical facts.
-
-**Project memory map**: [`docs/MEMORY.md`](../docs/MEMORY.md) indexes durable state
-(ledger, lessons, ADRs). Sensitive/working notes live in gitignored `local/NOTES.md`
-(credential *locations*, operator out-of-band answers) — see `local/README.md`.
-Never commit `local/`.
-
----
-
-## Before Writing Code
-
-**Check reference docs**: `docs/reference/`
-
-- [architecture.md](../docs/reference/architecture.md) - crate inventory, boundaries, dependency graph
-- [http-api.md](../docs/reference/http-api.md) - all HTTP endpoints with request/response shapes
-- [wire-protocol.md](../docs/reference/wire-protocol.md) - mDNS NDJSON protocol, serde patterns, service records
-- [trust-protocol.md](../docs/reference/trust-protocol.md) - **ADR-020 cross-sibling wire contract**: Posture, Envelope (sign/verify), Sealed (seal/open), the same-port dual-mode handshake, the diagnose report — language-neutral so a non-Rust sibling implements identical primitives (realizes STACK-0001 D7)
-- [cli.md](../docs/reference/cli.md) - every command, flag, and environment variable
-- [ceremony-protocol.md](../docs/reference/ceremony-protocol.md) - ceremony engine, input types, session flow
-- [envelope-encryption.md](../docs/reference/envelope-encryption.md) - CA key protection, slot types
-- [domain-template.md](../docs/reference/domain-template.md) - **adding a new domain crate**: crate layout, the three-faced command/status/event boundary, the small shared primitives (`StatusFeed`, `event_channel`, `http::error_response`, `integration` traits), domain-owned lifecycle, and composition touchpoints
-
-**Check design decisions**: `docs/adr/`
-
-- Architecture Decision Records documenting why things are built the way they are
-- **Stack canon (cross-repo)**: [../docs/adr/STACK-0001-sylin-stack-canon.md](../docs/adr/STACK-0001-sylin-stack-canon.md) — Koi is the **base layer** of the Sylin stack (Koi → Zen Garden → Koan). STACK-0001 is canon: Koi may not name, special-case, or document its consumers (the K2 vocabulary leakage), and the HKDF domain-separation byte strings are **frozen** at the `koi-*-v1` namespace (K3 — a new algorithm gets a new versioned label, never a rename/reuse). The contract surface is mdns/dns/certmesh/udp/truststore; the proxy now has a real data-plane guard, while its composed certmesh/native-trust path remains pending. Do not contradict the canon without an upstream architect decision.
-
-**Surface ledger (cross-repo)**: [../docs/SURFACES.md](../docs/SURFACES.md) — records which surfaces are exercised by what, when last, and what guard protects them. Its top is the **rotation contract** (binding): before a lane leaves a surface, leave a tripwire and update that surface's row (`Last exercised` → today, `Guard` → the tripwire). The `surfaces` job in `.github/workflows/ci.yml` lints that the ledger parses. Honesty rule: unknown exercise status is written `unknown since <date>`, never a guessed "works". Read the current row rather than copying historical guard status into new work.
-
----
-
-## Critical Rules
-
-### 1. Cargo Workspace Architecture
-
-Koi v0.2 is a multi-crate Cargo workspace. Each domain has its own crate.
-
-```
-crates/
-├── koi/              # Binary crate - CLI entry, command dispatch, platform/service (serving in koi-serve)
-├── koi-common/       # Shared kernel - types, errors, pipeline, id, paths, ceremony
-├── koi-mdns/         # mDNS domain - core, daemon, registry, protocol, http routes
-├── koi-config/       # Config & state - breadcrumb discovery
-├── koi-certmesh/     # Certificate mesh domain - CA, enrollment, roster
-├── koi-trust/        # OS trust domain - managed roots, durable intent, platform presence
-├── koi-crypto/       # Cryptographic primitives - key gen, signing, TOTP, FIDO2, auth adapters
-├── koi-dns/          # Local DNS resolver - zone management, resolution, rate limiting
-├── koi-health/       # Machine & service health monitoring - HTTP/TCP checks, transitions
-├── koi-proxy/        # TLS-terminating reverse proxy - cert reload, forwarding
-├── koi-udp/          # UDP datagram bridging - HTTP/SSE tunneling, binding lifecycle
-├── koi-runtime/      # Container/service runtime adapter - Docker, Podman lifecycle events
-├── koi-client/       # HTTP client for daemon communication (blocking ureq)
-├── koi-compose/      # Composition root - build_cores, cross-domain bridges, orchestrator, ordered_shutdown, snapshot, self-announce, status
-├── koi-serve/        # Serving layer - HTTP/OpenAPI, authenticated local IPC, MCP HTTP, inter-node mTLS + ACME, Prometheus SD, dashboard wiring, posture-reactive trust plane
-├── koi-mcp/          # MCP server (stdio) - exposes the LAN substrate to AI agents
-├── koi-dashboard/    # Presentation - dashboard + mDNS browser (HTML, SSE, event forwarder, lazy meta-browse)
-└── koi-embedded/     # Embed Koi in Rust applications - builder, handles, events
-```
-
-> Terminal-profile-aware help rendering (the former standalone `command-surface` crate)
-> was folded into the binary's `crates/koi/src/help/` module in P09.
-
-### 2. Domain Boundary Model
-
-Each domain crate exposes three faces:
-
-```
-              ┌─────────────────────────┐
-  Commands →  │        Domain           │  → Events (broadcast)
-              │  (internal state machine │
-  State    ←  │   hidden from outside)  │
-              └─────────────────────────┘
-```
-
-- **Commands**: Methods that drive domain actions. Sync if cheap, async if needed.
-- **State**: Read-only snapshots of current domain state.
-- **Events**: `tokio::sync::broadcast` channel for subscribers.
-- **Routes**: Each domain owns its HTTP handlers via `fn routes(state) -> axum::Router`.
-- Cross-domain wiring happens in the **koi-compose composition crate** (consumed by the binary, the Windows service, and koi-embedded); domain crates reach each other only via the integration traits in `koi-common` and never import each other directly.
-
-### 3. Crate Dependency Graph
-
-```
-koi (bin) → koi-serve, koi-compose, koi-common, koi-mcp, koi-dashboard, koi-mdns, koi-certmesh, koi-trust, koi-crypto, koi-config, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi-client
-koi-compose   → koi-common, koi-config, koi-crypto, koi-dashboard, koi-mdns, koi-certmesh, koi-trust, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, hickory-proto, tokio
-koi-serve     → koi-compose, koi-common, koi-config, koi-dashboard, koi-mcp, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, axum, utoipa, utoipa-scalar, tokio-rustls, rustls, hyper-util, subtle, tokio  (the serving layer; depends on koi-compose, not the reverse)
-koi-mcp       → koi-common, koi-client, koi-config, rmcp, hickory-proto, if-addrs, tokio  (depends on NO domain crate)
-koi-mdns      → koi-common, mdns-sd, socket2, zbus (Linux Avahi + resolve1), axum, utoipa, tokio
-koi-certmesh  → koi-common, koi-crypto, axum, utoipa, tokio
-koi-trust     → koi-common, os-truststore (external), chrono, serde, tokio
-koi-crypto    → (standalone: ring/rcgen/totp-rs/p256)
-# os-truststore: platform trust-store install — spun out to the os-tools repo (ADR-019);
-# consumed via a crates.io version dependency, not a workspace member.
-koi-config    → koi-common
-koi-dns       → koi-common, koi-config, hickory-server, hickory-resolver, axum, utoipa, tokio
-koi-health    → koi-common, koi-config, axum, utoipa, tokio
-koi-proxy     → koi-common, koi-config, tokio-rustls, rustls, rcgen, axum, utoipa, tokio
-koi-udp       → koi-common, axum, utoipa, tokio
-koi-runtime   → koi-common, bollard, axum, utoipa, tokio, chrono, async-trait
-koi-client    → koi-common, ureq (blocking)
-koi-dashboard → koi-common, koi-mdns, koi-certmesh, koi-trust, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, axum, tokio
-koi-embedded  → koi-serve, koi-compose, koi-common, koi-dashboard, koi-crypto, koi-mdns, koi-certmesh, koi-trust, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi-config, koi-client, reqwest, tokio
-```
-
-**Domain** crates depend on `koi-common` but **never** on each other.
-`koi-serve` is the **serving layer** — it owns every transport (the one HTTP/OpenAPI router
-+ `serve()`, authenticated local IPC, MCP HTTP, inter-node mTLS + ACME, Prometheus SD, dashboard
-wiring) plus the posture-reactive trust plane; it depends on `koi-compose` (never the
-reverse). `koi-dashboard` is a **composition/presentation** crate (not a domain): it
-depends on the event-bearing domain crates so the single event forwarder + mDNS browse
-adapter exist once. Only the serving/composition layers and the two top-level consumers
-(`koi`, `koi-embedded`) depend on these wiring crates, so the kernel and domain closures
-stay clean. `koi-common` is a **types plus small status/event coordination kernel** — it
-carries no presentation deps (`tokio-stream`/`async-stream`/`hostname` left with the
-dashboard in P06). Its `StatusFeed` and event-channel helper intentionally use Tokio's
-synchronization primitives, but domain lifecycle state machines remain inside their owning
-domains. The dashboard/browser HTML, SSE, and browse cache live in `koi-dashboard`.
-
-### 4. mDNS Provider Isolation (CRITICAL)
-
-- `crates/koi-mdns/src/native.rs` is the **only** file that imports `mdns-sd`
-- `avahi.rs` and `systemd_resolved.rs` independently own their native D-Bus contracts
-- Every adapter owns its detector, capability evidence, and real native operations
-- `koi-compose/src/mdns.rs` only assembles the platform adapter catalog
-- `MdnsControlPlane` selects non-overlapping capability routes and reconciles them at runtime
-- Native Koi is always catalogued as the lowest-priority full provider
-- `RegistrationRegistry` alone owns desired publication intent; `DiscoveryHub` alone owns browse demand
-- Stateful `ProviderSession`s own native resources, recovery, and acknowledged teardown
-- `MdnsCore` coordinates transactions; it is not a provider facade or resource owner
-- Native mdns-sd operations run on a dedicated worker thread (`koi-mdns-native`)
-- Never use mdns-sd types outside `native.rs`; translate to provider values there
-- Write-route transitions are break-before-make; read events are generation-fenced
-- Tests and workbooks assert structured control-plane state, never human summaries
-
-### 5. Constants Convention
-
-- `SCREAMING_SNAKE_CASE`, co-located with the module that uses them
-- Module path provides the namespace: `koi_common::id::SHORT_ID_LEN`, `http::DEFAULT_HEARTBEAT_LEASE`
-- Do NOT create a centralized constants module
-
-### 6. Error Handling
-
-```rust
-// Domain: thiserror enum (MdnsError in koi-mdns)
-#[derive(Debug, thiserror::Error)]
-pub enum MdnsError { ... }
-
-// Shared: ErrorCode enum → HTTP status mapping (koi-common)
-ErrorCode::NotFound → StatusCode::NOT_FOUND
-
-// Wire: error_to_pipeline() converts domain error → pipeline response
-```
-
-### 7. Serde Patterns (CRITICAL)
-
-```rust
-// Response has custom Serialize impl - two JSON shapes:
-// Wrapped: {"found": {...}}  (externally tagged)
-// Flat:    {"error": "not_found", "message": "..."}  (struct fields at top level)
-
-// PipelineResponse<B> uses #[serde(flatten)] on body
-// skip_serializing_if = "Option::is_none" for pipeline properties
-```
-
-### 8. Platform-Conditional Compilation
-
-```rust
-// Windows-only: Named Pipes, SCM, firewall
-#[cfg(windows)]
-
-// Unix-only: Unix domain sockets, systemd
-#[cfg(unix)]
-
-// macOS-only: LaunchDaemon (system-wide, /Library/LaunchDaemons)
-#[cfg(target_os = "macos")]
-```
-
-### 9. Runtime Capability Tunables
-
-All domain capabilities are compiled into a **single binary**. Enable/disable at runtime:
-
-| Flag            | Env Var             | Effect                       |
-| --------------- | ------------------- | ---------------------------- |
-| `--no-mdns`     | `KOI_NO_MDNS=1`     | Disable mDNS capability      |
-| `--no-certmesh` | `KOI_NO_CERTMESH=1` | Disable certmesh capability  |
-| `--no-dns`      | `KOI_NO_DNS=1`      | Disable DNS capability       |
-| `--no-health`   | `KOI_NO_HEALTH=1`   | Disable health capability    |
-| `--no-proxy`    | `KOI_NO_PROXY=1`    | Disable proxy capability     |
-| `--no-acme`     | `KOI_NO_ACME=1`     | Disable the ACME server / TLS listener (port 5643) |
-| `--no-udp`      | `KOI_NO_UDP=1`      | Disable UDP bridging         |
-| `--no-runtime`  | `KOI_NO_RUNTIME=1`  | Disable runtime adapter      |
-| `--no-http`     | `KOI_NO_HTTP=1`     | Disable the HTTP adapter     |
-| `--no-ipc`      | `KOI_NO_IPC=1`      | Disable the IPC adapter      |
-| `--no-mcp-http` | `KOI_NO_MCP_HTTP=1` | Disable the in-process MCP HTTP transport (`/v1/mcp`) |
-
-Additional runtime adapter flags:
-
-| Flag                  | Env Var          | Effect                                          |
-| --------------------- | ---------------- | ----------------------------------------------- |
-| `--runtime <backend>` | `KOI_RUNTIME`    | Select backend: auto, docker, podman (default: auto) |
-
-All capabilities are **enabled by default**.
-
-The binary crate checks `Config.no_<capability>` at three layers:
-
-- **CLI dispatch**: `config.require_capability("mdns")?` before running any domain command
-- **HTTP routes**: disabled capabilities return 503 via a fallback router
-- **Daemon mode**: disabled capabilities skip core creation entirely
-
-Domain crates are **never aware** of this mechanism - the binary crate is the sole orchestrator.
-
-Do NOT use `#[cfg(feature = "...")]` for domain capabilities. Platform-conditional compilation (`#[cfg(windows)]`, `#[cfg(unix)]`, `#[cfg(target_os)]`) remains appropriate for genuinely platform-specific code.
-
----
-
-## Verification Commands
-
-After making changes, run:
-
-```bash
-cargo check
-cargo test
-cargo clippy -- -D warnings
-```
-
----
-
-## Execution Modes
-
-Koi has three process-ownership modes - understand which one your change affects:
-
-| Mode           | Selection                                      | Core Owner         | Transport       |
-| -------------- | ---------------------------------------------- | ------------------ | --------------- |
-| **Daemon**     | Installed service or explicit `--daemon`       | All cores (shared) | HTTP + Pipe/UDS |
-| **Client**     | Command + local service or explicit endpoint   | KoiClient          | HTTP to daemon  |
-| **Standalone** | Explicit `--standalone`, local service stopped | This invocation    | Direct          |
-
-Daemon mode also serves an embedded dashboard (`GET /`) and mDNS browser (`GET /mdns-browser`).
-Bare `koi` renders status/catalog. Redirected stdin does not create another core;
-explicit `koi mcp serve` is a daemon-backed stdio protocol.
-
----
-
-## CLI Moniker Structure
-
-v0.2 uses domain monikers: `koi <domain> <command>`
-
-```
-koi mdns discover [type]         # Browse for services
-koi mdns announce <args>         # Register a service
-koi mdns unregister <id>         # Remove a service
-koi mdns resolve <name>          # Resolve service
-koi mdns subscribe <type>        # Watch lifecycle events
-koi mdns admin <cmd>             # Admin operations (status, ls, inspect, drain, revive)
-koi certmesh create              # Initialize private CA
-koi certmesh join [endpoint]     # Join existing mesh
-koi certmesh status              # Mesh status
-koi certmesh unlock              # Decrypt CA key
-koi certmesh log                 # Audit log
-koi certmesh set-hook            # Set reload hook
-koi certmesh promote [endpoint]  # Promote standby CA
-koi certmesh open-enrollment     # Open enrollment window
-koi certmesh close-enrollment    # Close enrollment window
-koi certmesh rotate-auth         # Rotate enrollment auth
-koi certmesh backup <path>       # Create encrypted backup
-koi certmesh restore <path>      # Restore from backup
-koi certmesh revoke <hostname>   # Revoke a member
-koi certmesh destroy             # Destroy all certmesh state
-koi dns serve                    # Start the DNS resolver
-koi dns stop                     # Stop the DNS resolver
-koi dns status                   # DNS resolver status
-koi dns lookup <name>            # Resolve a local name
-koi dns add <name> <ip>          # Add static DNS entry
-koi dns remove <name>            # Remove static DNS entry
-koi dns list                     # List all resolvable names
-koi health status                # Show health status
-koi health watch                 # Live terminal watch
-koi health add <name>            # Add a health check
-koi health remove <name>         # Remove a health check
-koi health log                   # Health transition log
-koi proxy add <name>             # Add/update a proxy entry
-koi proxy remove <name>          # Remove a proxy entry
-koi proxy status                 # Proxy status
-koi proxy list                   # List configured proxies
-koi udp bind                     # Bind a host UDP port
-koi udp unbind <id>              # Close a UDP binding
-koi udp send <id>                # Send a datagram
-koi udp status                   # Show active bindings
-koi udp heartbeat <id>           # Renew binding lease
-koi status                       # Unified capability status
-koi launch                       # Open dashboard in browser
-koi install                      # Install as OS service
-koi uninstall                    # Uninstall OS service
-koi version                      # Show version
-```
-
----
-
-## Never Do
-
-- Import `mdns-sd` outside of `crates/koi-mdns/src/native.rs`
-- Create a centralized constants module
-- Have domain crates import each other
-- Use `unwrap()` in production code (use `?`, `unwrap_or_else`, or graceful fallbacks)
-- Use `.expect()` in production code (treat as `unwrap()` - both panic)
-- Use `unreachable!()` in match arms reachable through API evolution (use `anyhow::bail!`)
-- Use blocking I/O in async context (except `ureq` which is intentionally blocking)
-- Duplicate types between `koi-common` and domain crates
-- Use `#[cfg(feature = "...")]` for domain capabilities (use runtime tunables instead)
-- Expose domain internal state as `pub` (use opaque facade pattern - see "Domain Facade Pattern" below)
-- Duplicate session ID generation (use `koi_common::id::generate_short_id()`)
-- Duplicate the streaming `select! { stream, ctrl_c, timeout }` skeleton (use `commands::run_streaming()`)
-- Define the same constant in multiple files (make `pub(crate)` and import)
-
-## Always Do
-
-- Check reference/utilities.md before creating constants
-- Propagate errors with `thiserror` or `.context()`
-- Use `tracing::*` for logging (never `eprintln!` for diagnostic output)
-- Keep platform mDNS APIs isolated behind `MdnsProvider` adapters
-- Test serde round-trips for new protocol types
-- Check `config.require_capability()` before dispatching domain commands
-- Use `commands::print_json()` for CLI JSON output (handles serialization errors gracefully)
-- Use shared helpers (`build_register_payload`, `print_register_success`, `run_streaming`) instead of duplicating
-- Re-export domain error types at crate root (e.g., `pub use error::CertmeshError`)
-
----
-
-## Lessons Learned
-
-### Domain Facade Pattern
-
-Every domain crate must follow the opaque facade pattern established by `koi-mdns`:
-
-1. **Internal state is `pub(crate)` or private** - never expose `Mutex<T>`, internal types, or lock handles
-2. **Domain core is the single entry point** - `MdnsCore` / `CertmeshCore` exposes commands as methods
-3. **HTTP handlers delegate to domain methods** - no lock management in HTTP handlers where possible
-4. **Status logic lives in one place** - shared `build_status()` helpers prevent duplication between facade and HTTP
-5. **Constructor hides complexity** - callers pass high-level types, not internal state components
-
-Bad:
-
-```rust
-pub struct InternalState { pub mutex_field: Mutex<T> }  // Leaks internals
-handler(state.mutex_field.lock().await)                  // Lock in handler
-```
-
-Good:
-
-```rust
-pub(crate) struct InternalState { ... }
-pub struct DomainCore { state: Arc<InternalState> }
-impl DomainCore { pub async fn do_thing(&self) -> Result<T> { ... } }
-```
-
-### Local IPC dispatch
-
-The authenticated Named Pipe / UDS adapter keeps its verb-oriented NDJSON request
-dispatch in `koi-serve::dispatch`:
-
-- `new_session_id()` - uses `koi_common::id::generate_short_id()`
-- `handle_line()` - parses request, dispatches to MdnsCore, writes responses
-- `write_response()` - serializes with graceful error handling (no `.unwrap()`)
-
-The local IPC adapter owns its session grace period and transport setup. There is
-no implicit stdin responder; `koi mcp serve` is a separate daemon-backed protocol.
-
-### Binary Crate Module Structure
-
-The binary crate (`crates/koi/src/`) is organized by responsibility:
-
-```
-main.rs            - CLI parse and top-level host entry
-cli.rs             - clap definitions (Cli, Command, Config)
-client.rs          - Re-exports koi-client (HTTP client for client mode)
-format.rs          - ALL human-readable CLI output (single source of truth)
-admin.rs           - Admin command execution (delegates to KoiClient)
-daemon.rs          - Foreground daemon composition and terminal lifecycle edge
-dispatch.rs        - Top-level command routing
-infra.rs           - Signals, logging, diagnostics, and host wiring helpers
-help/              - Terminal-profile-aware help rendering + command/API metadata
-                     (folded in from the former command-surface crate in P09)
-commands/
-  mod.rs           - Shared helpers (detect_mode, run_streaming, print_json, etc.)
-  mdns.rs          - mDNS commands + admin routing (discover, announce, etc.)
-  certmesh.rs      - Certmesh commands (create, join, status, etc.)
-  dns.rs           - DNS commands (serve, stop, lookup, add, remove, list)
-  health.rs        - Health commands (status, watch, add, remove, log)
-  proxy.rs         - Proxy commands (add, remove, status, list)
-  udp.rs           - UDP commands (bind, unbind, send, status, heartbeat)
-  ceremony_cli.rs  - Ceremony protocol CLI handling
-  status.rs        - Unified status command
-platform/
-  mod.rs           - Platform abstraction
-  windows.rs       - SCM, firewall, service paths
-  unix.rs          - systemd, service paths
-  macos.rs         - launchd, service paths
-```
-
-Key design rules:
-
-- `main.rs`, `dispatch.rs`, and `daemon.rs` contain host routing/composition, not domain logic
-- `format.rs` is the only file with `println!`-based presentation
-- Platform paths live in their respective `platform/` modules, not in `cli.rs`
-- Commands are organized by domain (`commands/mdns.rs`, `commands/certmesh.rs`, `commands/dns.rs`, etc.)
-- Dashboard and browser HTML/SSE/routes/cache live in the `koi-dashboard` crate (a
-  composition crate); the binary keeps only its snapshot builder + `DashboardState`
-  wiring in `adapters/dashboard.rs`. The single event forwarder
-  (`koi_dashboard::forward`) and mDNS browse adapter (`koi_dashboard::browse_source`) are
-  shared by both the binary and `koi-embedded`. The LAN-wide meta-browse is lazy
-  (`koi_dashboard::meta_browse`): it starts on the first browser request and idles out —
-  `koi status` reports `Browse: active|idle`.
-
-### Serialization Safety
-
-Never `unwrap()` on `serde_json::to_string()`. While it rarely fails for well-formed types, production code must handle it:
-
-- CLI output: use `commands::print_json()` helper
-- Adapter output: use `adapters::dispatch::write_response()` with fallback JSON
-- HTTP handlers: match on `serde_json::to_value()` result
+# Koi contributor context
+
+Koi helps container/LAN developers and capable homelab operators label a
+container, open its actual application from another computer, and keep names and
+state correct through restart, recreation and removal.
+
+Certmesh is a visible second product pillar: private-space identity and trust.
+Describe its existing enrollment, renewal and signed membership capabilities
+for participating applications separately from the unfinished exact service-name
+HTTPS workflow. Keep container discovery as the first task and preview gate.
+
+## Read first
+
+- [ADR-046](../docs/adr/046-container-lan-adoption.md): current product scope.
+- [Epic 004](../fleet/epics/004-container-lan-adoption.md): task definitions.
+- [Launch ledger](../fleet/launch/LEDGER.md): current claims and completion.
+- [Release readiness](../docs/launch/README.md): actual artifacts and scenario claims.
+- [Experience direction](../docs/ux/README.md): navigation, state/action language,
+  visual rules and U01–U07 implementation boundaries.
+- [One UI plan](../docs/ux/single-ui-plan.md): U07 retention, consolidation,
+  deletion and all-entry-point acceptance; current owner correction.
+- [Architecture](../docs/reference/architecture.md): source ownership.
+- [Security model](../docs/reference/security-model.md): bind, auth and trust limits.
+
+Early formative trials use existing CLI/HTTP surfaces for the real second-device
+container task. The preview's selected UI must pass the core U06 experience gate;
+Services, mDNS, Certmesh and Settings form one coherent journey. Exact service-name
+HTTPS and one existing proxy/resolver integration form the next milestone.
+The owner requires one shipped UI: consolidate useful desktop/browser capabilities
+and remove the superseded screens, bundles and navigation bridges under U07.
+An advanced-tool link or a visually aligned shell around partial functionality
+does not satisfy that requirement. New Certmesh capabilities and service-name
+HTTPS remain separate scope; retained existing tasks must work in the one UI.
+
+Current instructions describe current source honestly. Check the artifact's
+tagged docs when evaluating a released binary. Research and ADRs retain dated
+evidence; the current epic and ledger own execution.
+
+## Work selection
+
+For “run fleet/task.md”, follow [the dispatcher](../fleet/task.md), including
+host identity, own-host native mutation and capacity rules. Other user-authorized
+repository tasks do not implicitly launch fleet sessions.
+
+Inspect the worktree and preserve others' changes. Claim a bounded source task
+before editing shared files. The current source integrator is CachyOS; other
+fleet machines provide requested platform evidence. A direct owner request can
+authorize a separate bounded documentation or implementation task.
+
+Use the [exploration workflow](../.codex/skills/explore/SKILL.md) before production
+code changes. Read relevant existing files, search constants/types, identify the
+closest pattern and state exact placement. Proceed within existing authorization.
+
+## Architecture invariants
+
+- Domains own commands, immutable revisioned state, typed events, durable state,
+  workers and acquired resources. Keep status snapshots and semantic events distinct.
+- Domain crates do not import one another. Small shared contracts live in
+  koi-common; cross-domain coordination lives in koi-compose.
+- koi-serve owns transports, auth and composition-facing serving. The CLI,
+  embedded consumers, MCP and UI consume authoritative state.
+- A UI, adapter or observer must not manufacture a parallel inventory or infer
+  success from configuration. Re-read current state after missed events.
+- The pure shared renderer may import the existing Certmesh/DNS status DTOs
+  named by the architecture guard. It may not acquire domain cores, commands,
+  clients or runtime ownership. Adapters supply snapshots and bounded effects.
+- Admission, persistence, publication and teardown retain their owners through
+  cancellation. Do not orphan accepted work when a requester disconnects.
+- RegistrationRegistry owns mDNS publication intent; DiscoveryHub owns browse
+  demand; MdnsControlPlane owns capability routes and provider sessions.
+- Only crates/koi-mdns/src/native.rs imports mdns-sd. Provider-native types stay
+  in their adapters. See [mDNS rules](rules/mdns-boundary.md).
+- Keep frozen koi-*-v1 protocol/domain-separation labels and consumer-neutral
+  boundaries from [the stack canon](../docs/adr/STACK-0001-sylin-stack-canon.md).
+- Follow the retained Rust renderer and authenticated native/headless boundaries;
+  visual work does not grant a browser operator authority.
+
+## Implementation and validation
+
+Reuse existing source types and co-located constants. Keep typed errors at domain
+boundaries; transport handlers decode, delegate and serialize. See
+[HTTP rules](rules/http-adapter.md) and [source lookup](reference/utilities.md).
+
+Test lifecycle, authorization, trust and recovery behavior appropriate to a
+change. [CONTRIBUTING](../CONTRIBUTING.md) lists repository checks.
+Update [SURFACES](../docs/SURFACES.md) when adding or changing a guard. A configured
+test is not a passing native result. A candidate needs exact artifact evidence.
+
+Never present prepared packages, unimplemented grant/listener workflows, a
+Koi-only DNS query or disabled TLS validation as a successful user journey.
+Keep existing durable settings and identity material safe through upgrade and
+uninstall. Secrets and working machine notes belong in gitignored local/, never
+in public docs or proof receipts.

@@ -64,6 +64,7 @@ libc.workspace = true
 windows-sys.workspace = true
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 tower = { version = "0.5", features = ["util"] }
 rcgen.workspace = true
 # A real MCP client (over a bound TCP listener) for the in-process /v1/mcp transport test.

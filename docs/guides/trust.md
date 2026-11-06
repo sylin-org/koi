@@ -1,28 +1,14 @@
-# Trust — Distribute and Trust CA Roots
+# Install, inspect and remove CA roots
 
-Here's the problem: TLS verification only works if the verifier already trusts the
-issuing root. You have a CA — Koi's own certmesh root, or step-ca, mkcert, Caddy's
-internal issuer, a corporate root — and you need a machine to trust everything that
-root signs, without per-app `--cacert` flags or hand-editing the OS certificate store.
+Use koi trust when the intended client must trust a known private CA. It installs
+a PEM root in the OS store, tracks its installed roots and exports Koi's root.
+Some browsers and language runtimes use separate root sources; test each actual
+client. Root installation proves neither URL/SAN match, expiry nor app access.
 
-`koi trust` is that one command. It installs a PEM CA root into the operating
-system's trust store (so browsers, `curl`, and language runtimes all pick it up),
-tracks the roots **it** installed so you can list and undo them later, and exports
-the certmesh root so non-member clients can be bootstrapped. Every door has an exit:
-`koi trust remove` untrusts what you installed, and nothing else in your OS store is
-ever touched.
-
-This is the last mile of trusted HTTPS. The [Trusted-HTTPS
-tutorial](../tutorials/trusted-https.md) walks the full journey (CA → enroll → proxy
-→ trust); this guide is the reference for the `trust` command group itself.
-
-> **Local, not daemon-mediated.** `koi trust` talks to the OS certificate store
-> directly — it does **not** go through the daemon and needs no running daemon or
-> access token. Because it mutates the system trust store, `install` and `remove`
-> **require elevated privileges** (Administrator on Windows, `sudo`/root on
-> Linux/macOS). `list` and `export` do not.
-
----
+Install/remove act locally and require platform elevation; they do not use the
+daemon token. Export reads local CA state. Verify the root's identity and trusted
+distribution path before installation. See [host-member HTTPS](../tutorials/trusted-https.md)
+and [container-name limits](recipes/container-trusted-cert.md).
 
 ## Trust an arbitrary CA root
 
@@ -30,7 +16,7 @@ tutorial](../tutorials/trusted-https.md) walks the full journey (CA → enroll �
 OS trust store:
 
 ```sh
-# Trust a step-ca root system-wide (browsers, curl, language runtimes).
+# Trust a step-ca root in the OS store (verify the intended browser/runtime separately).
 sudo koi trust install ./step-ca-root.pem
 ```
 

@@ -52,7 +52,8 @@ struct TypeBrowse {
     refcount: usize,
     pump: Option<tokio::task::JoinHandle<()>>,
     cancel: CancellationToken,
-    records: HashMap<String, ServiceRecord>, // instance name -> record
+    records: HashMap<String, ServiceRecord>, // resolved instance name -> record
+    unresolved: HashMap<String, ServiceRecord>, // Found evidence; never satisfies resolve
     gen: u64,
     /// Concrete provider route that produced this generation's retained facts.
     source: Option<ProviderBrowseSource>,
@@ -145,6 +146,7 @@ impl DiscoveryHub {
                     pump: Some(pump),
                     cancel,
                     records: HashMap::new(),
+                    unresolved: HashMap::new(),
                     gen,
                     source: None,
                     observing: false,
@@ -163,7 +165,9 @@ impl DiscoveryHub {
             // the provider route is unavailable. A new subscriber must not
             // receive them as if they were observations from a live browser.
             let replay = if entry.observing {
-                replay_events(is_meta, &entry.records)
+                let mut replay = replay_events(is_meta, &entry.records);
+                replay.extend(entry.unresolved.values().cloned().map(KoiEvent::Found));
+                replay
             } else {
                 VecDeque::new()
             };
@@ -403,6 +407,7 @@ impl DiscoveryHub {
             let mut retired_records = entry
                 .records
                 .drain()
+                .chain(entry.unresolved.drain())
                 .map(|(_, record)| record)
                 .collect::<Vec<_>>();
             retired_records.sort_by(|left, right| {
@@ -450,6 +455,21 @@ fn commit_pump_event(
         };
         if entry.gen != generation {
             return;
+        }
+        match &event {
+            KoiEvent::Found(record) if key != META_QUERY => {
+                let identity = record_key(&record.name);
+                if !entry.records.contains_key(&identity) {
+                    entry.unresolved.insert(identity, record.clone());
+                }
+            }
+            KoiEvent::Resolved(record) => {
+                entry.unresolved.remove(&record_key(&record.name));
+            }
+            KoiEvent::Removed { name, .. } => {
+                entry.unresolved.remove(&record_key(name));
+            }
+            _ => {}
         }
         cache_update(key, &mut entry.records, &event);
         let type_tx = entry.tx.clone();
@@ -710,19 +730,28 @@ fn snapshot_contents(
                 generation: source.generation,
                 available: browse.observing,
             });
-            browse.records.values().filter_map(move |record| {
-                let source = source.clone()?;
-                let value = if query.as_str() == META_QUERY {
-                    MdnsDiscoveryValue::ServiceType {
-                        service_type: record.name.clone(),
-                    }
-                } else {
-                    MdnsDiscoveryValue::ServiceRecord {
-                        record: record.clone(),
-                    }
-                };
-                Some(MdnsDiscoveryObservation { source, value })
-            })
+            browse
+                .records
+                .values()
+                .map(|record| (record, false))
+                .chain(browse.unresolved.values().map(|record| (record, true)))
+                .filter_map(move |(record, unresolved)| {
+                    let source = source.clone()?;
+                    let value = if query.as_str() == META_QUERY {
+                        MdnsDiscoveryValue::ServiceType {
+                            service_type: record.name.clone(),
+                        }
+                    } else if unresolved {
+                        MdnsDiscoveryValue::UnresolvedInstance {
+                            record: record.clone(),
+                        }
+                    } else {
+                        MdnsDiscoveryValue::ServiceRecord {
+                            record: record.clone(),
+                        }
+                    };
+                    Some(MdnsDiscoveryObservation { source, value })
+                })
         })
         .collect::<Vec<_>>();
     observations.sort_by(|left, right| {
@@ -739,7 +768,8 @@ fn snapshot_contents(
 fn observation_name(observation: &MdnsDiscoveryObservation) -> &str {
     match &observation.value {
         MdnsDiscoveryValue::ServiceType { service_type } => service_type,
-        MdnsDiscoveryValue::ServiceRecord { record } => &record.name,
+        MdnsDiscoveryValue::ServiceRecord { record }
+        | MdnsDiscoveryValue::UnresolvedInstance { record } => &record.name,
     }
 }
 
@@ -843,8 +873,8 @@ fn next_browse_retry(current: Duration) -> Duration {
 /// cached for every type; meta-query Found events (which ARE the discovered
 /// type names — there is no further resolution step) are cached only for the
 /// meta entry, so a late subscriber still learns the LAN's service types.
-/// Plain Found events on normal types stay uncached: they are unresolved
-/// teasers whose Resolved follow-up is the durable fact.
+/// Normal Found evidence is retained separately by the owning TypeBrowse, so
+/// inspection can recover it without promoting it to the resolved cache.
 fn cache_update(key: &str, records: &mut HashMap<String, ServiceRecord>, event: &KoiEvent) {
     match event {
         KoiEvent::Resolved(record) => {
@@ -960,6 +990,7 @@ mod tests {
             refcount: 1,
             pump: None,
             cancel: CancellationToken::new(),
+            unresolved: HashMap::new(),
             records: records
                 .into_iter()
                 .map(|record| (record_key(&record.name), record))
@@ -1183,6 +1214,81 @@ mod tests {
         ));
         assert_eq!(types["_http._tcp.local."].records.len(), 1);
         assert!(!types["_http._tcp.local."].observing);
+    }
+
+    #[tokio::test]
+    async fn unresolved_observation_survives_resync_without_satisfying_resolution() {
+        let control = MdnsControlPlane::start(Vec::new(), Arc::new(RegistrationRegistry::new()))
+            .await
+            .unwrap();
+        let (events, _) = broadcast::channel(8);
+        let hub = Arc::new(DiscoveryHub::new(
+            control.clone(),
+            events,
+            StatusFeed::default(),
+        ));
+        let key = "_http._tcp.local.";
+        hub.types
+            .lock()
+            .unwrap()
+            .insert(key.into(), cached_browse([]));
+        let mut found = record("Printer", key);
+        found.host = None;
+        found.ip = None;
+        found.port = None;
+        hub.pump_emit(key, 1, KoiEvent::Found(found.clone()));
+        let snapshot = hub.snapshot();
+        assert!(
+            snapshot.records.is_empty(),
+            "unresolved evidence must not enter the resolved catalog contract"
+        );
+        assert!(
+            matches!(&snapshot.observations[0].value, MdnsDiscoveryValue::UnresolvedInstance { record } if record == &found)
+        );
+        assert!(hub.fresh_cached_record(key, "Printer").is_none());
+        let late = hub.subscribe_type(key, false);
+        assert_eq!(
+            late.pop_fresh_replay(),
+            Some(KoiEvent::Found(found.clone()))
+        );
+        let resolved = record("PRINTER", key);
+        hub.pump_emit(key, 1, KoiEvent::Resolved(resolved.clone()));
+        hub.pump_emit(key, 1, KoiEvent::Found(found.clone()));
+        assert_eq!(hub.snapshot().records, vec![resolved.clone()]);
+        assert_eq!(
+            hub.snapshot().observations.len(),
+            1,
+            "repeated Found cannot downgrade or duplicate resolved evidence"
+        );
+        assert_eq!(hub.fresh_cached_record(key, "printer"), Some(resolved));
+        hub.pump_emit(
+            key,
+            1,
+            KoiEvent::Removed {
+                name: "printer".into(),
+                service_type: key.into(),
+            },
+        );
+        assert!(hub.snapshot().records.is_empty());
+        assert!(hub.snapshot().observations.is_empty());
+        hub.pump_emit(key, 1, KoiEvent::Found(found));
+        hub.set_generation_observing(key, 1, false);
+        assert!(!hub.snapshot().observations[0].source.available);
+        hub.admit_observation_route(
+            key,
+            1,
+            ProviderBrowseSource {
+                provider: "replacement".into(),
+                generation: 4,
+            },
+        );
+        assert!(
+            hub.snapshot().observations.is_empty(),
+            "replacement route must retire unresolved evidence too"
+        );
+        drop(late);
+        hub.shutdown_browses().await;
+        control.shutdown().await.unwrap();
     }
 
     #[tokio::test]

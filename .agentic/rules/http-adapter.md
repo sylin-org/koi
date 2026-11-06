@@ -1,71 +1,27 @@
 ---
-globs: crates/koi-mdns/src/http.rs
+globs: crates/*/src/http.rs,crates/koi-serve/src/http.rs
 alwaysApply: false
 ---
 
-# HTTP Adapter Rules
+# HTTP adapter rules
 
-## Domain-Owned Routes
+Domain crates own their relative routes and domain commands. koi-serve mounts
+them, classifies access, and owns listener-level policy. Use the existing handler
+in the affected domain and crates/koi-serve/src/http.rs as the pattern.
 
-Each domain crate defines its own HTTP routes. The binary crate mounts them:
+Handlers deserialize and validate transport input, call the domain owner and
+serialize the typed result. Do not acquire private domain locks or duplicate
+lifecycle/status logic in HTTP. Use existing error-to-response helpers and
+established wire shapes; do not wrap every domain in an invented universal shape.
 
-```rust
-// crates/koi-mdns/src/http.rs - defines relative routes
-pub fn routes(core: Arc<MdnsCore>) -> Router {
-    Router::new()
-        .route("/browse", get(browse_handler))
-        .route("/services", post(register_handler))
-        // ...
-        .with_state(core)
-}
+Every new route needs an explicit authorization classification in the
+[route/auth matrix](../../docs/reference/http-route-auth-matrix.md) and its actual
+enforcement. Unknown peer identity must not create a loopback exemption. SSE and
+aggregate endpoints need their own access review; a GET is not automatically public.
 
-// crates/koi/src/adapters/http.rs - mounts at /v1/mdns/
-app = app.nest("/v1/mdns", koi_mdns::http::routes(core));
-```
+For mDNS, verify current lease defaults and heartbeat paths in
+crates/koi-mdns/src/http.rs and the [mDNS guide](../../docs/guides/mdns.md).
+A dropped connection must not detach durable admitted work or leak native leases.
 
-## Handler Signatures
-
-```rust
-// JSON response
-async fn handler(
-    State(core): State<Arc<MdnsCore>>,
-    Query(params): Query<ParamsStruct>,
-) -> impl IntoResponse { ... }
-
-// SSE stream
-async fn stream_handler(
-    State(core): State<Arc<MdnsCore>>,
-    Query(params): Query<ParamsStruct>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> { ... }
-```
-
-## Response Conventions
-
-- Success: return `Json(PipelineResponse::clean(Response::variant(...)))`
-- Error: return `(StatusCode, Json(error_to_pipeline(&e)))`
-- SSE: use `PipelineResponse` with `status` field for stream lifecycle
-- The `Response` enum handles serialization shape (wrapped vs flat) - don't fight it
-
-## Pipeline Helpers (Free Functions)
-
-Since `PipelineResponse<B>` is defined in `koi-common`, domain-specific helpers are free functions:
-
-```rust
-// crates/koi-mdns/src/protocol.rs
-pub fn browse_event_to_pipeline(event: MdnsEvent) -> MdnsPipelineResponse;
-pub fn subscribe_event_to_pipeline(event: MdnsEvent) -> MdnsPipelineResponse;
-pub fn error_to_pipeline(e: &MdnsError) -> MdnsPipelineResponse;
-```
-
-## Lease Policy
-
-HTTP registrations use heartbeat leases by default:
-
-- Lease: `DEFAULT_HEARTBEAT_LEASE` (90s)
-- Grace: `DEFAULT_HEARTBEAT_GRACE` (30s)
-- Client must `PUT /v1/mdns/services/{id}/heartbeat` to renew before expiry
-
-## Query Parameters
-
-- `idle_for`: SSE idle timeout in seconds (0 = infinite, absent = 5s default)
-- Use the `idle_duration()` helper to convert
+Use the [security model](../../docs/reference/security-model.md) for exact current
+bind/auth/CORS behavior. Confirm docs examples against current routes and tests.

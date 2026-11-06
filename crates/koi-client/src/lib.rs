@@ -520,14 +520,6 @@ impl KoiClient {
             .map_err(|error| ClientError::Decode(error.to_string()))
     }
 
-    /// Clear Pond's durable current UI selection while retaining immutable generations.
-    pub fn pond_clear_ui(&self) -> Result<serde_json::Value> {
-        let url = format!("{}/v1/ui", self.endpoint);
-        let resp = self.auth_delete(&url).call().map_err(map_error)?;
-        resp.into_json()
-            .map_err(|error| ClientError::Decode(error.to_string()))
-    }
-
     // ── DNS operations (Phase 6) ───────────────────────────────────
 
     pub fn dns_status(&self) -> Result<serde_json::Value> {
@@ -2323,25 +2315,6 @@ mod tests {
         assert!(request.starts_with("get /v1/certmesh/bootstrap "));
         assert!(!request.contains("x-koi-token"));
         assert!(!request.contains("must-not-leak"));
-    }
-
-    #[test]
-    fn pond_clear_ui_is_an_authenticated_bodyless_delete() {
-        let (endpoint, request) =
-            json_server_once(r#"{"ok":true,"selected":false,"status_revision":9}"#);
-        let client = KoiClient::with_token(&endpoint, "secret-token");
-
-        let cleared = client.pond_clear_ui().expect("clear response");
-
-        assert_eq!(cleared["selected"], false);
-        assert_eq!(cleared["status_revision"], 9);
-        let request = request.join().expect("stub server joins").to_lowercase();
-        assert!(request.starts_with("delete /v1/ui "));
-        assert!(request.contains("x-koi-token: secret-token\r\n"));
-        assert!(
-            request.ends_with("\r\n\r\n"),
-            "unexpected request body: {request:?}"
-        );
     }
 
     // ── SSE parsing tests ───────────────────────────────────────────

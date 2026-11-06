@@ -1,22 +1,9 @@
-# winget manifests — notes for release day (ADR-034 D6)
+# winget packaging
 
-winget-pkgs requires multi-file YAML manifests (version / installer /
-defaultLocale) under `manifests/s/sylin-org/koi/<version>/`. Generate rather
-than hand-write:
+This directory documents the prospective winget channel. Check [launch readiness](../../docs/launch/README.md) before treating it as available. A generated manifest or a repository recipe is not a published package.
 
-    winget install wingetcreate
-    wingetcreate new <signed-installer-or-archive-url>
+Use the exact Windows release artifact and its verified SHA-256 to generate manifests with winget's current authoring tools. Select installer/portable metadata that matches the actual artifact; do not describe an archive as a service installer or assume signing/SmartScreen reputation.
 
-Policy checkpoints that fail validation if missed (measured against the
-published policies):
+Validate the candidate through the package manager, submit through its normal review process and retain the public submission/release identity. A service-installing workflow must preserve Koi's operator, token, native service and rollback contracts.
 
-- InstallerUrl must be the direct GitHub Release asset (HTTPS, no redirector).
-- InstallerSha256 must match the exact bytes — take it from the release manifest.
-- Silent install must work unattended: NSIS `/S`, or use the portable zip with
-  `InstallerType: portable` (then `ElevationRequirement` is not needed).
-- A service-installing exe needs `ElevationRequirement: elevationRequired`.
-- Windows release executables are unsigned. Validate package-manager acceptance against the real
-  release artifacts and do not claim an established SmartScreen reputation.
-
-Submission is an external action: PR to microsoft/winget-pkgs, automated
-validation, moderator review. Record the PR in SESSION-HANDOFF.md.
+Before advertising the channel, perform a clean install from its published entry point, verify the expected executable/version and one intended native service, then run the container/second-device application and stop/recreate checks. Record results in [the launch ledger](../../fleet/launch/LEDGER.md). Package-manager validation alone does not certify that journey.

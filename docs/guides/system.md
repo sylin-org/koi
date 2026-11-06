@@ -1,240 +1,122 @@
-# System - Daemon Lifecycle
+# Operate the daemon and preserve its state
 
-Koi is a single binary that wears two hats. When you type `koi mdns discover`, it's a short-lived CLI tool - it does its job and exits. But most of Koi's power comes from the **daemon**: a long-running process that holds mDNS registrations, serves the HTTP API, runs health checks, and keeps certificates alive. The system commands are how you manage that daemon's lifecycle.
+Koi's daemon owns discovery, naming, runtime observation and configured services.
+The CLI inspects or changes that daemon. For the first adoption task, use
+[containers](../../CONTAINERS.md); for native installation and logs, use
+[install and service](install-and-service.md).
 
-Understanding this duality matters. Some commands (like `koi version`) work anywhere - they don't need the daemon. Others (like `koi mdns admin ls`) only make sense when a daemon is running. The system module bridges the two worlds.
+These commands describe current source. [Release readiness](../launch/README.md)
+identifies supported artifacts. The shell binary and installed service can differ.
 
----
+## Select the process deliberately
 
-## Installing the daemon
+- koi --daemon starts a foreground daemon.
+- Normal capability commands use the installed local service or explicit endpoint.
+- Bare koi reports status/help; it does not start a new daemon.
+- --standalone requests an explicit local composition and refuses an existing local owner.
+- koi install uses the platform service recipe; koi uninstall removes that service.
 
-The daemon should run as a system service so it survives reboots, can bind privileged ports, and starts before your applications need it.
+Preserve an existing installed service instead of launching a second process
+against its state or network identity.
 
-```
-koi install
-```
+## Inspect observed state
 
-This is a one-time setup. On each platform, Koi registers itself with the native service manager:
-
-- **Windows**: Creates a Windows Service via the Service Control Manager with automatic startup and a recovery policy (restart after 5s, then 10s, then stop).
-- **Linux**: Writes and enables a systemd unit file.
-- **macOS**: Creates a launchd plist.
-
-The daemon listens on port 5641 by default and exposes both the HTTP API (for any language) and the IPC pipe (for the CLI). Once installed, every other Koi command can talk to the daemon automatically.
-
-**All core domains are available by default.** On a fresh install the daemon starts the
-configured runtime domains, even if you have not added any entries yet:
-
-- **mDNS** begins discovering peers immediately.
-- **DNS**, **Health**, **Proxy**, and **UDP** start in a _ready_ state with zero entries/routes - they accept configuration at any time.
-- **CertMesh** reports _ready - run certmesh create_ until you initialise a CA.
-- **Trust** observes Koi-managed operating-system roots and reconciles CertMesh's desired CA
-  anchor when one exists.
-- **Runtime** auto-detects Docker/Podman and begins watching container lifecycle events. If no runtime is available, it reports _inactive_ and the daemon continues normally.
-
-The same product-status ladder also reports the local IPC adapter and the optional Pond
-read-only LAN surface. Pond stays disabled until the operator publishes and arms it.
-
-This is by design. A freshly-installed Koi is healthy; unused modules carry no overhead and can be activated whenever you need them. Use `koi status` to see each module's current state. Disable any capability with `--no-<name>` (e.g., `--no-udp`, `--no-proxy`).
-
-If you just want to experiment without installing anything, run the daemon in the foreground instead:
-
-```
-koi --daemon
+```sh
+koi version
+koi status
+koi status --json
+koi mdns admin status --json
+koi health status
 ```
 
-It behaves identically - same API, same IPC - but stops when you close the terminal.
+koi version identifies the invoked binary. Also inspect the native service's
+executable and daemon version. A row marked unavailable or not observed is not
+an empty successful result. Provider state, runtime inventory and service checks
+have different meanings.
 
----
+koi launch opens the local web interface when available. Dashboard/workbench
+capabilities vary with the artifact; CLI and HTTP suffice for the initial
+container task.
 
-## Checking on things
+## Configuration and access
 
-Three commands tell you what's happening:
-
-```
-koi version          # what binary is running
-koi status           # what all the subsystems are doing
-koi launch           # open the web dashboard in your browser
-```
-
-`status` gives you a single-glance dashboard. On a fresh install it looks like this:
-
-```
-Koi v0.2.x - status
-
-  mDNS       running    0 registered (0 alive, 0 draining)
-  Certmesh   running    ready - run certmesh create
-  DNS        running    0 static, 0 certmesh, 0 mdns
-  Health     running    0 services up (0 total)
-  Proxy      running    0 listeners
-  UDP        running    0 bindings
-  Runtime    inactive   no supported runtime detected
-  Trust      running    no managed roots
-  IPC        running    local control available
-  Pond       disabled   not published
+```sh
+koi config path
+koi config show
 ```
 
-Once you've been using Koi for a while, the numbers fill in:
+Inspect the actual durable configuration, service environment and overrides
+before changing a port, runtime or data root. A variable in an interactive shell
+does not configure an existing service. Native recipes and settings are described
+in [installation](install-and-service.md).
 
-```
-Koi v0.2.x - status
+HTTP is loopback by default; authentication and plaintext exposure are distinct.
+Use the [security model](../reference/security-model.md) before remote access.
+Engine permissions belong to the running account, not merely the installer user.
 
-  mDNS       running    3 registered (3 alive, 0 draining); browse active 142s, observed 12 events (last 4s ago)
-  Certmesh   running    CA active, 4 members, enrollment open
-  DNS        running    8 local names
-  Health     running    5 checks (4 healthy, 1 unhealthy)
-  Proxy      running    2 listeners
-  UDP        running    1 binding
-  Runtime    running    docker: 3 instances
-  Trust      running    1 root present
-  IPC        running    local control available
-  Pond       running    http://host.local:5644
-```
+## System HTTP endpoints
 
-Both support `--json` for scripting and monitoring integrations.
+| Endpoint | Meaning |
+| --- | --- |
+| GET /healthz | Minimal daemon liveness |
+| GET /v1/status | Aggregate observed capability state |
+| GET /v1/host | Host identity/interface information |
+| POST /v1/admin/shutdown | Authenticated graceful shutdown |
+| GET /v1/dashboard/snapshot | Dashboard projection |
+| GET /v1/dashboard/events | Event feed |
+| GET /docs | Interactive API documentation |
+| GET /openapi.json | HTTP API schema |
 
-The web dashboard at `http://localhost:5641/` provides a live system overview. An mDNS network browser is available at `/mdns-browser`. Interactive API docs are at `/docs`.
+Consult [route authorization](../reference/http-route-auth-matrix.md) for read
+and mutation credentials. A live healthz endpoint does not prove engine access,
+peer discovery, application readiness or TLS trust.
 
----
+<a id="when-things-go-wrong"></a>
+
+## Restart and recovery
+
+Restart through SCM, systemd, OpenRC or launchd as appropriate. In PowerShell use
+sc.exe, not its unrelated sc alias. Inspect the service log if startup fails.
+An interrupted transactional install should recover through the installer, not
+manual deletion of its checkpoint.
+
+After restart, repeat the known application's second-client access and inspect
+runtime reconciliation. If using TLS, verify the actual leaf and client trust,
+then the intended renewal/reload path. Record any changed state.
 
 ## Uninstalling
 
-```
-koi uninstall
-```
+koi uninstall removes the service and its owned registration/policy according to
+the platform recipe while preserving application data for reinstallation.
+Read its result; do not assume all external resolver, proxy or client-root
+configuration has been removed.
 
-This is intentionally conservative. It stops the daemon, removes the service registration, and cleans up firewall rules - but it **preserves all your data**. Your CA keys, certificates, DNS records, and configuration files remain on disk. If you reinstall later, everything picks up where it left off.
+Uninstall is not a factory reset. It is not required for routine
+[upgrades](upgrading.md).
 
-This design is deliberate. Uninstalling a service shouldn't destroy the state it managed. That's what factory reset is for.
+<a id="factory-reset"></a>
 
----
+## Destructive operations
 
-## Factory reset
+| Command | Scope |
+| --- | --- |
+| koi certmesh destroy | CA/member material and certmesh state; review dependent services and client roots |
+| koi factory-reset | The configured Koi data directory; destroys local certificate/private-key and other persistent state |
 
-> **DESTRUCTIVE — there is no undo.** `koi factory-reset` deletes the **entire** Koi
-> data directory and recreates it empty. Everything Koi has ever stored is gone:
+Factory reset requires platform elevation and explicit confirmation. In an
+interactive terminal the confirmation is RESET; noninteractive use requires the
+global --yes option. It is never a generic startup or networking repair.
 
-The `koi factory-reset` command destroys the whole program data folder and recreates it from scratch. It wipes:
+Before an intentional destructive operation, preserve an encrypted CA backup
+and a consistent copy of necessary service/configuration/state. Factory reset
+keeps no recovery copy. An external valid backup may restore continuity; without
+the CA key, future renewal/recovery cannot recreate the same authority.
 
-- mDNS registrations
-- **CA private keys** and **every certificate ever issued**
-- DNS records and static entries
-- Health-check configurations
-- Proxy routes
-- **The audit log** and rosters
-- Log files and `config.toml`
+Deleting a CA's local files does not magically invalidate every already-issued
+certificate on other clients. Existing leaves retain their actual expiry and
+client trust until those clients' policies change. Plan removal of dependent
+listeners, names and roots explicitly.
 
-There is no recovery path. After a reset, a **member** node must re-enroll into the mesh, and a **CA root** node must be re-created from scratch (`koi certmesh create`) — every certificate it had issued becomes unverifiable and the whole mesh loses trust in it. `koi factory-reset` requires elevated privileges (Administrator / sudo) because it removes machine-scoped state.
-
-### Back up first
-
-If the mesh matters, take an encrypted backup of the certmesh state **before** you reset:
-
-```
-koi certmesh backup ./koi-backup.bundle
-```
-
-That bundle (restored later with `koi certmesh restore <path>`) is the only way to bring the CA back. Factory reset itself keeps no copy.
-
-### Confirmation
-
-To prevent accidents, factory reset routes through the same confirmation gate as every destructive Koi command:
-
-- **Interactive terminal:** you must type `RESET` (exactly) to proceed.
-- **Non-interactive (`--json`, piped, or redirected):** the command **refuses** unless you pass the global `--yes` flag — it fails loudly rather than silently wiping data. Scripts that genuinely intend a reset must opt in with `--yes`:
-
-  ```
-  koi factory-reset --yes
-  ```
-
-### factory-reset vs. certmesh destroy
-
-These are different blast radii — reach for the smaller one when you can:
-
-| Command                | Scope                                                                 | Confirm |
-| ---------------------- | -------------------------------------------------------------------- | ------- |
-| `koi certmesh destroy` | **Certmesh only** — CA keys, certificates, enrollments, audit log. Leaves DNS, proxy, health, and the rest of Koi untouched. | type `DESTROY` |
-| `koi factory-reset`    | **Everything** — the entire data directory, including all of the above plus DNS, proxy, health, UDP, logs, and config. | type `RESET` |
-
-If you only need to tear down the certificate mesh, use `koi certmesh destroy`. Reserve `factory-reset` for when you genuinely want a clean machine.
-
-
----
-
-## HTTP API
-
-The daemon exposes system-level endpoints that aren't tied to any specific module:
-
-| Method | Path                        | Purpose                                                                                                                  |
-| ------ | --------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `GET`  | `/healthz`                  | Liveness probe - returns 200 if the daemon is alive. Use this in load balancer health checks or container orchestrators. |
-| `GET`  | `/v1/status`                | Unified status of all capabilities, the same data as `koi status --json`.                                                |
-| `GET`  | `/v1/host`                  | Host identity - hostname, FQDN, OS, architecture, LAN interfaces.                                                        |
-| `POST` | `/v1/admin/shutdown`        | Graceful shutdown - the daemon finishes in-flight requests, sends mDNS goodbye packets, and exits.                       |
-| `GET`  | `/`                         | Web dashboard - system overview with live status.                                                                         |
-| `GET`  | `/v1/dashboard/snapshot`    | Dashboard JSON snapshot (all capabilities).                                                                               |
-| `GET`  | `/v1/dashboard/events`      | Unified SSE activity feed.                                                                                                |
-| `GET`  | `/mdns-browser`             | mDNS network browser UI.                                                                                                  |
-| `GET`  | `/v1/mdns/browser/snapshot` | Network cache snapshot.                                                                                                   |
-| `GET`  | `/v1/mdns/browser/events`   | Service discovery SSE feed.                                                                                               |
-| `GET`  | `/docs`                     | Interactive API documentation (OpenAPI/Scalar).                                                                           |
-| `GET`  | `/openapi.json`             | OpenAPI 3.0 specification.                                                                                                |
-
-The `/healthz` endpoint is intentionally minimal and cheap. It doesn't check subsystem health - it just confirms the process is responding. If you need deeper checks, use `/v1/status` or the health module.
-
----
-
-## Configuration
-
-Koi is configured through flags and environment variables. The daemon reads these at startup:
-
-| Flag             | Env var            | Default | Description                    |
-| ---------------- | ------------------ | ------- | ------------------------------ |
-| `--port`         | `KOI_PORT`         | `5641`  | HTTP API port                  |
-| `--daemon`       | -                  | `false` | Run in foreground daemon mode  |
-| `--log-file`     | `KOI_LOG_FILE`     | -       | Write logs to file             |
-| `--log-level`    | `KOI_LOG`          | `info`  | Log level                      |
-| `--json`         | -                  | `false` | JSON output for status/version |
-| `--no-mdns`      | `KOI_NO_MDNS`     | `false` | Disable mDNS capability        |
-| `--no-certmesh`  | `KOI_NO_CERTMESH` | `false` | Disable certmesh capability    |
-| `--no-dns`       | `KOI_NO_DNS`      | `false` | Disable DNS capability         |
-| `--no-health`    | `KOI_NO_HEALTH`   | `false` | Disable health capability      |
-| `--no-proxy`     | `KOI_NO_PROXY`    | `false` | Disable proxy capability       |
-| `--no-udp`       | `KOI_NO_UDP`      | `false` | Disable UDP capability         |
-| `--no-runtime`   | `KOI_NO_RUNTIME`  | `false` | Disable the container/service runtime adapter |
-| `--no-acme`      | `KOI_NO_ACME`     | `false` | Disable the ACME server / TLS listener (port 5643) |
-| `--no-http`      | `KOI_NO_HTTP`     | `false` | Disable HTTP adapter           |
-| `--no-ipc`       | `KOI_NO_IPC`      | `false` | Disable IPC adapter            |
-| `--no-mcp-http`  | `KOI_NO_MCP_HTTP` | `false` | Disable the in-process MCP HTTP transport (`/v1/mcp`) |
-
-Each module has its own configuration documented in its respective guide. The system-level flags control the daemon itself - where it listens and how it logs. For the full configuration table (all flags, env vars, and defaults), see the [CLI Reference](../reference/cli.md).
-
----
-
-## When things go wrong
-
-### The service won't start
-
-Check the platform-native logs first. The daemon writes structured logs that usually explain the failure:
-
-```powershell
-# Windows - Event Viewer (Application log)
-Get-WinEvent -FilterHashtable @{LogName='Application'; ProviderName='koi'} -MaxEvents 10
-
-# Linux
-journalctl -u koi --no-pager -n 20
-```
-
-The most common cause is a port conflict - another process already holds port 5641. Override it:
-
-```
-koi --port 5642 install
-```
-
-### The CLI can't reach the daemon
-
-Koi writes a breadcrumb file when the daemon starts, telling the CLI where to connect. If the daemon was killed ungracefully (power loss, `taskkill /F`), the breadcrumb may be stale. Restarting the daemon fixes it.
-
-### Something is deeply broken
-
-That's what `factory-reset` is for. It's the nuclear option, and it is irreversible — read [Factory reset](#factory-reset) first, and back up the mesh with `koi certmesh backup <path>` before you pull the trigger.
+[CA recovery](certmesh-ha-recovery.md) and [troubleshooting](troubleshooting.md)
+cover the relevant operations. Protect unrelated services and data when cleaning
+up a trial.

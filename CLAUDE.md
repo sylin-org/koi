@@ -1,17 +1,6 @@
-# Koi - Claude Code Context
+# Koi work entry
 
-## Agnostic Context (Primary)
-
-**Bootstrap from**: @.agentic/CONTEXT.md
-
-This file contains tool-agnostic rules shared across all AI assistants.
-
-## Domain-Specific Rules (Load as needed)
-
-- HTTP adapter patterns: @.agentic/rules/http-adapter.md
-- mdns-sd isolation: @.agentic/rules/mdns-boundary.md
-
-## Reference (Don't reinvent)
-
-- Constants & types: @.agentic/reference/utilities.md
-- API & protocol: @.agentic/reference/api-endpoints.md
+Read [.agentic/CONTEXT.md](.agentic/CONTEXT.md) for current scope, architecture and
+validation. [ADR-046](docs/adr/046-container-lan-adoption.md) and
+[Epic 004](fleet/epics/004-container-lan-adoption.md) govern the focused launch.
+Use [fleet/task.md](fleet/task.md) only when executing a fleet assignment.

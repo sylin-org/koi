@@ -1,8 +1,14 @@
-# Embedded Integration
+# Integrate Koi into a Rust application
 
-Use `koi-embedded` to run Koi in-process - no daemon, no IPC, no binary dependency. This is the right choice when your Rust application needs mDNS, DNS, health checks, or certmesh as a library rather than an external service.
+Use koi-embedded when a concrete application needs Koi's discovery or lifecycle
+interfaces in-process. The host-service HTTP path is often simpler for a first
+container integration; choose embedding when the application should own runtime
+and state. This is optional for the [operator trial](../../CONTAINERS.md).
 
----
+Pin the chosen crate/source version and exercise the application across startup,
+reconnect, shutdown and peer access. Published rc.2 dependency examples are not
+proof of current development API or installed-client behavior. See
+[release readiness](../launch/README.md).
 
 ## Quick start
 
@@ -21,7 +27,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-That gives you all capabilities with sane defaults. For selective capabilities:
+The builder supplies its configured defaults. Select the capabilities the
+application actually needs; runtime observation is opt-in for embedding:
 
 ```rust
 let koi = Builder::new()
@@ -180,6 +187,7 @@ let binding = udp.bind(koi_udp::UdpBindRequest {
     lease_secs: 300,
     // 0.0.0.0 is non-loopback, so this is required; loopback binds default to false.
     allow_remote: true,
+    broadcast: false,
 }).await?;
 let _bytes_sent = udp.send(&binding.id, koi_udp::UdpSendRequest {
     dest: "127.0.0.1:9998".to_string(),
@@ -274,7 +282,7 @@ let handle = koi.start().await?;
 
 ---
 
-## Trusted services (ADR-020 same-port dial)
+## Trusted service serving
 
 A `KoiHandle` whose certmesh capability is enabled can serve your own `axum::Router` with
 the posture-adaptive same-port dial: plain HTTP while this node is **Open**, mTLS once it
@@ -311,7 +319,7 @@ println!("trusted service ready on {addr}");
 
 Certificate *renewal* (and trust-bundle pull / revocation honoring / self-stand-down) is
 handled by Koi's certmesh self-management, which is **on by default** once this node is a
-member (ADR-023); a self-driver disables it with `Builder::certmesh_managed(false)`.
+member; a self-driver disables it with `Builder::certmesh_managed(false)`.
 
 ### Trust primitives
 
@@ -400,7 +408,8 @@ The embedded integration example wires HTTP and IPC adapters in-process, exercis
 cargo run -p koi-embedded --example embedded-integration
 ```
 
-This validates: mDNS, DNS, health, certmesh, and proxy HTTP routes (including SSE), plus IPC flows on Windows.
+This example exercises adapter behavior in its stated environment. It does not
+certify another machine's DNS, browser trust or installed-service lifecycle.
 
 ---
 
@@ -423,10 +432,8 @@ assert!(!cm.verify(&env).await.unwrap().is_rejected());
 node.shutdown().await;                   // tears down + wipes the isolated data dir
 ```
 
-`TestNode` derefs to `KoiHandle`, so call any handle method on it directly. The "same code,
-both postures" acceptance gate is simply to run one consumer code path against
-`[testkit::open().await, testkit::secured().await]` — if the body ever needs an
-`if secure { … } else { … }`, a primitive is missing.
+`TestNode` derefs to `KoiHandle`, so call any handle method on it directly. Run the consumer's meaningful authorization and failure cases in both postures.
+These isolated tests do not replace native peer or client verification.
 
 ---
 
@@ -434,14 +441,16 @@ both postures" acceptance gate is simply to run one consumer code path against
 
 Certmesh create/destroy touches the trust store and may require elevated permissions. On startup the core resolves disk state automatically (`koi_compose::cores::init_certmesh_core`): no CA → an uninitialized core; a CA on disk that isn't decrypted → a locked core (machine-bound auto-unlock, or call `core.unlock(passphrase)`).
 
-`koi-embedded` exposes the **full `CertmeshCore`** via `handle.certmesh()?.core()?` (create, invite, join, renew, revoke, trust-bundle, status, …) plus the plain-HTTP routes; the mTLS inter-node listener and the lifecycle background loops are yours to compose. The embedded HTTP adapter is loopback-only and token-free **by default** — set `http_token(..)` to require the `x-koi-token` gate on mutations (mandatory once you expose it via `announce_http`; see [HTTP adapter](#http-adapter-optional)). For embedding a mesh **member** or a **CA host** — the auto-wired-vs-you-wire matrix, working code, and the renewal options — see **[Embedding certmesh](certmesh-embedded.md)**.
+`koi-embedded` exposes the **full `CertmeshCore`** via `handle.certmesh()?.core()?` (create, invite, join, renew, revoke, trust-bundle, status, …) plus the plain-HTTP routes; member trust-bundle/renewal management is enabled by default. The authority's
+mTLS/ACME listener supervision is not automatically the daemon's full deployment;
+compose the role-specific listeners your application needs. The embedded HTTP adapter is loopback-only and token-free **by default** — set `http_token(..)` to require the `x-koi-token` gate on mutations (mandatory once you expose it via `announce_http`; see [HTTP adapter](#http-adapter-optional)). For embedding a mesh **member** or a **CA host** — the auto-wired-vs-you-wire matrix, working code, and the renewal options — see **[Embedding certmesh](certmesh-embedded.md)**.
 
 ---
 
 ## Production tips
 
 - Set `data_dir` to isolate state per process or environment
-- Events are zero-latency broadcast channels - no file polling
+- Events use broadcast channels; receivers must handle lag and reread authoritative state
 - Explicitly enable/disable capabilities to match your deployment
 - The facade contains zero domain logic - it composes existing crates
 
@@ -454,7 +463,7 @@ Certmesh create/destroy touches the trust store and may require elevated permiss
 - `KoiConfig`, `ServiceMode`, `DnsConfigBuilder` from `koi-config`
 - `KoiEvent` from `koi-embedded::events`
 - `KoiHandle`, `MdnsHandle`, `DnsHandle`, `HealthHandle`, `CertmeshHandle`, `ProxyHandle`
-- Trust primitives (ADR-020): `Peer`, `Posture`, `PostureLevel`, `PeerClient`, `Sealed`/`Opened`/`Confidentiality`, and `TrustDiagnosis`; `KoiHandle::serve` owns the adaptive serving boundary
+- Trust primitives: `Peer`, `Posture`, `PostureLevel`, `PeerClient`, `Sealed`/`Opened`/`Confidentiality`, and `TrustDiagnosis`; `KoiHandle::serve` owns the adaptive serving boundary
 - `Vault`, `VaultError` from `koi-crypto` (for `handle.vault()`)
 
 ---
@@ -475,12 +484,10 @@ See also: `crates/koi-embedded/examples/embedded-integration.rs`
 
 ---
 
-## Unit tests
+## Verify your consumer
 
-The crate includes a comprehensive unit suite covering the testable surface that doesn't require a runtime:
-
-- **`config.rs`** — `KoiConfig` defaults, `firewall_ports()` deduplication and capability-awareness, `DnsConfigBuilder` fluent API, `ServiceMode` variants
-- **`events.rs`** — all `KoiEvent` variant construction, Clone preservation, Debug formatting
-- **`lib.rs`** — `KoiError` Display and From impls, all 5 event mapping functions (`map_mdns_event`, `map_health_event`, `map_dns_event`, `map_certmesh_event`, `map_proxy_event`), `Builder` defaults and fluent overrides
-
-Integration tests requiring the tokio runtime (startup, shutdown, domain handle operations, HTTP surface) are exercised via the example binary and the integration checklist above.
+Use the crate's tests for regressions and add application-level cases for the
+selected capability: start, obtain a usable endpoint, observe from an independent
+peer, change/remove state and shut down cleanly. For TLS, verify the intended
+client's name/chain/root source and recovery after renewal failure. Compile-only
+and testkit results are not installed-platform acceptance.

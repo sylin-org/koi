@@ -1,29 +1,24 @@
-# Embedding certmesh
+# Embed private-CA membership in a Rust application
 
-`koi-embedded` gives you the **certmesh engine** as a library — the same `CertmeshCore` the
-daemon runs, in your process, with no `koi` binary and no IPC. This guide is for Rust
-applications that want to **be a mesh participant** (get and keep a CA-signed cert) or
-**be the mesh's CA** (issue and revoke), rather than shelling out to the daemon.
+Use this advanced guide when an application itself must own a certmesh role.
+It is optional for the [container/LAN operator task](../../CONTAINERS.md).
+Pin the selected API version and verify the intended application's peer exchange,
+renewal and shutdown. [Release readiness](../launch/README.md) separates source
+tests from accepted native/client behavior.
 
-The mental model: `koi-embedded` hands you the **complete certmesh domain** (every
-operation), plus the **plain-HTTP routes**. The *network adapters* a full daemon also runs
-— the mTLS inter-node listener, the lifecycle background loops, ACME, the DAT token gate —
-are **yours to compose**, because an embedded host wires exactly the role it plays. This is
-deliberate: the binary is batteries-included; the library is composable. For the daemon's
-end-to-end behavior and the protocol, see [certmesh.md](certmesh.md); for the general
-embedded API, [embedded.md](embedded.md); one-screen map: the
-[certmesh-invite card](../reference/cards/certmesh-invite.md).
-
----
+Embedded composition includes the Certmesh core and configured HTTP routes.
+Member trust-bundle and renewal management are enabled by default. Authority
+mTLS/ACME listener supervision is not automatically the daemon deployment;
+compose the actual role-specific listeners and discovery the application needs.
 
 ## What you get, and what you wire
 
 | Surface | In embedded? | How |
 | --- | --- | --- |
-| **The whole `CertmeshCore`** — create, unlock, `mint_invite`, `enroll`, `prepare_member_csr`, `install_member_cert`, `revoke_member`, `renew_self_if_due` (member-side), `renew_member` (CA-side, transport-agnostic — ADR-021), `member_cert_expiry`, `pull_trust_bundle`, `apply_trust_bundle` (ingest a `SignedBundle` over your own transport — ADR-023), `is_certmesh_member` / `is_self_revoked` (cheap membership / self-revocation predicates), `self_enroll`, open/close-enrollment, `certmesh_status`, audit log, destroy | **Yes — automatic** | `handle.certmesh()?.core()?` → `Arc<CertmeshCore>` |
-| **Plain-HTTP routes** (`/v1/certmesh/{create,bootstrap,status,join,trust-bundle,revoke,member-csr,member-cert,invite,…}`) | **Yes** when `.http(true)` | Mounted at `/v1/certmesh`. **No DAT token gate** — see [Authentication](#authentication) |
+| **The whole `CertmeshCore`** — create, unlock, `mint_invite`, `enroll`, `prepare_member_csr`, `install_member_cert`, `revoke_member`, `renew_self_if_due` (member-side), `renew_member` (CA-side, transport-agnostic), `member_cert_expiry`, `pull_trust_bundle`, `apply_trust_bundle` (ingest a `SignedBundle` over your own transport), `is_certmesh_member` / `is_self_revoked` (cheap membership / self-revocation predicates), `self_enroll`, open/close-enrollment, `certmesh_status`, audit log, destroy | **Yes — automatic** | `handle.certmesh()?.core()?` → `Arc<CertmeshCore>` |
+| **Plain-HTTP routes** (`/v1/certmesh/{create,bootstrap,status,join,trust-bundle,revoke,member-csr,member-cert,invite,…}`) | **Yes** when `.http(true)` | Mounted at `/v1/certmesh`. Token configuration applies; see [Authentication](#authentication) |
 | **mTLS inter-node listener** (`/renew`, `/promote`, `/health`, `/set-hook` — how a CA serves member renewals) | **You wire it** | `koi_certmesh::mtls::serve(core.inter_node_routes(), …)` |
-| **Self-management** (trust-bundle pull → policy refresh + cross-member revocation honoring + self-stand-down, plus auto-renewal) | **On by default once a member** (ADR-023); a no-op until then | opt out with `.certmesh_managed(false)` to drive it yourself |
+| **Self-management** (trust-bundle pull → policy refresh + cross-member revocation honoring + self-stand-down, plus auto-renewal) | **On by default once a member**; a no-op until then | opt out with `.certmesh_managed(false)` to drive it yourself |
 | **ACME (RFC 8555) facade** | **No** | Binary-only adapter |
 | **mDNS `_certmesh._tcp` `fp=` CA advertise** | **No** (auto) | Register via the mDNS core if you want discovery |
 
@@ -115,10 +110,12 @@ crosses the wire to the CA.
 
 ## Keep the member's cert fresh
 
-A leaf is short-lived (default 90-day, renew at 30 remaining). Two ways to renew:
+New meshes default to seven-day leaves, renewing with three days remaining;
+existing meshes retain stored policy. A one-day post-expiry renewal grace does
+not extend TLS validity. Two ways to manage renewal:
 
 **Self-management (the default)** — once this node is a member, Koi runs the same role loop
-the daemon runs (ADR-023): hourly it pulls the signed trust bundle (policy refresh +
+the daemon runs: hourly it pulls the signed trust bundle (policy refresh +
 cross-member revocation honoring), renews the leaf when due over mTLS, and stands the node
 down if it is revoked. No flag to discover; the loop is a no-op until the node joins a mesh:
 
@@ -229,13 +226,16 @@ enrollment gated by invites.
 
 ## Authentication
 
-The standalone daemon gates every certmesh mutation with the `x-koi-token` Daemon Access
-Token (`/v1/certmesh/join` is the one exemption). **The embedded HTTP adapter applies no
-token middleware** — its routes are open to whoever can reach the port. That's fine for
-in-process or trusted-loopback use; if you expose the embedded HTTP surface beyond that,
-**you own the auth** (bind to loopback, put it behind your app's authn, or front it with
-your own middleware). See [api-authentication.md](api-authentication.md) for the token
-model the binary uses.
+The embedded HTTP adapter takes Builder::http_token. Its default is no token on
+loopback; setting the token enables the configured shared authorization gate.
+Exposing embedded HTTP off-loopback without a token is rejected as insecure
+configuration. Loopback without a token still trusts local callers; assess that
+boundary for the application.
+
+The daemon has its own configured route policy, including protected reads and
+credential-authorized enrollment exceptions. Do not claim that embedded routes
+always have no middleware or that every GET is public. See
+[API authentication](api-authentication.md) and the shared route contract.
 
 ---
 
@@ -254,16 +254,13 @@ Everything else (the whole `CertmeshCore`, the routes, mTLS) is always compiled.
 
 ---
 
-## Validated end to end
+## Verify the application role
 
-This embedded surface is exercised by the ADR-018 cross-participant suite, so the flows
-above are tested, not just intended:
-[`whole_story.rs`](../../crates/koi-embedded/tests/whole_story.rs) (two embedded daemons:
-create → invite → join over HTTP → key-rotating mTLS renewal → trust-bundle → revoke →
-403 boundary, plus the F3/F7/F11 boot invariants) and the real-binary, cross-host, and
-cross-platform tiers ([certmesh.md → testing](certmesh.md), ADR-018).
-
----
+The integration sources whole_story.rs and two_daemon_certmesh.rs exercise
+create/join/renewal/revocation behavior in their test environments. Run relevant
+checks against the selected dependency and then verify a real intended peer and
+client. Do not convert a test fixture result into broad cross-platform or browser
+acceptance.
 
 ## See also
 

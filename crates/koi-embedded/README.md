@@ -1,34 +1,15 @@
 # koi-embedded
 
-[![Crates.io](https://img.shields.io/crates/v/koi-embedded.svg)](https://crates.io/crates/koi-embedded)
-[![Docs.rs](https://docs.rs/koi-embedded/badge.svg)](https://docs.rs/koi-embedded)
-[![License](https://img.shields.io/crates/l/koi-embedded.svg)](https://github.com/sylin-org/koi#license)
+Run selected Koi capabilities inside a Rust application using the same composition and serving layers as the host daemon. `Builder::build()` creates the configuration; async `start()` returns typed handles and lifecycle ownership.
 
-Embed local network discovery, DNS, health, and TLS directly in your Rust application.
+Embedding is an advanced integration surface. The initial product journey uses the installed Koi service; embedding does not bypass network, trust-store or listener requirements. Managed Certmesh renewal/bundle maintenance is enabled by default. Embedded HTTP defaults to loopback with optional token authentication; exposing it through `announce_http` requires `http_token` and otherwise fails before startup. It does not automatically mount the daemon's authority mTLS/ACME supervisor or MCP HTTP surface.
 
-## Overview
-
-`koi-embedded` lets you embed the full Koi stack — mDNS discovery, DNS
-resolution, health monitoring, TLS proxy, certmesh, and UDP bridging — inside
-your own Rust application. It provides a `Builder` for configuration and
-returns typed handles (`MdnsHandle`, `DnsHandle`, `HealthHandle`, etc.) for
-interacting with each capability, plus a `KoiEvent` broadcast stream for
-reacting to system-wide events.
-
-## Usage
+## Source example
 
 ```rust
 use koi_embedded::{Builder, RegisterPayload};
 
-// Build the embedded stack, then start it. `build()` is sync and returns a
-// `KoiEmbedded`; `start()` is async and returns the running `KoiHandle`.
-let koi = Builder::new()
-    .mdns(true)
-    .build()?
-    .start()
-    .await?;
-
-// Register a service through the mDNS handle (`mdns()` returns a `Result`).
+let koi = Builder::new().mdns(true).build()?.start().await?;
 koi.mdns()?.register(RegisterPayload {
     name: "My Service".to_string(),
     service_type: "_http._tcp".to_string(),
@@ -37,47 +18,18 @@ koi.mdns()?.register(RegisterPayload {
     lease_secs: None,
     txt: Default::default(),
 }).await?;
-
-// Subscribe to the system-wide event stream.
-let mut rx = koi.subscribe()?;
-while let Ok(event) = rx.recv().await {
-    println!("{event:?}");
-}
 ```
 
-## Cargo features (lean builds)
+The surrounding application supplies an async runtime, error handling and shutdown. Consult the workspace examples for complete programs. Do not announce a port before the application is listening on the intended interface.
 
-Three heavy, version-locking backends are gated behind **default-on** features. A default
-dependency is unchanged; a lean consumer opts out, and re-arms à la carte:
+## Optional dependencies
 
-| Feature | Default | Compiles in | Off → fallback |
-| --- | --- | --- | --- |
-| `docker` | on | `bollard` Docker/Podman client (`=`-pinned stubs) | runtime backend → `BackendUnavailable` |
-| `keyring` | on | OS keychain / Linux Secret Service | vault uses its passphrase backend |
-| `qr` | on | `qrcode` + `image` PNG codec | enrollment returns the `otpauth://` URI text |
+| Feature | Default | Effect when omitted |
+| --- | --- | --- |
+| `docker` | Enabled | Docker/Podman runtime backend reports unavailable |
+| `keyring` | Enabled | Use the passphrase backend instead of platform credential storage |
+| `qr` | Enabled | Enrollment can expose the provisioning URI as text |
 
-```toml
-# default — everything
-koi-embedded = "0.4"
-# lean — no bollard, no OS-keychain/Secret Service, no image codec
-koi-embedded = { version = "0.4", default-features = false }
-# à la carte (also: features = ["full"])
-koi-embedded = { version = "0.4", default-features = false, features = ["docker"] }
-```
+Disable default features and re-enable the subset needed by the application. Runtime Builder toggles are distinct: they select which compiled capabilities start. The current workspace version is authoritative in `Cargo.toml`; use a matching published version only after confirming its availability.
 
-These are compile-time choices, distinct from the runtime capability toggles on
-`Builder` (which compile everything and just don't start it). Linux mDNS provider
-adapters remain available in a lean build; their `zbus` client is required platform
-integration, not part of the optional keyring closure. See the
-[embedded guide](https://github.com/sylin-org/koi/blob/main/docs/guides/embedded.md)
-and [ADR-014](https://github.com/sylin-org/koi/blob/main/docs/adr/014-optional-backend-features.md).
-
-## Part of Koi
-
-This crate is part of the [Koi](https://github.com/sylin-org/koi) workspace.
-See the main repository for architecture details and the full crate inventory.
-
-## License
-
-Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
-[MIT License](LICENSE-MIT) at your option.
+See [embedded usage](../../docs/guides/embedded.md), [architecture](../../docs/reference/architecture.md) and [launch readiness](../../docs/launch/README.md).

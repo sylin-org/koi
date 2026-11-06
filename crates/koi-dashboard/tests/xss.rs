@@ -1,9 +1,4 @@
-//! Security regression tests for the mDNS browser's XSS class (assessment claim 9).
-//!
-//! These are JS-free: one is a **structural guard** over the rendered asset (no dynamic
-//! value is string-concatenated into an HTML attribute, and a scheme allowlist exists);
-//! the other serves the snapshot endpoint with LAN-attacker-controlled hostile service
-//! names and asserts the response is inert JSON (never HTML).
+//! Security regression test for hostile mDNS values in the retained JSON adapter.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -18,46 +13,6 @@ use koi_common::types::ServiceRecord;
 use koi_dashboard::browse_source::{BrowseError, BrowseHandle, BrowseSource, BrowserEvent};
 use koi_dashboard::browser::{self, BrowserCache, BrowserState};
 use koi_dashboard::meta_browse::LazyMetaBrowse;
-
-const BROWSER_HTML: &str = include_str!("../assets/mdns-browser.html");
-
-// ── Structural guard (genuinely fail-first against the pre-rewrite asset) ──
-
-#[test]
-fn asset_never_concatenates_dynamic_values_into_attributes() {
-    // The pre-rewrite render concatenated escaped values straight into double-quoted
-    // attributes; `esc()` does not escape quotes, so a hostile name broke out. The
-    // structural DOM rewrite must eliminate every one of these patterns.
-    let forbidden = [
-        r#"href="' +"#,
-        r#"data-key="' +"#,
-        r#"data-type="' +"#,
-        r#"data-detail="' +"#,
-        r#"title="Open ' +"#,
-    ];
-    for pat in forbidden {
-        assert!(
-            !BROWSER_HTML.contains(pat),
-            "mdns-browser.html still concatenates a dynamic value into an attribute: {pat}"
-        );
-    }
-}
-
-#[test]
-fn asset_has_an_http_scheme_allowlist_for_launch_links() {
-    // Launch links must pass through an explicit http/https allowlist so `javascript:`
-    // and `data:` TXT urls are dropped.
-    assert!(
-        BROWSER_HTML.contains("safeLaunchUrl"),
-        "mdns-browser.html must define a scheme-allowlisted safeLaunchUrl() helper"
-    );
-    assert!(
-        BROWSER_HTML.contains("https:") && BROWSER_HTML.contains("http:"),
-        "scheme allowlist must enumerate http:/https:"
-    );
-}
-
-// ── Hostile-snapshot serve (server emits inert JSON, never HTML) ──
 
 /// Minimal `BrowseSource` for serving `/snapshot` (which never calls `browse`/`subscribe`
 /// in anger; the worker that `touch()` spawns just parks).
@@ -167,53 +122,4 @@ async fn snapshot_serves_hostile_names_as_inert_json() {
     assert!(blob.contains("onmouseover"), "hostile name present as data");
     // The javascript: url is carried as inert TXT data; the client drops it at render.
     assert!(blob.contains("javascript:alert(1)"));
-}
-
-// ── Dashboard page: defense-in-depth ──
-
-const DASHBOARD_HTML: &str = include_str!("../assets/dashboard.html");
-
-#[test]
-fn dashboard_activity_log_uses_dom_construction_and_quote_safe_esc() {
-    // The activity log receives LAN-attacker mDNS names; it must not flow through
-    // innerHTML, and the shared esc() must escape quotes (the defense line for the
-    // remaining operator-data panels).
-    assert!(
-        !DASHBOARD_HTML.contains("log.innerHTML"),
-        "dashboard activity log must not use innerHTML for attacker-controlled names"
-    );
-    assert!(
-        DASHBOARD_HTML.contains("&quot;") && DASHBOARD_HTML.contains("&#39;"),
-        "dashboard esc() must escape double and single quotes"
-    );
-}
-
-#[tokio::test]
-async fn served_pages_set_a_content_security_policy() {
-    use axum::routing::get;
-
-    // Dashboard page.
-    let app = axum::Router::new().route("/", get(koi_dashboard::dashboard::get_dashboard));
-    assert_csp(app, "/").await;
-
-    // mDNS browser page.
-    let app = axum::Router::new().route("/mdns-browser", get(browser::get_page));
-    assert_csp(app, "/mdns-browser").await;
-}
-
-async fn assert_csp(app: axum::Router, uri: &str) {
-    let resp = app
-        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let csp = resp
-        .headers()
-        .get(axum::http::header::CONTENT_SECURITY_POLICY)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    assert!(
-        csp.contains("default-src 'self'"),
-        "{uri} must send a Content-Security-Policy (got {csp:?})"
-    );
 }

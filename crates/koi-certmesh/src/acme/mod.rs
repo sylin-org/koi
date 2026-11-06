@@ -1,9 +1,10 @@
-//! RFC 8555 ACME server (dns-01 only, EC/ES256 only) — a facade over the
-//! certmesh CA that lets any standard ACME client (Caddy, Traefik, lego, certbot)
-//! obtain certificates for names inside the Koi DNS zone with zero Koi knowledge.
+//! RFC 8555 ACME facade over the certmesh CA (dns-01 only, EC/ES256 only).
+//! Issuance requires an exact service-name/account grant and a DNS challenge.
+//! External clients need compatible DNS hooks and explicit grant setup; the
+//! complete public operator workflow is tracked by the trusted-service milestone.
 //!
-//! See `docs/guides/acme.md` and `docs/prompts/plans/P12-plan.md` for the full
-//! design. This module is mounted by the binary's dedicated server-auth TLS
+//! See `docs/guides/acme.md` and `docs/launch/README.md` for setup and scope.
+//! This module is mounted by the binary's dedicated server-auth TLS
 //! listener under `/acme`.
 //!
 //! Module map:

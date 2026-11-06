@@ -1,61 +1,37 @@
-# HTTP route and authentication matrix
+# Route and authentication matrix
 
-This page is the authority map for Koi's network listeners. “Public” means that
-Koi's outer access-token middleware permits the request; a route can still enforce
-its own protocol authorization. In particular, enrollment validates an invite or
-TOTP in the handler, ACME validates JWS/EAB, and the mTLS listener validates a
-client certificate.
+"Public" below means permitted by the main DAT middleware. Individual handlers can require their own protocol authorization. These boundaries describe current source; [launch readiness](../launch/README.md) records which complete user scenarios are certified.
 
-## Main HTTP adapter (5641)
+## Main HTTP adapter
 
-The main adapter binds to loopback by default. If an operator deliberately exposes
-it with `--http-bind`, transport security and distribution of the daemon access
-token (DAT) are the operator's responsibility.
+The default bind is loopback. Deliberately exposing HTTP does not encrypt it or relax token checks. The bare daemon token travels in `x-koi-token`.
 
-| Route class | Loopback request | Remote request | Authority |
+| Route class | Loopback | Remote/unknown peer | Additional contract |
 | --- | --- | --- | --- |
-| Ordinary `GET`/`HEAD`, including `/healthz` and public discovery descriptors | Public | Public | Read-only response |
-| `GET /v1/certmesh/bootstrap`, `/ca-cert`, or `/trust-bundle` | Public | Public | Deliberately narrow enrollment/trust bootstrap; the signed bundle verifies itself |
-| `POST /v1/certmesh/join` | Public to DAT middleware | Public to DAT middleware | The handler requires a valid invite or TOTP and enrollment policy permits the join |
-| Full posture reads: certmesh status/diagnose, trust status, DNS list/zone/entries, inventory, dashboard snapshot/events | Public | DAT required | Loopback peer identity or valid `x-koi-token` |
-| `GET /v1/catalog` | Public | DAT required | Full operator catalog snapshot; not mounted on Pond |
-| `GET /v1/catalog/events` | DAT required | DAT required | Full-snapshot SSE channel |
-| `GET /v1/preferences` and preference `PUT` routes | DAT + local operator | Rejected even with DAT | Machine-local personal intent only |
-| Audit log, certmesh posture, unified events, UDP reads, `/v1/pond`, and every method under `/v1/mcp` | DAT required | DAT required | Valid `x-koi-token` |
-| Other `POST`/`PUT`/`DELETE` mutations | DAT required | DAT required | Valid `x-koi-token` |
-| `OPTIONS` | Public | Public | CORS preflight only; it does not return a protected resource body |
+| Ordinary GET/HEAD, liveness and discovery descriptors | Public | Public | Only the route's read projection |
+| Certmesh bootstrap, ca-cert, trust-bundle | Public | Public | Narrow bootstrap; bundle self-verifies against trusted anchor |
+| POST Certmesh join | No DAT | No DAT | Invite/TOTP, enrollment state and approval authorization |
+| Certmesh status/diagnose, Trust status, DNS list/zone/entries, inventory, catalog, dashboard snapshot/events | Public | DAT | Peer identity comes from accepted connection metadata |
+| Catalog events, unified events, Certmesh posture/audit, UDP reads, Pond control | DAT | DAT | Resource-bearing streams/reads |
+| Every resource-bearing /v1/mcp method | DAT | DAT | MCP requests and SSE |
+| Operator /v1/ui/shell, /v1/ui/state and /v1/ui/mdns/query | DAT | DAT | Rendered/typed operator state and bounded mDNS query actions |
+| Main-adapter /v1/mdns/browser/* | DAT | DAT | On-demand browser discovery, observations and query lifecycle; Pond has a separate public projection |
+| Preferences read/write | DAT + local operator | Rejected even with DAT | Local personal intent |
+| Other POST/PUT/DELETE mutations | DAT | DAT | Handler validation and operation-specific semantics; the retired UI publication API returns 404 |
+| OPTIONS | Public | Public | Body-free CORS preflight, not a protected resource |
 
-The focused test
-`documented_route_auth_matrix_matches_production_middleware` sends representative
-requests through `dat_auth_middleware`, using the production route constants. The
-nearby protected-read, audit, UDP, MCP, trust-mutation, and enrollment tests cover
-the remaining members of each class.
+The implementation is [dat_auth_middleware](../../crates/koi-serve/src/http.rs). The route-matrix test and adjacent negative tests exercise representative classes using production constants. Any added aggregate read/stream needs explicit classification; do not infer safety from the GET method.
 
-## Authenticated remote principal (5642)
+## Authority mTLS
 
-The certmesh listener is a separate TLS adapter. It requires a client certificate
-signed by the mesh CA before HTTP routing. Certmesh inter-node handlers additionally
-authorize the certificate identity for the requested member operation. When remote
-MCP is enabled, `/v1/mcp` is mounted here and its guard maps the authenticated
-certificate CN to an active, unexpired, unrevoked roster member. A DAT is not the
-authority on this listener.
+The separate authority listener requires a mesh-CA client certificate before routing. Inter-node handlers authorize the verified identity for the member operation. Optional remote MCP maps CN to active, unexpired, unrevoked membership. Its authority is the certificate/roster, not DAT. Permissions remain coarse and do not provide tenant isolation.
 
-## ACME listener (5643)
+## ACME
 
-ACME is a separate server-auth TLS listener under `/acme/`. ACME requests use RFC
-8555 JWS account authorization; closed enrollment also requires EAB for account
-creation. The DAT and certmesh member mTLS rules do not apply to this protocol.
+The separate server-auth TLS listener accepts ACME JWS account authorization and replay nonces. Closed enrollment requires EAB for account creation. Certificate issuance additionally requires an exact account-bound service-name grant; successful registration alone grants no DNS name. DAT protects the DNS proof-writing API separately.
 
-## Pond public listener
+## Pond
 
-Pond never exposes the main operator router. Its public router allowlists only:
+The separate public router allowlists the built-in shared UI, liveness, a reduced status projection, the existing public mDNS browser snapshot and reduced DNS entries. It does not expose the full catalog, preferences, token, operator discovery provenance/query results, arbitrary management routes or full Certmesh status.
 
-- `/` and the pinned `/_koi/ui/{revision}` bundle;
-- `/healthz`;
-- `/v1/status` (a public projection, not full operator status);
-- `/v1/mdns/browser/snapshot`;
-- `/v1/dns/entries` (a public projection).
-
-Pond configuration and bundle publication remain on the main adapter at `/v1/pond`
-and `/v1/ui`, behind DAT authentication. The public-route allowlist is exercised by
-the `koi-serve` Pond router tests.
+Pond desire remains on the main DAT-protected adapter. UI publication and generation selection were retired by ADR-047. Refer to [HTTP semantics](http-api.md) for the current shared renderer and [security](security-model.md) for local operator custody and transport boundaries.

@@ -1,0 +1,135 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index a9c6282..1b94745 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -26,6 +26,9 @@ koi-ui = { git = "https://github.com/sylin-org/koi", rev = "b4c32fa9b524549509b3
+ gtk = "=0.18.2"
+ webkit2gtk = { version = "=2.0.2", features = ["v2_32"] }
+ 
++[target.'cfg(windows)'.dependencies]
++windows-sys = { version = "0.61.2", features = ["Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
++
+ [build-dependencies]
+ tauri-build = { version = "=2.6.3", features = [] }
+ 
+diff --git a/src/main.rs b/src/main.rs
+index 43a39b1..8779e99 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1392,36 +1392,61 @@ fn probe_http_blocking(host: String, port: u16) -> Result<Option<String>, String
+     Ok(None)
+ }
+ 
+-/// Passage (cycle-1 WP7): open a pond endpoint in the default browser.
+-/// Only http(s) passes — an mDNS announcement never gets to execute anything.
++/// Open a validated HTTP(S) endpoint in the default browser without a command shell.
+ #[tauri::command]
+ fn open_url(url: String) -> Result<(), String> {
+-    let url = url.trim();
+-    if !(url.starts_with("http://") || url.starts_with("https://")) {
+-        return Err("only http(s) URLs can be opened".into());
+-    }
+-    #[cfg(windows)]
+-    {
+-        std::process::Command::new("cmd")
+-            .args(["/C", "start", "", url])
+-            .spawn()
+-            .map_err(|e| format!("could not open {url}: {e}"))?;
+-    }
+-    #[cfg(target_os = "macos")]
+-    {
+-        std::process::Command::new("open")
+-            .arg(url)
+-            .spawn()
+-            .map_err(|e| format!("could not open {url}: {e}"))?;
+-    }
+-    #[cfg(target_os = "linux")]
+-    {
+-        std::process::Command::new("xdg-open")
+-            .arg(url)
+-            .spawn()
+-            .map_err(|e| format!("could not open {url}: {e}"))?;
++    let url = validated_open_url(&url)?;
++    open_in_default_browser(&url)
++}
++
++fn validated_open_url(url: &str) -> Result<String, String> {
++    koi_ui::catalog_view::browser_open_url(url)
++        .ok_or_else(|| "only complete HTTP(S) URLs without credentials can be opened".into())
++}
++
++#[cfg(windows)]
++fn open_in_default_browser(url: &str) -> Result<(), String> {
++    use windows_sys::Win32::UI::Shell::ShellExecuteW;
++    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
++
++    let verb: Vec<u16> = "open".encode_utf16().chain(std::iter::once(0)).collect();
++    let target: Vec<u16> = url.encode_utf16().chain(std::iter::once(0)).collect();
++    let result = unsafe {
++        ShellExecuteW(
++            std::ptr::null_mut(),
++            verb.as_ptr(),
++            target.as_ptr(),
++            std::ptr::null(),
++            std::ptr::null(),
++            SW_SHOWNORMAL,
++        )
++    };
++    if result as isize <= 32 {
++        Err(format!(
++            "could not open the validated URL (ShellExecuteW result {})",
++            result as isize
++        ))
++    } else {
++        Ok(())
+     }
+-    Ok(())
++}
++
++#[cfg(target_os = "macos")]
++fn open_in_default_browser(url: &str) -> Result<(), String> {
++    std::process::Command::new("open")
++        .arg(url)
++        .spawn()
++        .map(|_| ())
++        .map_err(|error| format!("could not open the validated URL: {error}"))
++}
++
++#[cfg(target_os = "linux")]
++fn open_in_default_browser(url: &str) -> Result<(), String> {
++    std::process::Command::new("xdg-open")
++        .arg(url)
++        .spawn()
++        .map(|_| ())
++        .map_err(|error| format!("could not open the validated URL: {error}"))
+ }
+ 
+ // ── Trust pane (cycle-1 WP6): the certmesh doors ────────────────────
+@@ -2116,6 +2141,27 @@ mod cycle1_guards {
+         assert!(!super::close_keeps_tray_alive(&AtomicBool::new(false)));
+     }
+ 
++    #[test]
++    fn browser_open_rejects_credentials_commands_and_noncanonical_authorities() {
++        assert_eq!(
++            super::validated_open_url("https://192.0.2.20:8443/status?view=full").unwrap(),
++            "https://192.0.2.20:8443/status?view=full"
++        );
++        for candidate in [
++            "javascript:alert(1)",
++            "http://user@example.invalid/",
++            "http://example.invalid:0/",
++            "http:///missing-host",
++            " http://example.invalid/",
++            "http://example.invalid/\r\ncommand",
++        ] {
++            assert!(
++                super::validated_open_url(candidate).is_err(),
++                "accepted {candidate:?}"
++            );
++        }
++    }
++
+     #[test]
+     fn only_a_successful_poke_response_is_acknowledged() {
+         assert!(super::poke_response_acknowledged(

@@ -10,7 +10,7 @@ use axum::body::Body;
 use axum::extract::{ConnectInfo, Extension};
 use axum::http::{header, HeaderName, Request, StatusCode};
 use axum::middleware::{self, Next};
-use axum::response::{IntoResponse, Json, Response};
+use axum::response::{IntoResponse, Json, Redirect, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use serde::Serialize;
@@ -154,6 +154,11 @@ pub async fn serve(
 
     // ── System endpoints (always mounted) ──
     let mut app = Router::new()
+        .route("/", get(|| async { Redirect::temporary(crate::ui::LOGIN) }))
+        .route(
+            "/mdns-browser",
+            get(|| async { Redirect::temporary("/ui?tab=mdns") }),
+        )
         .route(paths::HEALTHZ, get(health))
         .route(paths::UNIFIED_STATUS, get(unified_status_handler))
         .route(paths::INVENTORY, get(inventory_handler))
@@ -162,7 +167,11 @@ pub async fn serve(
         .route(paths::MCP_SERVER_CARD, get(mcp_server_card_handler));
     app = app.merge(crate::catalog::routes(Arc::clone(&cores.catalog)));
     if auth.is_some() {
-        app = app.merge(crate::ui::routes(Arc::clone(&cores.catalog)));
+        app = app.merge(crate::ui::routes(
+            Arc::clone(&cores.system_status),
+            cores.preferences.is_some(),
+            browser_state.clone(),
+        ));
     }
     if let Some(preferences) = &cores.preferences {
         app = app.merge(crate::preferences::routes(
@@ -177,15 +186,14 @@ pub async fn serve(
         app = app.route(paths::SHUTDOWN, post(shutdown_handler));
     }
 
-    // ── Operator surface + dashboard. Pond's public read model never merges here;
-    // only its DAT-gated intent and fixed-bundle publish doors do. ──
+    // ── Operator surface and retained snapshot/event APIs. `/ui` is the one
+    // human-facing presentation. ──
     let pond_enabled = pond.is_some();
     if let Some(runtime) = pond {
         app = app.merge(crate::pond::operator_routes(runtime));
     }
     if dashboard_state.is_some() {
         app = app
-            .route("/", get(koi_dashboard::dashboard::get_dashboard))
             .route(
                 paths::DASHBOARD_SNAPSHOT,
                 get(koi_dashboard::dashboard::get_snapshot),
@@ -199,11 +207,9 @@ pub async fn serve(
     // ── Unified event stream (wishlist 1.1/1.2 — always mounted, 503 when no dashboard) ──
     app = app.route(paths::EVENTS, get(events_handler));
 
-    // ── mDNS browser (conditional on mDNS being enabled) ──
+    // ── mDNS browse data (conditional on mDNS being enabled) ──
     if let Some(bs) = browser_state {
-        app = app
-            .route("/mdns-browser", get(koi_dashboard::browser::get_page))
-            .nest("/v1/mdns/browser", koi_dashboard::browser::routes(bs));
+        app = app.nest("/v1/mdns/browser", koi_dashboard::browser::routes(bs));
     } else {
         app = app.nest("/v1/mdns/browser", disabled_fallback_router("mdns-browser"));
     }
@@ -463,6 +469,11 @@ struct NetworkInterface {
     name: String,
     /// IPv4 or IPv6 address.
     ip: String,
+    /// CIDR prefix length of the interface's subnet (e.g. 24).
+    prefix_len: u8,
+    /// Subnet-directed broadcast address (e.g. "192.168.1.255"); absent for /31 and /32.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    broadcast: Option<String>,
 }
 
 // ── System-level OpenAPI doc ─────────────────────────────────────────
@@ -718,7 +729,8 @@ pub(crate) async fn dat_auth_middleware(
     // returning a static document, so it must carry the token on every request.
     let is_events_stream = path == paths::EVENTS;
     let is_catalog_events = path == paths::CATALOG_EVENTS;
-    let is_operator_html = path == crate::ui::SHELL;
+    let is_operator_html =
+        path == crate::ui::SHELL || path == "/v1/ui/state" || path.starts_with("/v1/mdns/browser/");
     let is_preferences = path == paths::PREFERENCES || path.starts_with("/v1/preferences/");
     // Pond desire is operator state. Even its GET is intentionally absent from
     // the broad read exemption; the public projection lives on Pond's own router.
@@ -910,6 +922,8 @@ fn default_lan_interfaces() -> std::io::Result<Vec<NetworkInterface>> {
         .map(|interface| NetworkInterface {
             name: interface.name,
             ip: interface.address.to_string(),
+            prefix_len: interface.prefix_len,
+            broadcast: interface.broadcast.map(|broadcast| broadcast.to_string()),
         })
         .collect())
 }
@@ -1804,7 +1818,10 @@ mod tests {
         );
         assert!(paths.contains(&"/v1/host"), "missing /v1/host: {paths:?}");
         assert!(paths.contains(&"/v1/pond"), "missing /v1/pond: {paths:?}");
-        assert!(paths.contains(&"/v1/ui"), "missing /v1/ui: {paths:?}");
+        assert!(
+            !paths.contains(&"/v1/ui"),
+            "retired Pond bundle publication must not return: {paths:?}"
+        );
         // MCP is JSON-RPC over Streamable HTTP, not a utoipa surface — like ACME it
         // is deliberately excluded from /openapi.json.
         assert!(

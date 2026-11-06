@@ -1,35 +1,17 @@
 # koi-crypto
 
-[![Crates.io](https://img.shields.io/crates/v/koi-crypto.svg)](https://crates.io/crates/koi-crypto)
-[![Docs.rs](https://docs.rs/koi-crypto/badge.svg)](https://docs.rs/koi-crypto)
-[![License](https://img.shields.io/crates/l/koi-crypto.svg)](https://github.com/sylin-org/koi#license)
+Cryptographic primitives for Koi: P-256 keys/signatures, authenticated encryption, key agreement, pinning, TOTP, envelope unlock slots and platform credential storage.
 
-Key management, TOTP, signing, and encryption primitives for local network trust.
+CA authorization and enrollment policy belong to `koi-certmesh`. Cryptographic helpers do not establish an independent identity or permission policy. Optional `keyring` and `qr` features control platform-secret and QR dependencies.
 
-## Overview
+## Development
 
-`koi-crypto` provides the cryptographic building blocks used by Koi's
-certificate mesh. It includes ECDSA P-256 key generation and signing, TOTP
-secret management with QR code generation, AES-256-GCM envelope encryption
-with Argon2id key derivation, X25519 key agreement for CA key transfer, and
-platform credential store integration (macOS Keychain, Windows Credential
-Manager, Linux Secret Service).
+Read [architecture](../../docs/reference/architecture.md) for ownership boundaries and [launch readiness](../../docs/launch/README.md) for the supported-versus-tested journey matrix. This README describes repository source; it does not assert package publication or physical acceptance.
 
-## Features
+```sh
+cargo test -p koi-crypto --locked
+```
 
-- ECDSA P-256 key pair generation, signing, and verification
-- TOTP secret creation and validation with QR code rendering
-- AES-256-GCM authenticated encryption
-- Argon2id passphrase-based key derivation
-- X25519 Diffie-Hellman key agreement
-- Platform credential store abstraction (keyring)
+Platform-dependent tests can require explicit facilities or remain ignored in ordinary runs. See [validation](../../docs/qa/validation-suite.md) before interpreting a green result.
 
-## Part of Koi
-
-This crate is part of the [Koi](https://github.com/sylin-org/koi) workspace.
-See the main repository for architecture details.
-
-## License
-
-Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
-[MIT License](LICENSE-MIT) at your option.
+Licensed under Apache-2.0 OR MIT; see the workspace license files.

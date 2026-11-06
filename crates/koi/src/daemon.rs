@@ -92,7 +92,6 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
             dat_token: dat_token.clone(),
             webhooks: webhook_sinks,
             no_mgmt_mcp: config.no_mgmt_mcp,
-            ui_dir: Some(config.data_dir.join("ui")),
         },
         &cancel,
     )
@@ -157,7 +156,7 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
         let lan_name = format!("{}.{zone}", host.hostname());
         let dashboard = serving.local_endpoint.as_ref().map_or_else(
             || "disabled (--no-http)".to_string(),
-            |endpoint| format!("{endpoint}/v1/dashboard"),
+            |endpoint| format!("{endpoint}/ui"),
         );
         let next = if config.no_certmesh {
             "koi status"

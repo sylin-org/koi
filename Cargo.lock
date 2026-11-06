@@ -2656,10 +2656,14 @@ name = "koi-ui"
 version = "1.0.0-dev.0"
 dependencies = [
  "base64",
+ "koi-certmesh",
  "koi-common",
+ "koi-dns",
  "maud",
  "scraper",
+ "serde",
  "serde_json",
+ "url",
 ]
 
 [[package]]

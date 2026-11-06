@@ -12,6 +12,7 @@ pub mod http;
 pub mod id;
 pub mod integration;
 pub mod local_control;
+pub mod mdns_browser;
 pub mod mdns_protocol;
 pub mod net;
 pub mod paths;

@@ -1,98 +1,31 @@
-# Envelope Encryption
+# CA key storage and unlock slots
 
-CA private keys use envelope encryption, inspired by LUKS. A random 256-bit master key encrypts the CA private key via AES-256-GCM. Each unlock slot independently wraps that master key. Any single slot can unlock the CA.
+Certmesh encrypts the CA private key with a random 256-bit master key using AES-256-GCM. Unlock slots independently wrap or locate that master key. This protects stored CA material according to the selected unlock method; it does not protect an already-unlocked authority from a hostile operator process.
 
----
+## Stored artifacts
 
-## File layout
+The CA directory contains `ca-key.enc`, public `ca-cert.pem` and `unlock-slots.json`. Identity changes are coordinated through Certmesh's journaled repository; do not manually replace a subset of these files during recovery.
 
-```
-{ca_dir}/
-├── ca-key.enc          # Master-key-encrypted CA private key
-├── ca-cert.pem         # CA certificate (public)
-└── unlock-slots.json   # Slot table with per-slot wrapped master key
-```
+| Slot | Mechanism | Boundary |
+| --- | --- | --- |
+| Passphrase | Argon2id-derived key wraps the master key with AES-256-GCM | Passphrase is required to unwrap |
+| AutoUnlock | Marker for a separately managed local master-key file | Unattended startup depends on host/file security |
+| Totp | HKDF of the TOTP secret wraps the master key | Secret protected by platform credential storage or machine-derived fallback |
 
----
+New TOTP slots do not write the legacy plaintext `shared_secret_hex` field. Supported reading of that legacy field is a compatibility behavior, not a recommended storage format. FIDO2 is not an implemented unlock method.
 
-## Slot types
+## Version and cleanup semantics
 
-| Slot type | Key derivation | Use case |
-|---|---|---|
-| `Passphrase` | Argon2id → KEK → AES-256-GCM wrap | Primary unlock (always present) |
-| `AutoUnlock` | Master key in separate local file (marker slot) | Unattended boot for single-user profiles |
-| `Totp` | HKDF(shared_secret) → KEK → AES-256-GCM wrap | TOTP-based unlock (6-digit code) |
+The slot table carries an explicit version and an ordered list of typed slots. Its optional `pending_totp_credentials` stores exact credential ownership that still needs cleanup after an interrupted change; it is not an enumeration of the platform credential store.
 
-`Passphrase`, `AutoUnlock`, and `Totp` are the shipped slot types. The
-`AuthAdapter` trait (`koi-crypto/src/auth.rs`) is the extension point for adding
-further unlock methods (e.g. FIDO2) without changing the slot format — but no such
-method ships today; FIDO2 unlock is not yet implemented.
+Version 2 derives a stable credential label from each TOTP slot's random wrapped ciphertext, keeping isolated data roots from overwriting one another's secret. Add/replacement/removal/destruction retain durable ownership until idempotent cleanup succeeds. Version 1 remains readable with its legacy labels and transitions when the TOTP slot is replaced. A load reconciles interrupted slot transactions before returning usable state.
 
----
+A preceding single-passphrase key can migrate through `migrate_to_envelope()`: decrypt with the passphrase, generate a master key, re-encrypt the CA material and persist a passphrase slot. A migration requires access to the actual old key; it is not a reason to reset unknown or corrupt state.
 
-## Slot table schema
+## Operations and policy
 
-```json
-{
-  "version": 2,
-  "slots": [
-    {
-      "type": "passphrase",
-      "wrapped_master_key": {
-        "ciphertext": "base64...",
-        "nonce": "base64...",
-        "salt": "base64..."
-      }
-    },
-    { "type": "auto_unlock" },
-    {
-      "type": "totp",
-      "shared_secret_hex": "...",
-      "wrapped_master_key": {
-        "ciphertext": "base64...",
-        "nonce": "base64..."
-      }
-    }
-  ],
-  "pending_totp_credentials": []
-}
-```
+The source exposes passphrase unwrap, auto-unlock toggles, transactional TOTP-slot addition/removal and available-method inspection. Operators normally use the guided Certmesh commands instead of editing these structures. Backup/restore and machine-binding policy are covered by [recovery](../guides/certmesh-ha-recovery.md).
 
-`pending_totp_credentials` is normally omitted. During a TOTP-slot transaction it
-durably records only Koi-derived credential identifiers that must be retired. A
-load reconciles an interrupted transaction before returning the table.
+CA and member certificates use ECDSA P-256. New meshes default to a 7-day leaf, renewal at 3 days remaining and a 1-day post-expiry renewal grace. Existing meshes retain their stored policy. Koi's renewal protocol can provide its defined grace behavior; ordinary TLS verification still evaluates the actual certificate validity period. A host identity does not automatically authorize arbitrary service SANs.
 
----
-
-## Operations
-
-| Operation | Description |
-|---|---|
-| `new_with_passphrase(master_key, passphrase)` | Bootstrap with slot 0 |
-| `unwrap_with_passphrase(passphrase)` | Derive KEK, unwrap master key |
-| `add_auto_unlock()` / `remove_auto_unlock()` | Toggle unattended boot |
-| `add_totp_slot(path, master_key, secret)` | Transactionally add or replace a TOTP slot and persist its credential ownership |
-| `remove_totp_slot(path)` | Transactionally remove a TOTP slot and retire its exact platform labels |
-| `unwrap_with_totp(code)` | Unlock via TOTP code |
-| `available_methods()` | List active slot types |
-
----
-
-## Migration
-
-A single-passphrase key is transparently upgraded to the envelope format on first load via `migrate_to_envelope()`: it decrypts with the passphrase, generates a fresh master key, re-encrypts under that master key, and writes a slot table with a passphrase slot.
-
-Version 2 derives a stable platform-credential label from each TOTP slot's random wrapped ciphertext. This keeps isolated Koi data roots from overwriting one another's TOTP secret. Add, replacement, removal, interrupted persistence, and certmesh destruction retain an exact durable ownership record until idempotent cleanup succeeds; no credential-store enumeration is used. Version 1 tables remain readable through their legacy machine-global labels and move to version 2 when their TOTP slot is replaced.
-
----
-
-## Certificate details
-
-| Property | Value |
-|---|---|
-| Algorithm | ECDSA P-256 (CA and member certs) |
-| CA validity | 10 years |
-| Member validity | 90-day leaf; pull-renewed at 30 days remaining, 14-day post-expiry grace |
-| SANs | Hostname, hostname.{zone}, custom entries |
-
-Implementation lives in `koi-crypto/src/keys.rs` (key generation), `koi-crypto/src/unlock_slots.rs` (slot management), and `koi-certmesh/src/ca.rs` (CA operations).
+Implementation: [unlock_slots.rs](../../crates/koi-crypto/src/unlock_slots.rs), [keys.rs](../../crates/koi-crypto/src/keys.rs), [CA operations](../../crates/koi-certmesh/src/ca.rs), [transaction repository](../../crates/koi-certmesh/src/repository.rs).

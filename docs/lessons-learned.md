@@ -1,257 +1,55 @@
-# Lessons Learned
+# Operating rules
 
-Field-tested rules from Koi's release and lab work. Each entry: what happened → the
-rule that now governs. When a new lesson contradicts an old one, both stay and the
-newer wins with its evidence.
+These rules govern reproducible source, release and native work. The current
+[epic](../fleet/epics/004-container-lan-adoption.md) defines which cases are in
+scope; these rules do not add an independent whole-platform campaign.
 
----
+## Release identity
 
-## Release engineering
+- RL-1: Validate a clean checkout, including every public fixture and generated
+  release input. Local ignored files must not be required to make CI pass.
+- RL-2: Registry versions and tags are immutable identities. Check actual
+  registries, choose a fresh version, and never repoint a used version.
+- RL-3: A negative lookup needs a complete or correctly filtered listing,
+  not a truncated sample.
+- RL-10: The exact candidate's hosted dry run is a release gate.
+- RL-11: Recheck written premises against source, artifact and registry state
+  before resuming. The launch ledger is the single progress authority.
 
-### RL-1 — Global ignore rules silently drop release content (2026-08-24)
+## Native execution
 
-The SDK CSR fixture (`sdk-csr-fixture.pem`) was excluded by the global `*.pem`
-anti-secret ignore rule. It compiled locally, so every local gate passed; CI's
-checkout lacked it and the hosted dry run failed at `include_str!` **before tagging**.
+- RL-4: Pin the interpreter in remote transport; do not assume or change a
+  user's login shell to make a script work.
+- RL-5: Stage complex scripts and structured payloads as files. Avoid nested
+  cross-shell quoting and command interpolation.
+- RL-6: Pass resolved paths and operator identity explicitly through elevation.
+  Do not assume that elevated environment variables describe the desktop user.
+- RL-7: Measure OS/kernel bind and provider behavior on the claimed platform.
+  API presence alone is not proof of a usable operation.
+- RL-8: Record relevant host constraints, pre-existing services and privilege
+  posture as evidence. Apply the fleet's weak-host capacity limits.
+- RL-12: Installed acceptance uses the actual product installer and intended
+  service/data path. Temporary scaffolding cannot certify install or reboot behavior.
+- RL-13: Resolve credentials by the target's catalog reference. Never print
+  credentials to diagnose routing or reuse another machine's secret variable.
+- RL-14: Normalize platform paths for the external tool receiving them and
+  capture both output streams when that tool fails.
+- RL-15: Stop only owner-verified run processes or the declared service.
+  Do not use broad process-name patterns that can kill a transport or unrelated work.
+- RL-19: Build artifacts from the claimed source, assert structured live
+  capability state and keep resource ownership explicit. Revalidate affected
+  paths after changes; do not rerun unrelated matrices without a reason.
 
-**Rules:** (a) never tag without a green `workflow_dispatch` dry run on the exact
-commit — it validates the checkout, not your workstation; (b) when a commit's tree
-differs from your working tree for *non-secret* reasons, use a targeted `.gitignore`
-negation (`!crates/koi-certmesh/tests/fixtures/*.pem`) rather than force-add, so the
-intent is reviewable.
+## Evidence and recovery
 
-### RL-2 — Registry versions are immutable; supersede, never repoint (2026-08-24)
+- RL-9: Capture diagnostics even when a harness fails before producing a report.
+- RL-16: Negative cases assert exit status and output together. Expected refusal
+  is evidence, not an automatic harness abort.
+- RL-17: Preconditions fail with named reasons. After an interrupted run, verify
+  cleanup and acquire a fresh owned run before retrying.
+- RL-18: Reproduce fixes through the actual shipped/fixture path. A successful
+  hand-written probe does not prove the application's configured URL or transport.
 
-The July session pushed tag `v1.0.0-rc.1`, which published crates.io `1.0.0-rc.1`,
-a GHCR image, and a GitHub prerelease. Re-pointing the same version at newer code
-would have created divergent crates↔GitHub supply chains.
-
-**Rule:** before preparing any version, check registry state
-(`crates.io/api/v1/crates/<name>`, `gh release list`, full `git ls-remote --tags`
-— untruncated). If burned, bump to the next rc and supersede; delete stale
-prereleases only with their tags, and record the deletion.
-
-### RL-3 — Truncated listings are false negatives (2026-08-24)
-
-`git ls-remote --tags | Select-Object -First 5` showed only v0.x tags and hid the
-existing `v1.0.0-rc.1`. The mistake surfaced two steps later as a rejected push.
-
-**Rule:** filter remotely (`| grep`), never truncate locally. A "not found" is only
-true if the untruncated list says so.
-
-## Distributed testing
-
-### RL-4 — Transports pin the interpreter; accounts keep their shells (2026-08-24)
-
-test-01's login shell is fish. Every POSIX loop sent through plink died with exit
-127 ("Missing end to balance this for loop") before reaching any real command.
-
-**Rule:** the harness wraps all remote commands in `sh -c '…'` (implemented in
-`PuttyTransport::run`). Never assume the login shell, and never ask operators to
-change it for the lab.
-
-### RL-5 — Complex payloads cross shells as files, not quoted strings (2026-08-24)
-
-Inline quoting PowerShell → plink → fish/sh mangled arguments repeatedly (merged
-argv, eaten `$`, split words). The reliable primitive everywhere was: stage a file
-(`pscp`), execute `sh <file>`, pass data inside files (invite codes, JSON bodies).
-
-**Rule:** if a remote invocation contains quotes-within-quotes, it is wrong. Write
-the script, ship the script. This matches koi-lab's own scenario pattern; manual
-operations must follow it too.
-
-### RL-6 — sudo rewires the environment; explicit paths or bust (2026-08-24)
-
-`sudo systemd-run … $HOME/koi-dogfood/koi` resolved `$HOME=/root` and the unit died
-with status 127; the root-owned daemon's breadcrumb then became unreadable to the
-unprivileged CLI.
-
-**Rule:** scripts that may run under sudo take the dogfood root as an explicit
-argument. Within one host, pick one ownership domain (root here) for daemon +
-state + CLI operations and stay inside it; document the choice.
-
-### RL-7 — Kernel bind semantics are empirical, not doctrinal (2026-08-24)
-
-ADR-030's detection premise — "a no-reuse probe fails against a SO_REUSEADDR
-holder" — held locally and failed on Ubuntu 24's kernel (mixed binds permitted).
-The unit test asserting it broke CI.
-
-**Rules:** (a) network-semantics assumptions get measured on target kernels before
-they enter portable tests; assert only deterministic facts; (b) when measurement
-contradicts design, amend the ADR with the measured reality (ADR-030 "Measured
-limitation") and move the open verdict to physical validation — which is exactly
-what the four-host lab exists for.
-
-### RL-8 — Workstations are the best test instruments (2026-08-24)
-
-The "messy" machines found what pristine CI cannot: avahi holding 5353 produced the
-adaptive-mDNS product decision (ADR-030), fish produced transport pinning (RL-4),
-missing sudo produced honest per-machine mutation grants. None of these surface on
-two identical Debian boxes.
-
-**Rule:** every distinct host class (distro, shell family, privilege posture,
-pre-existing services) is treated as a coverage axis in the catalog, and preflight
-records each machine's constraints as first-class evidence.
-
-### RL-9 — Pre-report failures without captured output are instrumentation defects (D15, restated)
-
-Two transient scenario failures went undiagnosed because an operator loop discarded
-stderr. Reruns passed; the cause remains unknown forever.
-
-**Rule:** standalone scenario invocations always retain stderr. A failure you cannot
-reconstruct is a hole in the harness, not noise.
-
-## Process
-
-### RL-10 — The dry run is the gate, not a formality
-
-Two consecutive dry runs found (RL-1) a release-blocking missing file and (RL-2's
-cousin) confirmed registry/version identity before anything irreversible ran. Total
-cost: two ~10-minute workflow runs. The alternative costs are tagging broken trees
-into immutable registries.
-
-### RL-11 — Ledger drift is found by re-reading against the tree
-
-The handoff once said "V1-08 not implemented" while protocol groundwork already sat
-uncommitted in the tree; later, "rc.1 will be re-prepped" turned out to require
-"rc.2" because July had published rc.1. Both were caught by checking claims against
-reality (tree state, registries) rather than trusting prose.
-
-**Rule:** every resume step begins by re-verifying its written premises. Update the
-ledger in the same breath as the discovery, not at session end.
-
-## Product soak
-
-### RL-12 — Test machines run the real installer; transient scaffolding lies (2026-08-24)
-
-The standing mesh bootstrapped daemons with hand-rolled transient units and a
-setsid user process. The result soaked fine for hours and then failed the first
-honest question — "why doesn't it survive reboot?" — because what it soaked was
-not the product users get. Operator verdict: *"there should be no transient
-install. Everything on the TEST machines must be real."*
-
-**Rules:** (a) long-running soak evidence must come from `koi install`'s own
-output — enabled unit, default data root, default binds — with deviations (like a
-CA's LAN-expose drop-in) explicit, minimal, and reversible; (b) when a soak setup
-script exists only because the real path is inconvenient, that inconvenience IS
-the finding.
-
-### RL-13 — Per-machine credentials fail loudly, wrong-variable credentials fail confusingly (2026-08-24)
-
-A session repeatedly sent brook's password to test-01 (wrong variable from a
-shared helper). Each failure looked like something else: rate limiting, PAM
-lockout, "the password changed". Two operator reboots were spent chasing phantoms
-before the diff (`-pw 'test'` vs `-pw $pw`) surfaced.
-
-**Rules:** (a) per-machine credentials go through the catalog's `password_env`,
-never through a shared variable reused across hosts; (b) before theorizing about
-bans or lockouts, diff the exact bytes you sent — auth infrastructure is rarely
-wrong, credential plumbing often is; (c) when one host's credential differs,
-prove which one you are sending *first*.
-
-## Physical-run findings
-
-### RL-14 — `canonicalize()` hands out `\\?\` paths; external tools reject them (2026-08-25)
-
-W4's first physical run added firewall rules with
-`program=\\?\F:\...\koi.exe` because `Lab::load` canonicalizes the repo root and
-Rust's `std::fs::canonicalize` prefixes Windows paths with `\\?\`. netsh refused
-the rule ("The parameter is incorrect.") **on stdout**, so the scenario's
-stderr-only error surfaced as an empty message. Three direct pwsh repros passed,
-which is what isolated the argv from the path.
-
-**Rules:** (a) paths crossing a process boundary into non-Rust tools get the
-extended-length prefix stripped first (see `netsh_program_path`); (b) when an
-external tool fails, capture BOTH streams in the error — netsh reports parameter
-errors on stdout, so a stderr-only message diagnoses nothing.
-
-### RL-15 — A remote kill pattern must not match its own transport wrapper (2026-08-25)
-
-W4's revocation step ran `pkill -f '{run_dir}/koi --daemon'` over the lab
-transport, which wraps every command as `sh -c '<command>'`. The shell's own
-argv contained the pattern, so pkill killed its own session: empty output,
-mysterious exit 128, no stderr. The pid-file-based, owner-checked
-`stop_run_daemon` primitive exists precisely to avoid this.
-
-**Rules:** (a) never inline process-kill patterns into transported commands;
-use the run-owned pid file primitives (`stop_run_daemon`, preserve-state
-`restart_run_daemon`) — they are owner-checked AND wrapper-safe; (b) a restart
-of a daemon whose data dir already exists needs the preserve-state variant;
-fresh-start prepare refuses by design.
-
-### RL-16 — Fail-loud CLI exit codes are evidence, not errors, when RED is expected (2026-08-25)
-
-`koi trust diagnose` exits non-zero on a RED diagnosis and refusal reasons land
-on stderr with a non-zero exit. W4's checks *expected* both, but used
-fail-on-nonzero plumbing — so the expected results aborted the scenario. Fixed
-by judging captured stdout/stderr (`remote_output`) instead of exit-status-only
-helpers.
-
-**Rule:** for any step whose negative outcome is the assertion, use raw-output
-capture and assert on content + status together; reserve `run_checked` for
-steps that must succeed.
-
-### RL-17 — Transported precondition checks must fail loud; a bare `test` under `set -eu` is a silent kill (2026-08-27)
-
-`launch_run_daemon`'s fresh-start guards (lock owner, run owner, no stale
-`daemon.pid`, free guarded ports, no stale `data`/`runtime`) were bare `test`s
-under `set -eu`. Any refusal exited 1 with empty stderr, and the transport
-error arrived as "remote command failed on brook (exit 1):" with nothing after
-the colon — un-diagnosable once cleanup had swept the run dir. W12's first
-physical run died exactly this way (stale run state left by an earlier aborted
-attempt) and cost a full diagnosis cycle. Fixed: every guard now routes
-through an inline `guard()` that prints a self-describing refusal to stderr
-and exits 71.
-
-**Rules:** (a) in transported scripts, no bare precondition `test`s — route
-refusals through a labeled echo + distinct exit code so the retained error
-IS the evidence (extends RL-16 to the must-succeed direction); (b) after any
-partial/aborted lab attempt, run the full lab `cleanup` and re-`deploy` with a
-FRESH run id before retrying — a reused run id inherits the previous attempt's
-run-scoped state (stale `data`/`runtime` are exactly what fresh-start guards
-refuse); (c) cleanup removes run-owned evidence, so the error message must
-carry it (see (a)) — never rely on post-mortem inspection of a swept run dir.
-
-### RL-18 — A hand-run probe validates the probe's URL, not the wired one (2026-08-27)
-
-W12's ACME defects were diagnosed with hand-written probe scripts, which dialed
-the correct full directory URL (`https://host:port/acme/directory`). The
-scenario's own wired string was `https://host:port` — no path — so instant-acme
-GET `/` and parsed an empty body. Every earlier run died before `newAccount`
-(provider panic, then a silent guard), and the probes passed, so the wrong
-string was never exercised until the fifth physical attempt. Same family: the
-cross-host dig wired the member's own catalog dns_port where the server's lane
-port was required — two port namespaces, one copy-paste.
-
-**Rules:** (a) a manual probe may localize a defect, but the fix is only
-proven when the SCENARIO's actual code path performs the same exchange — keep
-probe and wired shapes identical or assert the wired string against what the
-probe validated; (b) when a node's port appears in a URI aimed at a DIFFERENT
-node, stop and re-derive it — ports are per-node namespaces, not interchangeable
-integers.
-
-### RL-19 — The mesh is a living environment; lanes assert capability state, and artifacts follow the tree (2026-08-28)
-
-The first extended-full-profile shakedown failed seven times at seven different
-points, and none was a product defect. The classes: (1) the real-install cutover
-gave every node a standing koi daemon that watches the same Docker socket as the
-run daemons — two daemons deriving the same labeled services race for derived
-ports (fixed by `koi.scope` scoping + lane-level service isolation); (2)
-systemd-resolved holds 5353 on Debian 13, so run daemons legitimately skip mDNS
-and, transitively, IPC (fixed by capability-aware assertions + ADR-035 declared
-skips); (3) machine trust stores settle asynchronously after a root import, so
-the first Schannel handshake can lose a race (fixed by settle-retries); (4) a
-workstation rebooted mid-profile; (5) product changes after the last artifact
-build left the staged binaries stale (fixed by rebuilding both artifacts before
-the run).
-
-**Rules:** (a) rebuild BOTH artifacts (musl via cross, Windows release via
-`cargo build --release -p koi-net`) after ANY product change, before any
-profile/lane run; (b) lanes assert capability state via `/v1/status` (ADR-035
-ladder, with skip reasons), never socket-file presence — a topology change is a
-different designed state, not a failure; (c) lanes that need exclusive runtime
-watching stop the standing service themselves (systemd-granted nodes) and
-restore it in their own cleanup — isolation lives inside the transaction; (d)
-baselines compare service definitions, never pids/start-times — a healthy
-restart is not drift; (e) environment configuration on dedicated lab boxes
-(e.g. disabling resolved's mDNS) is legitimate and must be recorded.
+Use [proof receipts](launch/proof.md) and the [fleet protocol](../fleet/PROTOCOL.md).
+Preserve durable settings and identity material, retain restoration ownership,
+and never claim native acceptance from an unobserved or mocked result.

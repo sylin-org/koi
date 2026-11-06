@@ -1,14 +1,12 @@
-﻿# Health - Endpoint Monitoring
+# Check application readiness and transitions
 
-Monitoring is observability's simplest form: is the service up, or not? Before you invest in metrics pipelines, distributed tracing, and log aggregation, you need to answer this one question for each service on your network. Koi's health capability gives you that answer with minimal setup.
+Koi's HTTP and TCP checks observe an endpoint from the daemon host. An HTTP
+readiness endpoint can check a web app; a TCP connection only establishes
+transport reachability. Neither proves a second client's DNS, routing or trust.
 
-The design philosophy is intentionally narrow. Koi doesn't try to replace Prometheus or Datadog - it handles the "is it reachable?" layer so you can see at a glance which services are healthy without deploying a full observability stack. For a homelab or a small team environment, this is often all you need.
-
-**When to use health checks**: You have services running on your LAN and you want to know immediately when one goes down. You want a live terminal dashboard showing service state. You want transition history - not just whether something is down _now_, but when it went down and when it came back.
-
-All CLI commands use the `koi health` prefix. All HTTP endpoints live under `/v1/health/`. By default, commands use the one installed Koi service (or an explicit `--endpoint`). An intentional local-only session requires `--standalone`, and Koi refuses it while a local service may already own the same state.
-
----
+For the [container trial](../../CONTAINERS.md), inspect results after startup,
+stop and recreation, then verify the app independently. Checks do not replace
+an artifact's [accepted journey](../launch/README.md).
 
 ## Two check types
 
@@ -40,7 +38,8 @@ See the current state:
 koi health status
 ```
 
-That's it. Three lines to register, one to inspect. Koi starts polling immediately.
+Inspect the observed result and timestamp, then test the application from the
+second machine.
 
 ---
 
@@ -76,7 +75,9 @@ Every time a check changes state - healthy to unhealthy, or back - Koi logs the 
 koi health log
 ```
 
-This is your incident timeline. The command reads the running daemon's domain-owned history; `koi --standalone health log` explicitly opens an isolated Health aggregate only after proving that no local service owns it. When you come back Monday morning and a service is down, the log tells you exactly when it went unhealthy and whether it's been flapping. The distinction between "went down once at 3 AM Saturday" and "has been bouncing every 20 minutes since Friday" changes how you respond.
+History records this daemon's observations. Preserve check location and time
+when comparing it with a client report. The application can be reachable from one
+machine and blocked from another.
 
 ---
 
@@ -103,7 +104,8 @@ Each machine carries:
 - `cert_expiring` - the member's certmesh certificate expires within 7 days
 - `cert_expired` - the certificate has already lapsed
 
-A machine that has gone stale shows up as a `down` (or `unknown`) status rather than a warning, so scan the status column for "is it reachable?" and the warnings for "is its trust about to break?".
+A machine that has gone stale shows up as a `down` (or `unknown`) status rather than a warning, so treat these as presence and certificate metadata. A machine row is not a
+connection test from the intended client.
 
 ---
 

@@ -1,276 +1,84 @@
-# CLI Reference
+# CLI reference
 
-Binary: `koi` (installed as `koi-net` from crates.io)
+The binary is `koi`; its Cargo package is `koi-net`. Bare `koi` shows live status and the command catalog. `koi <domain>` and `koi --help` expose command help. Exact flags come from [cli.rs](../../crates/koi/src/cli.rs) for the running source/version.
 
-Global flags work with any subcommand:
+## Execution modes
 
-| Flag              | Env var           | Default          | Description                        |
-| ----------------- | ----------------- | ---------------- | ---------------------------------- |
-| `--json`          | -                 | off              | JSON output (NDJSON for streaming) |
-| `--timeout SECS`  | -                 | varies           | Auto-exit (0 = run forever)        |
-| `--endpoint URL`  | -                 | auto-detect      | Connect to specific daemon         |
-| `--token TOKEN`   | `KOI_TOKEN`       | -                | Auth token for an explicit `--endpoint` |
-| `--standalone`    | -                 | off              | Skip daemon detection              |
-| `--yes`           | -                 | off              | Skip confirmation prompts for destructive commands |
-| `-v`, `-vv`       | -                 | off              | Increase verbosity (debug, trace)  |
-| `--log-file PATH` | `KOI_LOG_FILE`    | -                | Write logs to file                 |
-| `--port PORT`     | `KOI_PORT`        | `5641`           | HTTP API port                      |
-| `--http-bind`     | `KOI_HTTP_BIND`   | `loopback`       | HTTP bind: loopback / bridge / `<ip>` / 0.0.0.0 |
-| `--announce-http` | `KOI_ANNOUNCE_HTTP` | false          | Announce the HTTP server via mDNS (`_http._tcp`) |
-| `--mtls-port`     | `KOI_MTLS_PORT`   | `5642`           | mTLS port for certmesh inter-node traffic |
-| `--pipe PATH`     | `KOI_PIPE`        | platform default | IPC socket/pipe path               |
-| `--log-level`     | `KOI_LOG`         | `info`           | Log level                          |
-| `--no-http`       | `KOI_NO_HTTP`     | false            | Disable HTTP adapter               |
-| `--no-ipc`        | `KOI_NO_IPC`      | false            | Disable IPC adapter                |
-| `--no-mdns`       | `KOI_NO_MDNS`     | false            | Disable mDNS                       |
-| `--no-certmesh`   | `KOI_NO_CERTMESH` | false            | Disable certmesh                   |
-| `--no-dns`        | `KOI_NO_DNS`      | false            | Disable DNS                        |
-| `--no-health`     | `KOI_NO_HEALTH`   | false            | Disable health                     |
-| `--no-proxy`      | `KOI_NO_PROXY`    | false            | Disable proxy                      |
-| `--no-udp`        | `KOI_NO_UDP`      | false            | Disable UDP bridging               |
-| `--no-runtime`    | `KOI_NO_RUNTIME`  | false            | Disable runtime adapter            |
-| `--no-mcp-http`   | `KOI_NO_MCP_HTTP` | false            | Disable the in-process MCP HTTP transport (`/v1/mcp`) |
-| `--runtime KIND`  | `KOI_RUNTIME`     | `auto`           | Runtime backend (docker/podman/auto) |
-| `--dns-port`      | `KOI_DNS_PORT`    | `53`             | DNS server port                    |
-| `--dns-zone`      | `KOI_DNS_ZONE`    | `internal`       | Local DNS zone                     |
-| `--dns-public`    | `KOI_DNS_PUBLIC`  | false            | Allow non-private DNS clients      |
-| `--dns-qps`       | `KOI_DNS_QPS`     | `200`            | Max DNS queries/sec per client IP (rate-limited → REFUSED) |
+| Command/option | Meaning |
+| --- | --- |
+| `koi --daemon` | Run the host daemon in the foreground |
+| `koi install` | Install/start through the platform service workflow; elevation/operator selection can be required |
+| `koi status` | Read the selected daemon's accepted state |
+| `--endpoint URL --token TOKEN` | Select and authenticate an explicit daemon |
+| `--standalone` | Intentional one-shot local composition when no local service is active |
+| `--json` | Machine-readable output; streams use their documented framing |
 
----
+Normal commands use the healthy local service. An explicit remote endpoint does not inherit the local token. `--standalone` is not a parallel-daemon workaround for a broken installed service.
 
-## Service discovery (mDNS)
+## Container/LAN workflow
 
-```
-koi mdns discover [TYPE]                          # browse for services (5s default)
-koi mdns announce NAME TYPE PORT [KEY=VALUE ...]  # advertise a service
-koi mdns unregister ID                            # stop advertising
-koi mdns resolve INSTANCE                         # look up a specific instance
-koi mdns subscribe TYPE                           # stream lifecycle events
+Configure runtime observation with `--runtime auto|docker|podman` (environment `KOI_RUNTIME`). Runtime labels opt in the application and select metadata; use the [runtime guide](../guides/runtime.md) for the complete fixture. Verify the published application from a second device, then stop/recreate it. The current scenario matrix is in [launch readiness](../launch/README.md).
+
+```sh
+koi mdns discover _http._tcp
+koi mdns subscribe _http._tcp
+koi mdns announce "My App" _http._tcp 8080
+koi mdns resolve "My App._http._tcp.local."
+koi mdns unregister ID
 ```
 
-### Admin commands
+`announce` takes positional name, service type and port. The application must already listen on the advertised endpoint. Registration lifetime is described in the [wire protocol](wire-protocol.md).
 
-```
-koi mdns admin status                             # daemon mDNS status
-koi mdns admin ls                                 # list all registrations
-koi mdns admin inspect ID                         # detailed view (prefix matching)
-koi mdns admin drain ID                           # start grace timer
-koi mdns admin revive ID                          # cancel drain
-koi mdns admin unregister ID                      # force-remove
-```
+## Naming and observation
 
----
-
-## Certificate mesh
-
-```
-koi certmesh create [--profile just-me|team|organization]
-                    [--operator NAME]             # interactive ceremony
-koi certmesh status                               # show mesh status
-koi certmesh join [ENDPOINT] [--invite TOKEN]
-                  [--ca-mtls-port PORT]            # explicit when CA does not use 5642
-koi certmesh invite HOSTNAME [--ttl MINUTES]      # mint a single-use, hostname-bound invite
-koi certmesh unlock                               # decrypt CA key
-koi certmesh log                                  # show audit log
-koi certmesh set-hook --reload "COMMAND"          # set renewal hook
-koi certmesh renew                                 # rotate this member's key now
-koi certmesh promote [ENDPOINT]                   # promote standby CA
-koi certmesh open-enrollment                      # open enrollment window
-koi certmesh close-enrollment                     # close enrollment
-koi certmesh rotate-auth                          # rotate auth credential
-koi certmesh backup PATH                          # encrypted backup
-koi certmesh restore PATH                         # restore from backup
-koi certmesh revoke HOSTNAME [--reason REASON]    # revoke a member
-koi certmesh destroy                              # destroy all state (requires typing DESTROY)
-koi certmesh acme enable                          # print the ACME (RFC 8555) directory URL + client recipe
-koi certmesh acme status                          # ACME server status (directory URL, counts)
+```sh
+koi dns status
+koi dns serve
+koi dns lookup demo.internal
+koi dns add demo 192.168.1.42
+koi dns list
+koi dns remove demo
+koi health status
+koi health add demo --http http://127.0.0.1:8080/ --interval 30 --timeout 5
+koi health watch
+koi health log
 ```
 
-The daemon serves ACME automatically once the CA is initialized and unlocked;
-`acme enable` only prints the directory URL and a client bootstrap recipe (it does
-not start a server). The ACME server (dns-01 only) listens on its own server-auth
-TLS port `5643` (`--acme-port` / `KOI_ACME_PORT`). Disable it with `--no-acme` /
-`KOI_NO_ACME`.
+Substitute a real reachable application address. Creating a DNS record does not configure every client's resolver. A local health check does not prove remote reachability.
 
----
+## Trust and proxy reference
 
-## DNS
-
-```
-koi dns serve                                     # start resolver
-koi dns stop                                      # stop resolver (daemon mode)
-koi dns status                                    # resolver status
-koi dns lookup NAME [--record-type A|AAAA|ANY]    # query a name
-koi dns add NAME IP [--ttl SECS]                  # static entry
-koi dns remove NAME                               # remove static entry
-koi dns txt set NAME VALUE                        # publish ephemeral TXT value
-koi dns txt clear NAME VALUE                      # remove that exact TXT value
-koi dns list                                      # list all resolvable names
+```sh
+koi certmesh create
+koi certmesh status
+koi certmesh invite HOSTNAME
+koi certmesh join ENDPOINT --invite TOKEN
+koi certmesh renew
+koi certmesh unlock
+koi trust diagnose
+koi proxy status
+koi proxy add demo --listen 8443 --backend 127.0.0.1:8080
+koi certmesh acme status
 ```
 
----
+CA creation, enrollment and proxy startup are separate operations. Exact service HTTPS requires the correct name grant, leaf and trust distribution. The public service-grant workflow is incomplete; do not treat these commands as a certified trusted-container recipe.
 
-## Health
+Enrollment is open/closed with optional approval; there is no timed window or CIDR/domain enrollment policy. Authority promotion is manual. Backup/restore, revocation, hooks and destructive operations are documented in [Certmesh](../guides/certmesh.md) and [recovery](../guides/certmesh-ha-recovery.md).
 
-Health commands target the installed local service by default or the daemon named by
-`--endpoint`. Direct local composition is opt-in with `koi --standalone health …` and is
-refused while Koi cannot prove that another local service is absent. The transition-log
-command reads through the same Health domain boundary as `GET /v1/health/log`; it never
-opens the daemon's persistence directly.
+## Interfaces and advanced tools
 
-```
-koi health status                                 # current state of all checks
-koi health watch [--interval SECS]                # live dashboard
-koi health add NAME --http URL                    # register HTTP check
-koi health add NAME --tcp HOST:PORT               # register TCP check
-koi health remove NAME                            # remove a check
-koi health log                                    # transition history
-```
+`koi launch` opens the operator interface. `koi mcp serve` serves MCP over stdio. UDP, trust-store and Pond commands are available through their domain help; see the [reference cards](cards/index.md). Advanced capabilities are retained independently of preview acceptance requirements.
 
----
+## Listener configuration
 
-## Proxy
+| Option | Environment | Default |
+| --- | --- | --- |
+| `--port` | `KOI_PORT` | 5641 |
+| `--http-bind` | `KOI_HTTP_BIND` | loopback |
+| `--dns-port` | `KOI_DNS_PORT` | 53 |
+| `--dns-zone` | `KOI_DNS_ZONE` | internal |
+| `--dns-qps` | `KOI_DNS_QPS` | 200 per source IP |
+| `--mtls-port` | `KOI_MTLS_PORT` | 5642 |
+| `--acme-port` | `KOI_ACME_PORT` | 5643 |
 
-```
-koi proxy add NAME --listen PORT --backend URL [--backend-remote]  # add proxy entry
-koi proxy remove NAME                             # remove entry
-koi proxy status                                  # active proxy status
-koi proxy list                                    # list entries
-```
-
-The backend defaults to loopback; `--backend-remote` is required to forward to a
-non-loopback backend — off by default so a proxy entry cannot be pointed at an
-arbitrary off-host destination.
-
----
-
-## UDP
-
-```
-koi udp bind [--port PORT] [--addr ADDR] [--lease SECS] [--allow-remote]  # bind a host UDP port
-koi udp unbind ID                                 # close a binding
-koi udp send ID --dest HOST:PORT PAYLOAD          # send a datagram (payload base64-encoded)
-koi udp status                                    # list active bindings
-koi udp heartbeat ID                              # renew a binding's lease
-```
-
-`--addr` defaults to `127.0.0.1` (loopback); `--allow-remote` is required to bind a
-non-loopback address or send to a non-loopback destination — off by default so a
-binding cannot be used as an SSRF / egress relay.
-
----
-
-## Runtime adapter
-
-The runtime adapter is controlled via daemon flags (no CLI subcommands). Status and instances are available via the HTTP API:
-
-```
-GET /v1/runtime/status                            # adapter status
-GET /v1/runtime/instances                         # tracked instances
-```
-
-Runtime backend selection:
-
-```
-koi --daemon --runtime auto                       # auto-detect (default)
-koi --daemon --runtime docker                     # explicit Docker
-koi --daemon --runtime podman                     # explicit Podman
-koi --daemon --no-runtime                         # disable
-```
-
----
-
-## MCP (AI agents)
-
-```
-koi mcp serve                                     # serve MCP over stdio for an agent host
-```
-
-Launched by an MCP host (Claude Code/Desktop, or any stdio MCP client), not run
-interactively. Talks to a running daemon via the breadcrumb, or `KOI_ENDPOINT` /
-`KOI_TOKEN`. Exposes read tools (`lan_discover`, `lan_resolve`, `dns_lookup`,
-`lan_inventory`, `health_snapshot`, `runtime_instances`, `mcp_servers_on_lan`) and
-write tools (`lan_announce`, `lan_unregister`, `dns_add`, `dns_remove`). CA-admin
-operations are not exposed. See the [MCP guide](../guides/mcp.md).
-
-The daemon **also** serves MCP over Streamable HTTP at `/v1/mcp` on port `5641`
-(running against the live cores), alongside the stdio transport. Enabled by default;
-disable with `--no-mcp-http` / `KOI_NO_MCP_HTTP`. It exposes MCP resources
-(`koi://lan/inventory`, `koi://health`, `koi://dns/zone`, `koi://mdns/services`) with
-live subscription deltas, and advertises itself for LAN discovery (a single
-`_mcp._tcp` mDNS record, an in-zone `_mcp.<host>.<zone>` DNS TXT, and a public
-`GET /.well-known/mcp/server-card.json` card). Every method on `/v1/mcp` — including
-the GET SSE stream — requires the `x-koi-token` header.
-
----
-
-## Trust store
-
-```
-koi trust install ./root.pem                      # install a CA root into the OS store
-koi trust list                                    # list Koi-installed roots
-koi trust remove NAME                             # remove a Koi-installed root
-koi trust export --ca                             # print the certmesh root CA (PEM)
-```
-
-Local-only (touches the OS certificate store directly; no daemon). `install`
-validates that the PEM is a real CA certificate and rejects a server/leaf cert.
-Koi tracks only the roots it installed (`state/trust.json`) and never enumerates
-or mutates the rest of the OS store. `install`/`remove` require elevated
-privileges. See the [trust guide](../guides/trust.md).
-
----
-
-## System
-
-```
-koi status                                        # unified capability status
-koi launch                                        # open the dashboard in a web browser
-koi token show                                    # print the daemon access token (tty only)
-koi token write /run/koi/token                    # write the token to a 0600 file for containers
-koi factory-reset                                 # DESTRUCTIVE: wipe the entire data directory
-koi install                                       # install system service
-koi uninstall                                     # remove system service
-koi version                                       # show version
-```
-
-`koi token` reads the daemon's current access token from the breadcrumb file so it
-can be handed to another process or mounted into a container as a secret. `show`
-refuses to print into a non-tty unless `--force`; `write` creates the file
-owner-only (0600 on Unix, ACL-restricted on Windows). See
-[CONTAINERS.md](../../CONTAINERS.md) and the
-[security model](security-model.md) for `--http-bind` exposure and the token recipe.
-
-> **`koi factory-reset` is destructive and irreversible** — it wipes the entire
-> data directory (CA keys, certs, audit log, DNS entries, and all other state).
-> There is no undo; back up first (`koi certmesh backup`) if you need to keep the
-> mesh.
-
-### Environment-only knobs
-
-Not flags — read directly from the environment:
-
-| Env var              | Default              | Description                                            |
-| -------------------- | -------------------- | ------------------------------------------------------ |
-| `KOI_DATA_DIR`       | platform data dir    | Override the machine-scoped data directory             |
-| `KOI_VERSION`        | latest               | Pin a release tag for the install script (e.g. `v1.0.0-rc.2`) |
-| `KOI_INSTALL_DIR`    | platform bin dir     | Install location for the install script                |
-| `KOI_NO_MODIFY_PATH` | unset                | Any non-empty value: `install.sh` skips PATH guidance (on `install.ps1` use `-NoModifyPath`) |
-
-`KOI_VERSION` / `KOI_INSTALL_DIR` / `KOI_NO_MODIFY_PATH` are consumed by the
-install scripts (`install.sh` / `install.ps1`), not by the `koi` binary itself.
-
----
-
-## Mode detection
-
-1. **Installed service or `--daemon`** → one long-lived composition owns the machine resources.
-2. **Capability subcommand + `--endpoint URL`** → client of that explicit service.
-3. **Capability subcommand, no endpoint** → client of the healthy authenticated local service.
-4. **Capability subcommand + `--standalone`** → intentional in-process composition, refused while the local service is alive.
-5. **No subcommand** → status and command catalog; never an implicit daemon or mDNS responder.
-6. **Windows SCM launch** → Windows Service mode with the same daemon composition.
-
-Redirected stdin does not select an execution mode. Machine-readable command
-output is requested with `--json`; `koi mcp serve` is the separate, explicit MCP
-stdio client surface.
+`--http-bind` accepts `loopback`, `bridge`, a specific IP or `0.0.0.0`. Exposure does not remove authentication or add encryption. `--announce-http` advertises; it does not change a bind address. Capability `--no-*` flags disable the corresponding adapter/domain; inspect current help for the full set. See [ports](ports.md) and [security](security-model.md).

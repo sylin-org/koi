@@ -1,14 +1,16 @@
-# UDP - Datagram Bridging
+# Relay host UDP sockets through HTTP and SSE
 
-Docker containers on bridge networking can't touch UDP. No multicast, no broadcast, no raw sockets. If your containerized application needs to participate in a peer-to-peer UDP mesh, send Wake-on-LAN packets, or receive SSDP discovery traffic, it's out of luck - the bridge network simply doesn't forward those frames.
+Koi can own a host UDP socket and expose authenticated send/receive operations
+to a participating application. This is an explicit API for applications needing
+host-network socket access while retaining container bridge networking.
 
-Koi's UDP capability bridges this gap. It binds real UDP sockets on the host and relays datagrams over HTTP and SSE - the same pattern Koi already uses for mDNS (multicast → HTTP), DNS (UDP/TCP → HTTP), and proxy (TLS listeners → HTTP). UDP bridging extends this philosophy to arbitrary datagram traffic.
+Containers can use UDP normally subject to network and published-port settings.
+Koi is not required for all UDP, and it does not transparently adapt unmodified
+multicast software. Verify the actual sender and receiver. Base64, HTTP and SSE
+add overhead; use bounded control traffic, not a media or high-throughput data plane.
 
-**When to use UDP bridging**: You have a containerized application that needs to receive UDP datagrams from the LAN. A service that needs to send Wake-on-LAN magic packets. An orchestrator that listens for mesh chirps and beacons on a shared UDP port. A CoAP or syslog forwarder. Anything where a container needs datagram access to the host's network stack without `--network=host`.
-
-**When not to use it**: video/audio streaming, game servers, or anything latency-sensitive or throughput-heavy. The HTTP/SSE bridge adds overhead that's negligible for control-plane traffic (1–5 KB datagrams every few seconds) but unacceptable for media streams.
-
----
+Start with the [container relay recipe](recipes/container-udp.md). Use
+[release readiness](../launch/README.md) for artifact-specific support.
 
 ## How it works
 
@@ -157,6 +159,7 @@ All UDP endpoints live under `/v1/udp/`:
 | `addr`         | string | `"127.0.0.1"` | Bind address (loopback by default; a non-loopback bind requires `allow_remote`)                          |
 | `lease_secs`   | u64    | `300`         | Lease duration in seconds (max 86400)                                                                    |
 | `allow_remote` | bool   | `false`       | Allow binding on / sending to non-loopback addresses. Default keeps the binding loopback-only (no relay) |
+| `broadcast`    | bool   | `false`       | Enable `SO_BROADCAST` so the binding can send to `255.255.255.255` and subnet-directed broadcast addresses (from `/v1/host`). Requires `allow_remote` |
 
 ### Send request body
 
@@ -232,6 +235,7 @@ let info = udp.bind(koi_udp::UdpBindRequest {
     addr: "127.0.0.1".to_string(),
     lease_secs: 300,
     allow_remote: false,
+    broadcast: false,
 }).await?;
 
 // Subscribe to incoming datagrams

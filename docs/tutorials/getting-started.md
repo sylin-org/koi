@@ -1,255 +1,102 @@
-# Getting started with Koi
+# Start with one usable container service
 
-**Let everything local find, trust, and talk.** Koi makes containers,
-applications, and devices discoverable, secure, and interconnected on your private
-network. This tutorial takes you from *nothing installed* to a **visible result in
-about a minute** — then points you at the deeper Find, Trust, and Connect journeys.
+Use Koi to publish a container service, find and open its application from a
+second machine, and verify stop/recreate behavior. This tutorial establishes
+the host setup and directs you through that full check.
 
-You'll run four short steps:
+No account or hosted control plane is required. The target operator is comfortable
+with containers and basic LAN configuration. No measured setup time or already
+accepted new preview is implied.
 
-1. Get the binary and confirm it runs.
-2. See what's on your network in an explicit one-shot session.
-3. Start the daemon and open the dashboard.
-4. Do one real task end to end: give a machine a friendly name.
+## Select an artifact
 
-No accounts, no cloud, nothing to sign up for. Open a terminal and follow along.
+Read [release readiness](../launch/README.md) for a named artifact and supported
+scenario. Stable 0.9.0, prerelease 1.0.0-rc.2 and source 1.0.0-dev.0 are distinct.
+Current-source commands below should not be assumed available in an older release.
 
----
+The [installation guide](../guides/install-and-service.md) covers downloads,
+checksums and service setup. Bootstrap scripts choose the latest stable release
+unless a version is supplied. They install the binary; service startup is a
+separate step.
 
-## 1. Get the binary
-
-One line installs Koi — it detects your OS/arch, downloads the right release
-archive, verifies its SHA-256, and puts `koi` on your `PATH`. No root needed for
-the default per-user location.
-
-**Linux / macOS:**
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/sylin-org/koi/main/install.sh | sh
-```
-
-**Windows:**
-
-```powershell
-irm https://raw.githubusercontent.com/sylin-org/koi/main/install.ps1 | iex
-```
-
-The installer finishes by running `koi status`, so you'll see it work right away.
-Pin a version or change the location with `KOI_VERSION` and `KOI_INSTALL_DIR`
-(`KOI_NO_MODIFY_PATH` skips the PATH guidance).
-
-Confirm it's reachable from a fresh terminal:
-
-```bash
+```sh
 koi version
 ```
 
-### Alternatives
+Record the version, artifact/checksum, OS, engine version and client machine.
 
-Prefer to do it by hand? Download a prebuilt archive from
-[GitHub Releases](https://github.com/sylin-org/koi/releases), extract it, and move
-`koi` (or `koi.exe`) onto your `PATH`:
+## Establish the daemon
 
-```bash
-tar -xzf koi-*.tar.gz       # adjust to the asset you downloaded
-sudo mv koi /usr/local/bin/
-```
+If a local Koi service already runs, inspect it:
 
-Or build it yourself with [Rust](https://rustup.rs/) 1.92 or later:
-
-```bash
-git clone https://github.com/sylin-org/koi.git
-cd koi
-cargo build --release       # binary lands in target/release/
-```
-
----
-
-## 2. The instant win — see your network
-
-Here's the part that needs no setup at all. Ask Koi what's on the network:
-
-```bash
-koi --standalone mdns discover
-```
-
-Koi sends a multicast query, lists every service type it hears, and stops after
-five seconds. On a typical home or office network you'll see something like:
-
-```
-_http._tcp
-_googlecast._tcp
-_spotify-connect._tcp
-_airplay._tcp
-```
-
-That's mDNS discovery — printers, smart speakers, Chromecasts, and any app that
-advertises itself, all surfaced from one command. **No daemon, no config, no
-central server.** The explicit flag ensures Koi never starts another responder
-beside an installed service; this one-shot process exits after the browse.
-
-Want detail instead of just types? Narrow to one and Koi resolves each instance to
-an address:
-
-```bash
-koi --standalone mdns discover http
-```
-
-```
-My NAS     _http._tcp    192.168.1.50:8080    nas.local.
-Pi-hole    _http._tcp    192.168.1.10:80      pihole.local.
-```
-
-That's your first visible result, and you're not even a minute in. Everything from
-here builds on the same binary.
-
-> Tip: Koi's CLI is built to be explored. Bare `koi` shows live status plus the full
-> command catalog, `koi <domain>` (e.g. `koi dns`) shows curated examples, and any
-> command followed by `?` (e.g. `koi mdns announce?`) opens a detail page with
-> examples and the equivalent HTTP call.
-
----
-
-## 3. Start the daemon
-
-One-off commands like `discover` can use explicit `--standalone`. The composed services — a local
-DNS resolver, certificates, health checks, the dashboard — live in a long-running
-**daemon**. Start one in the foreground:
-
-```bash
-koi --daemon
-```
-
-Leave that terminal running (Ctrl+C stops it) and open a second one for the
-commands below. A few things to know:
-
-- The daemon listens on **`127.0.0.1:5641`** — **loopback only by default**, so only
-  processes on this machine can reach it. Exposing it to the LAN or to containers is
-  a deliberate opt-in; see the [security model](../reference/security-model.md).
-- Every capability (mDNS, DNS, health, proxy, and more) starts in a *ready* state
-  with zero entries. Nothing is configured yet; they accept configuration whenever
-  you want it.
-- For a permanent setup later, `koi install` registers the daemon as a system service
-  so it survives reboots — but the foreground daemon is perfect for this tutorial.
-
-Check that it's up:
-
-```bash
+```sh
 koi status
 ```
 
-```
-Koi v1.0.0-dev.0
-  Platform:  linux
-  Uptime:    12s
-  Daemon:    running
-  [+] mdns:  control plane ready; ...
-  [+] certmesh:  ready — run certmesh create
-  [+] trust:  no managed roots
-  [+] dns:  listening on ...
-  [+] health:  0 services up (0 total)
-  [+] proxy:  no listeners
-  [+] udp:  no bindings
-  [+] runtime:  ...
-  [+] ipc:  trusted local-control transport running
-  [-] pond:  disabled: not published
+Otherwise start a foreground daemon and leave it running:
+
+```sh
+koi --daemon
 ```
 
-Those ten rows are stable; their summaries are live projections from the daemon.
-If the daemon cannot be reached, Koi preserves the rows but marks each one
-`not observed` instead of guessing from configuration or state files.
+Management HTTP defaults to loopback port 5641. DNS can require privileges or
+coexistence configuration. Read observed status and
+[troubleshooting](../guides/troubleshooting.md); do not silently replace an
+existing resolver.
 
----
+Use [service installation](../guides/install-and-service.md) when evaluating
+persistent startup and recovery. Do not start a second daemon beside it.
 
-## 4. Open the dashboard
+## Verify runtime access
 
-With the daemon running, open the web dashboard:
+In another terminal:
 
-```bash
-koi launch
+```sh
+curl -fsS http://127.0.0.1:5641/v1/runtime/status
+curl -fsS http://127.0.0.1:5641/v1/runtime/instances
 ```
 
-That opens `http://localhost:5641/` in your browser — a live system overview. From
-there you can also reach the **mDNS network browser** at
-`http://localhost:5641/mdns-browser` (the same discovery you ran in step 2, but as a
-live page) and the **interactive API docs** at `http://localhost:5641/docs`.
+Koi's running account must reach the Docker/Podman engine. An unavailable engine
+is not an empty healthy inventory. Resolve account/socket access first.
 
-If `koi launch` can't open a browser (a headless server, say), just visit
-`http://localhost:5641/` yourself.
+## Complete the container trial
 
----
+Follow [Publish and use a container service on your LAN](../../CONTAINERS.md)
+through application startup, independent discovery/access, stop, restart,
+recreation and cleanup.
 
-## 5. One real task: give a machine a name
+Initial target environments are Windows x64 with Docker Desktop and Linux glibc
+x64 with Docker Engine, paired with native clients. They require separate
+artifact-specific results. Other implementations do not inherit this proof.
 
-Time to give something a name. Typing `myapp.internal` into a browser is a different
-experience from remembering `10.0.0.42`. Koi's local DNS resolver makes that
-mapping, and it's already running inside the daemon you started.
+The meaningful result is the application being usable. A Koi row, DNS lookup or
+screenshot alone is insufficient. CLI and HTTP are enough for this first task;
+a broader workbench redesign is not a prerequisite.
 
-Add a static name, then resolve it:
+## Optional: discover existing services
 
-```bash
-koi dns add myapp 10.0.0.42     # use a real address on your LAN
-koi dns lookup myapp
-koi dns list                    # everything currently resolvable
+With a local daemon:
+
+```sh
+koi mdns discover _http._tcp
 ```
 
-`koi dns add myapp 10.0.0.42` makes `myapp.internal` resolve to that address (`.internal` is
-the default zone). `koi dns lookup myapp` asks Koi's resolver and shows the answer;
-`koi dns list` shows the whole zone — your static entries plus anything Koi learns
-from discovery and certificates.
+With no local service:
 
-That's a complete cycle — **add, query, list** — and it's the same shape for every
-capability: a friendly CLI verb backed by the daemon.
-
-> Answering on the standard DNS port (53) requires elevated privileges and may
-> collide with an existing resolver. For experimenting, start the daemon on a high
-> port instead — `koi --daemon --dns-port 15353` — and you can query it directly with
-> `dig` or `nslookup` pointed at that port. The [DNS guide](../guides/dns.md) covers
-> the full picture.
-
-### A note on writes and the daemon token
-
-You just changed daemon state from the CLI, and it "just worked" — the CLI reads the
-daemon's access token for you. If you ever call the HTTP API directly, **reads are
-open on loopback but writes need a token**:
-
-```bash
-TOKEN=$(koi token show)   # prints the token (run in an interactive terminal)
-curl -X POST -H "x-koi-token: $TOKEN" \
-  http://localhost:5641/v1/dns/add \
-  -d '{"name": "myapp", "ip": "10.0.0.42"}'
+```sh
+koi --standalone mdns discover _http._tcp
 ```
 
-For containers, `koi token write /run/koi/token` writes a `0600` file you can mount
-as a secret. The full mechanism is in the
-[security model](../reference/security-model.md).
+This reveals matching announcements, not every application, tested endpoint or
+trusted identity on the LAN. `koi launch` opens the local web interface
+when available; its capabilities vary by artifact.
 
----
+## Add names and trust after access works
 
-## Where to go next
+- Configure [DNS forwarding](../guides/dns-coexistence.md) and test the client's ordinary lookup.
+- Use [host-member HTTPS](trusted-https.md) if that exact certificate name meets the need.
+- Read [container-name TLS limits](../guides/recipes/container-trusted-cert.md) before promising a vanity HTTPS URL.
+- Keep existing resolver, proxy and certificate tools where they already work.
 
-You now have the start of the Find path: a binary, instant discovery, a running
-daemon, a dashboard, and a named service. From here, add trust or connectivity—or
-go deeper on discovery—by following the task that fits what you want:
-
-- **Discover and advertise services** — leases, lifecycle events, and announcing your
-  own service: the [mDNS guide](../guides/mdns.md).
-- **Name everything** — static entries, automatic names from discovery and
-  certificates, and running *alongside* your existing resolver (Pi-hole, AdGuard,
-  dnsmasq) via conditional forwarding: the [DNS guide](../guides/dns.md) and
-  [DNS coexistence guide](../guides/dns-coexistence.md).
-- **Trust your LAN** — a private certificate authority with guided enrollment and OS
-  trust-store install, so HTTPS works without browser warnings: the
-  [certmesh guide](../guides/certmesh.md).
-- **Serve over TLS** — a zero-config TLS endpoint for those certificates: the
-  [proxy guide](../guides/proxy.md).
-- **Connect containers and the LAN** — label a workload for automatic lifecycle
-  wiring, or let it announce, discover, watch, and bridge traffic through Koi:
-  [CONTAINERS.md](../../CONTAINERS.md).
-- **AI agents** — hand the LAN to an agent over the Model Context Protocol: the
-  [MCP guide](../guides/mcp.md).
-- **Run it for real** — install as a system service, manage its lifecycle, and
-  configure it: the [system guide](../guides/system.md).
-
-For the complete picture, see the [User Guide](../../GUIDE.md), the
-[CLI reference](../reference/cli.md), and the [HTTP API reference](../reference/http-api.md).
+Report the failing step, version and expected/actual result without tokens,
+private keys or private device inventories.

@@ -44,6 +44,15 @@ struct Inner {
     supervisor: Option<tokio::task::JoinHandle<()>>,
 }
 
+// Cancellation during retirement must never leave future reads unable to start
+// demand. This guard owns only restart bookkeeping; WorkerTask owns teardown.
+struct RestartReset<'a>(&'a LazyMetaBrowse);
+impl Drop for RestartReset<'_> {
+    fn drop(&mut self) {
+        self.0.locked().restarting = false;
+    }
+}
+
 struct WorkerTask {
     cancel: CancellationToken,
     task: Option<tokio::task::JoinHandle<()>>,
@@ -199,6 +208,7 @@ impl LazyMetaBrowse {
             inner.restarting = true;
             inner.worker.take()
         };
+        let _reset = RestartReset(self);
         if let Some(worker) = retiring {
             worker.shutdown().await;
         }
@@ -209,6 +219,10 @@ impl LazyMetaBrowse {
             inner.worker = Some(self.spawn_worker());
         }
         inner.restarting = false;
+        drop(inner);
+        // Requery may be the first browser request. Own an idle supervisor even
+        // when the caller never reads a subsequent snapshot.
+        self.touch();
         known
     }
 
@@ -348,6 +362,38 @@ pub(crate) mod tests {
         let lazy =
             LazyMetaBrowse::with_intervals(dyn_source, cache, CancellationToken::new(), idle, tick);
         (lazy, source)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn first_requery_owns_an_idle_supervisor() {
+        let (lazy, _) = controller(Duration::from_secs(60), Duration::from_secs(10));
+        lazy.requery().await;
+        tokio::task::yield_now().await;
+        assert!(lazy.is_active());
+        tokio::time::advance(Duration::from_secs(70)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            !lazy.is_active(),
+            "requery-only demand must expire without a later read"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellation_during_retirement_does_not_block_later_browse_reads() {
+        let (lazy, _) = controller(Duration::from_secs(60), Duration::from_secs(10));
+        lazy.locked().worker = Some(WorkerTask {
+            cancel: CancellationToken::new(),
+            task: Some(tokio::spawn(std::future::pending())),
+        });
+        let restarting = lazy.clone();
+        let task = tokio::spawn(async move { restarting.requery().await });
+        tokio::task::yield_now().await;
+        assert!(lazy.locked().restarting);
+        task.abort();
+        let _ = task.await;
+        assert!(!lazy.locked().restarting);
+        lazy.touch();
+        assert!(lazy.is_active());
     }
 
     #[tokio::test]

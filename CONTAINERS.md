@@ -1,1059 +1,241 @@
-# Koi Container Guide
+# Publish and use a container service on your LAN
 
-Containers live on the local network but rarely participate in it as first-class
-citizens. Koi bridges the container, host, and LAN boundaries so workloads can be
-found, carry meaningful names and trusted identity, and communicate with applications
-and devices without surrendering network isolation.
+Koi runs on the container host. It observes opted-in Docker/Podman workloads
+and derives mDNS announcements, local DNS records and health checks from their
+published endpoints. Applications can also use its HTTP API to discover LAN services.
 
-> **Exposing Koi to containers — read first.** Koi's HTTP API binds to `127.0.0.1`
-> by default. How you reach it depends on your platform (see the
-> [security model](docs/reference/security-model.md)):
->
-> - **Docker Desktop (Windows/macOS):** `host.docker.internal` proxies into the
->   host's loopback, so the default loopback bind works as-is — no `--http-bind`
->   needed.
-> - **Native Linux Docker/Podman:** bridge-networked containers **cannot** reach a
->   loopback-bound daemon. Start Koi with `--http-bind bridge` (binds the docker
->   bridge IP, e.g. `172.17.0.1`) or `--http-bind 0.0.0.0`, then reach it via the
->   bridge gateway or a `host.docker.internal:host-gateway` mapping.
-> - **All platforms:** every non-GET request requires the `x-koi-token` header.
->   Write the token to a file with `koi token write /run/koi/token` and mount it as
->   a secret; GET endpoints stay readable without a token.
-> - The **runtime adapter** (label-driven, below) runs on the host and needs no
->   container→Koi connectivity at all — it works regardless of bind mode.
+The first adoption outcome is a container application that a second machine can
+find and open, with correct behavior when the container stops or is recreated.
+This procedure is not a claim that a new operator preview has passed.
+Check [release readiness](docs/launch/README.md) for the exact artifact and accepted
+environment.
 
-Docker containers cannot naturally participate in mDNS. The bridge network does not forward multicast traffic, and every workaround — `--network=host`, macvlan, mDNS reflectors — sacrifices isolation or adds fragility.
+The initial target scenarios are Windows x64 with Docker Desktop and Linux glibc
+x64 with Docker Engine, using independent native clients. Podman and other
+platform implementations remain available; each needs its own journey evidence.
 
-Koi solves this once at the host boundary. It speaks multicast mDNS on the physical
-network and exposes ordinary HTTP and event streams to isolated workloads. Containers
-can announce themselves to the LAN, discover and watch other services, receive stable
-DNS names and trusted certificates, and bridge UDP when an application protocol needs
-it. The host-side runtime adapter can also do the lifecycle wiring from labels without
-changing the image. No special network modes, multicast forwarding, or language-specific
-libraries are required inside the container.
+## Prerequisites
 
-This guide starts with the simplest setup and builds toward production patterns.
+- Choose an artifact and matching documentation: stable 0.9.0, prerelease
+  1.0.0-rc.2 and source 1.0.0-dev.0 are different lines.
+- Run Koi on the host, where its running account can reach the engine and LAN.
+- Use a published host port reachable by the second machine.
+- Use a network permitting the required multicast and application traffic.
+  Discovery across VLANs or isolated Wi-Fi is not automatic.
+- Preserve an existing Koi installation. Use its normal controls instead of
+  starting a second daemon beside it.
 
----
+A Koi container behind NAT is not equivalent to the host-service architecture.
+Publishing port 5641 alone does not forward LAN multicast.
+See [installation](docs/guides/install-and-service.md).
 
-## Run Koi as a container
+## 1. Verify the daemon and runtime
 
-The simplest way to run Koi on a Linux node is the published image:
+If no Koi service already exists, run:
 
-```bash
-docker run -d --name koi -p 5641:5641 ghcr.io/sylin-org/koi:latest
-```
-
-The image is multi-arch (`linux/amd64` + `linux/arm64`), built from the static
-musl release binary — the exact artifact you'd download by hand, nothing is
-compiled in Docker. It bakes in `KOI_NO_CREDENTIAL_STORE=1` (no OS keychain inside
-a container; the CA is sealed with the machine-bound vault) and
-`KOI_HTTP_BIND=0.0.0.0` so the bridge network can reach the daemon. It `EXPOSE`s
-`5641` (HTTP API) and `5642` (inter-node mTLS), and carries a `/healthz`
-`HEALTHCHECK`. Tags are published as `version`, `major.minor`, and `latest`.
-
-Binding `0.0.0.0` does **not** relax auth — every non-GET request still needs the
-`x-koi-token` header (see [Distributing the token](#distributing-the-token)).
-
-The ACME TLS listener (`5643`) binds only once the CA is initialized and DNS is
-active, so it isn't exposed by default; add `-p 5643:5643` if you use it. Override
-the daemon arguments to trim capabilities:
-
-```bash
-docker run -d --name koi -p 5641:5641 ghcr.io/sylin-org/koi:latest --daemon --no-proxy --no-udp
-```
-
----
-
-## The basic setup
-
-You need two things: Koi running on the host, and containers that can reach it.
-
-### Start Koi on the host
-
-On Windows, install Koi as a service (run as Administrator):
-
-```powershell
-koi install
-```
-
-On Linux/macOS, install as a system service or run in the foreground:
-
-```bash
-sudo koi install
-# or
+```sh
+koi version
 koi --daemon
 ```
 
-Either way, Koi's HTTP API listens on `127.0.0.1:5641` — loopback only by default.
-On Docker Desktop, `host.docker.internal` proxies into the host's loopback, so
-containers can reach it as-is.
+Leave it running. In another terminal:
 
-On **native Linux**, loopback is unreachable from bridge-networked containers, so
-expose the daemon deliberately with `--http-bind`:
-
-```bash
-koi --daemon --http-bind bridge     # binds the docker/podman bridge IP (e.g. 172.17.0.1)
-koi --daemon --http-bind 0.0.0.0    # binds all interfaces (loudest warning)
+```sh
+koi status
+curl -fsS http://127.0.0.1:5641/v1/runtime/status
+curl -fsS http://127.0.0.1:5641/v1/runtime/instances
 ```
 
-`--http-bind` accepts `loopback` (default), `bridge`, an explicit `<ip>`, or
-`0.0.0.0`; the env var `KOI_HTTP_BIND` mirrors it. Non-loopback binds log a warning
-and surface in `koi status` and the breadcrumb. Exposure does **not** relax auth —
-every non-GET request still needs the `x-koi-token` header (see
-[Distributing the token](#distributing-the-token) below).
+HTTP examples use curl; in Windows PowerShell use curl.exe or Invoke-RestMethod.
+They target the default local port; use the observed endpoint when it differs.
 
-### Test from a container
+The account running Koi needs engine access. An installed system service may not
+share your terminal's access to a user-owned or rootless socket. Resolve that
+before treating an empty inventory as a discovery problem.
+[Runtime configuration](docs/guides/runtime.md) covers engine selection.
 
-```bash
-docker run --rm curlimages/curl \
-  curl -s http://host.docker.internal:5641/healthz
+For this label-driven path, containers do not need Koi HTTP credentials. The
+host daemon reads the runtime and owns the derived resources.
+
+## 2. Run one known HTTP application
+
+Use a free port and a distinct container name. The image below is illustrative;
+acceptance must record an exact image digest.
+
+```sh
+docker run -d --name koi-demo -p 8080:80 --label koi.announce=koi-demo --label koi.health.path=/ nginx:alpine
 ```
 
-```
-OK
-```
-
-That's it. The container made a plain HTTP request to the host, and Koi responded. If you see `OK`, every mDNS operation is available to that container.
-
----
-
-## Container profiles
-
-Pick a usage profile based on what your container needs. Each profile maps to a small set of endpoints.
-
-### Profile A - Discovery only (mDNS)
-
-Use this when the container only needs to discover LAN services.
-
-```bash
-# Browse services
-curl -s "http://$KOI_HOST:5641/v1/mdns/discover?type=_http._tcp"
-
-# Resolve a specific instance
-curl -s "http://$KOI_HOST:5641/v1/mdns/resolve?name=My%20NAS._http._tcp.local."
-```
-
-### Profile B - Discovery + naming (mDNS + DNS)
-
-Use this when containers need friendly names mapped to LAN IPs.
-
-```bash
-# DNS lookup
-curl -s "http://$KOI_HOST:5641/v1/dns/lookup?name=grafana&type=A"
-
-# Add a static entry (requires the daemon token, see security model)
-curl -s -X POST http://$KOI_HOST:5641/v1/dns/add \
-  -H "x-koi-token: $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"grafana","ip":"192.168.1.42"}'
-```
-
-### Profile C - Discovery + naming + health
-
-Use this when containers rely on shared health checks (HTTP/TCP).
-
-```bash
-# Add a TCP check (requires the daemon token, see security model)
-curl -s -X POST http://$KOI_HOST:5641/v1/health/add \
-  -H "x-koi-token: $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"db","kind":"tcp","target":"10.0.0.10:5432"}'
-
-# Health status
-curl -s http://$KOI_HOST:5641/v1/health/status
-```
-
-### Profile D - Full stack (mDNS + DNS + health + certmesh + proxy)
-
-Use this when containers manage TLS endpoints or need certmesh policy controls.
-
-```bash
-# Certmesh status
-curl -s http://$KOI_HOST:5641/v1/certmesh/status
-
-# Proxy status
-curl -s http://$KOI_HOST:5641/v1/proxy/status
-```
-
-### Reaching the host
-
-How a container reaches the host depends on the platform:
-
-| Platform                     | Address                    | Notes                                                                                          |
-| ---------------------------- | -------------------------- | ---------------------------------------------------------------------------------------------- |
-| Docker Desktop (Mac/Windows) | `host.docker.internal`     | Built-in DNS name, works out of the box                                                        |
-| Linux (Docker 20.10+)        | `host.docker.internal`     | Requires `--add-host=host.docker.internal:host-gateway` or the `extra_hosts` Compose directive |
-| Linux (any version)          | `172.17.0.1`               | Default bridge gateway - works without any flags                                               |
-| Custom Docker network        | Gateway IP of that network | Find with `docker network inspect <name>`                                                      |
-
-For the rest of this guide, we'll use `$KOI_HOST` as a placeholder. Set it to whatever works for your environment:
-
-```bash
-export KOI_HOST=host.docker.internal   # Mac/Windows
-export KOI_HOST=172.17.0.1             # Linux default bridge
-```
-
-### Distributing the token
-
-Every non-GET request needs the `x-koi-token` header. The daemon generates a fresh
-token each time it starts and writes it to a host-only breadcrumb file. Hand it to
-containers one of two ways.
-
-**Write it to a file and mount it as a secret** (recommended):
-
-```bash
-# On the host — writes a 0600, owner-only file
-sudo koi token write /run/koi/token
-```
-
-```yaml
-# docker-compose.yml
-services:
-  app:
-    extra_hosts: ["host.docker.internal:host-gateway"]
-    environment:
-      - KOI_URL=http://host.docker.internal:5641
-    secrets:
-      - koi_token
-secrets:
-  koi_token:
-    file: /run/koi/token
-```
-
-Inside the container the token is mounted at `/run/secrets/koi_token`:
-
-```bash
-TOKEN=$(cat /run/secrets/koi_token)
-curl -H "x-koi-token: $TOKEN" -X POST "$KOI_URL/v1/mdns/announce" \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"My App","type":"_http._tcp","port":8080}'
-```
-
-**Or print it for quick experiments.** `koi token show` refuses to print into a
-pipe (where it could be captured in logs) unless you pass `--force`:
-
-```bash
-koi token show              # prints to your terminal
-koi token show --json       # {"token": "..."} for scripting
-```
-
-GET endpoints (`/healthz`, `/v1/mdns/discover`, `/v1/dns/lookup`, …) need no token;
-only mutations do. See the [security model](docs/reference/security-model.md) for
-the full policy.
-
----
-
-## Automatic mode: runtime adapter (recommended)
-
-If Koi's runtime adapter is enabled (on by default), you don't need any of the manual API calls below. One label or env var is enough:
-
-```bash
-# Just one label:
-docker run -d -p 3000:3000 --label koi.announce=grafana grafana/grafana
-
-# Or one env var:
-docker run -d -p 3000:3000 -e KOI_MDNS_ANNOUNCE=grafana grafana/grafana
-```
-
-Either way, Koi auto-discovers the container, announces `grafana._http._tcp` via mDNS (port heuristic: 3000 → HTTP), adds `grafana.internal` to DNS, and registers a health check. When the container stops, everything is cleaned up.
-
-For Docker Compose:
+Equivalent Compose configuration:
 
 ```yaml
 services:
-  grafana:
-    image: grafana/grafana:latest
-    ports:
-      - "3000:3000"
-    labels:
-      koi.announce: grafana
-```
-
-For more control, add explicit labels alongside the shorthand:
-
-```yaml
-labels:
-  koi.announce: grafana
-  koi.health.path: "/api/health"
-  koi.health.kind: "http"
-```
-
-See the full [Runtime Adapter Guide](docs/guides/runtime.md) for the complete label reference, port heuristics, and multi-port examples.
-
-The manual profiles below are still available for containers where you need fine-grained control or when the runtime adapter is disabled (`--no-runtime`).
-
----
-
-## Discovering services
-
-A container that needs to find services on the local network - printers, NAS boxes, Home Assistant, Chromecast - can browse with a single HTTP call.
-
-### Browse for a service type
-
-```bash
-# From inside a container
-curl -s http://$KOI_HOST:5641/v1/mdns/discover?type=_http._tcp
-```
-
-This returns a Server-Sent Events stream. Each line is a discovered service:
-
-```
-data: {"found":{"name":"My NAS","type":"_http._tcp","host":"nas.local.","ip":"192.168.1.50","port":8080,"txt":{}}}
-data: {"found":{"name":"Pi-hole","type":"_http._tcp","host":"pihole.local.","ip":"192.168.1.10","port":80,"txt":{}}}
-```
-
-The stream closes automatically after 5 seconds of quiet - once all known services have been reported. For long-lived watching, set `idle_for=0`:
-
-```bash
-curl -s "http://$KOI_HOST:5641/v1/mdns/discover?type=_http._tcp&idle_for=0"
-```
-
-### Resolve a specific instance
-
-If you know the name of the service you want:
-
-```bash
-curl -s http://$KOI_HOST:5641/v1/mdns/resolve?name=My%20NAS._http._tcp.local.
-```
-
-```json
-{
-  "resolved": {
-    "name": "My NAS",
-    "type": "_http._tcp",
-    "host": "nas.local.",
-    "ip": "192.168.1.50",
-    "port": 8080,
-    "txt": { "version": "2.1" }
-  }
-}
-```
-
-This returns the IP, port, and TXT metadata in one shot. Useful when a container needs to connect to a specific service at startup.
-
----
-
-## Registering services from containers
-
-This is the part that's normally impossible. A container behind Docker's NAT bridge can't send mDNS multicast. But with Koi, it can register a service that appears on the physical LAN - other devices (phones, laptops, IoT) will see it as if it were running directly on the network.
-
-### Register a service
-
-```bash
-# Requires the daemon token (see security model)
-curl -s -X POST http://$KOI_HOST:5641/v1/mdns/announce \
-  -H "x-koi-token: $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"name": "My Container App", "type": "_http._tcp", "port": 8080}'
-```
-
-```json
-{
-  "registered": {
-    "id": "a1b2c3d4",
-    "name": "My Container App",
-    "type": "_http._tcp",
-    "port": 8080,
-    "mode": "heartbeat",
-    "lease_secs": 90
-  }
-}
-```
-
-The service is now visible to every mDNS client on the network. The `mode: heartbeat` means you need to periodically tell Koi the service is still alive.
-
-### Keep it alive with heartbeats
-
-HTTP registrations use a lease model. The default lease is 90 seconds - if Koi doesn't hear from you within that window, it starts a 30-second grace period, then removes the service from the network.
-
-Send a heartbeat at half the lease interval (every 45 seconds is a safe default, requires the daemon token):
-
-```bash
-curl -s -X PUT -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/mdns/heartbeat/a1b2c3d4
-```
-
-```json
-{ "renewed": { "id": "a1b2c3d4", "lease_secs": 90 } }
-```
-
-### Register permanently
-
-If the service should live for as long as Koi runs (or until you explicitly remove it), set `lease_secs` to 0 (requires the daemon token):
-
-```bash
-curl -s -X POST http://$KOI_HOST:5641/v1/mdns/announce \
-  -H "x-koi-token: $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"name": "My Container App", "type": "_http._tcp", "port": 8080, "lease_secs": 0}'
-```
-
-```json
-{
-  "registered": {
-    "id": "a1b2c3d4",
-    "name": "My Container App",
-    "type": "_http._tcp",
-    "port": 8080,
-    "mode": "permanent"
-  }
-}
-```
-
-No heartbeats needed. The registration persists until you delete it or Koi shuts down. Good for infrastructure services that are always running.
-
-### Unregister (requires the daemon token)
-
-```bash
-curl -s -X DELETE -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/mdns/unregister/a1b2c3d4
-```
-
-```json
-{ "unregistered": "a1b2c3d4" }
-```
-
-Koi sends mDNS goodbye packets so other devices remove the service from their caches immediately.
-
----
-
-## Docker Compose
-
-Here's a practical setup: Koi on the host, two containers that use it.
-
-```yaml
-# docker-compose.yml
-services:
-  web:
-    image: nginx
+  demo:
+    image: nginx:alpine
     ports:
       - "8080:80"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    environment:
-      - KOI_HOST=host.docker.internal
-    secrets:
-      - koi_token
-    healthcheck:
-      test: ["CMD", "curl", "-sf", "http://host.docker.internal:5641/healthz"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-
-  api:
-    image: my-api:latest
-    ports:
-      - "3000:3000"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    environment:
-      - KOI_HOST=host.docker.internal
-    secrets:
-      - koi_token
-
-secrets:
-  koi_token:
-    file: /run/koi/token   # created on the host with `koi token write /run/koi/token`
+    labels:
+      koi.announce: koi-demo
+      koi.health.path: /
 ```
 
-Start Koi on the host (if it isn't already running as a service), write the token
-file, then bring up the containers:
-
-```bash
-# On the host (skip the daemon line if Koi is already installed as a service)
-koi --daemon                          # add --http-bind bridge on native Linux
-sudo koi token write /run/koi/token
-
-# In another terminal
-docker compose up -d
-```
-
-Now register the web server from inside its container, reading the token from the
-mounted secret:
-
-```bash
-docker exec web sh -c 'curl -s -X POST http://host.docker.internal:5641/v1/mdns/announce \
-  -H "x-koi-token: $(cat /run/secrets/koi_token)" \
-  -H "Content-Type: application/json" \
-  -d "{\"name\": \"Nginx\", \"type\": \"_http._tcp\", \"port\": 8080, \"lease_secs\": 0}"'
-```
-
-Any mDNS client on the network - a phone, another laptop, a different server - will now discover "Nginx" as an HTTP service.
-
----
-
-## Startup registration pattern
-
-Most containers need to register on startup and unregister on shutdown. Here's how to do that cleanly.
-
-### Shell entrypoint
-
-Wrap your container's entrypoint in a script that registers on start and cleans up on exit:
-
-```bash
-#!/bin/sh
-# entrypoint.sh
-
-KOI=${KOI_HOST:-host.docker.internal}
-KOI_URL="http://$KOI:5641"
-
-# Wait for Koi to be available
-until curl -sf "$KOI_URL/healthz" > /dev/null 2>&1; do
-  echo "Waiting for Koi at $KOI_URL..."
-  sleep 2
-done
-
-# Register this service (attaching x-koi-token read from mounted secret file/env)
-RESULT=$(curl -sf -X POST "$KOI_URL/v1/mdns/announce" \
-  -H "x-koi-token: $KOI_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d "{\"name\": \"$SERVICE_NAME\", \"type\": \"_http._tcp\", \"port\": $SERVICE_PORT, \"lease_secs\": 0}")
-
-REG_ID=$(echo "$RESULT" | grep -o '"id":"[^"]*"' | cut -d'"' -f4)
-echo "Registered with Koi: $REG_ID"
-
-# Unregister on exit
-cleanup() {
-  echo "Unregistering from Koi..."
-  curl -sf -X DELETE -H "x-koi-token: $KOI_TOKEN" "$KOI_URL/v1/mdns/unregister/$REG_ID" > /dev/null 2>&1
-}
-trap cleanup EXIT TERM INT
-
-# Run the actual application
-exec "$@"
-```
-
-```dockerfile
-FROM nginx:alpine
-RUN apk add --no-cache curl
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-ENV SERVICE_NAME="My Web Server"
-ENV SERVICE_PORT=80
-ENTRYPOINT ["/entrypoint.sh"]
-CMD ["nginx", "-g", "daemon off;"]
-```
-
-### With heartbeats
-
-If you want crash detection (service disappears from the network when the container dies), use heartbeat mode instead of permanent:
-
-```bash
-#!/bin/sh
-# entrypoint-heartbeat.sh
-
-KOI=${KOI_HOST:-host.docker.internal}
-KOI_URL="http://$KOI:5641"
-
-until curl -sf "$KOI_URL/healthz" > /dev/null 2>&1; do
-  sleep 2
-done
-
-RESULT=$(curl -sf -X POST "$KOI_URL/v1/mdns/announce" \
-  -H "x-koi-token: $KOI_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d "{\"name\": \"$SERVICE_NAME\", \"type\": \"_http._tcp\", \"port\": $SERVICE_PORT}")
-
-REG_ID=$(echo "$RESULT" | grep -o '"id":"[^"]*"' | cut -d'"' -f4)
-
-# Background heartbeat loop
-(while true; do
-  sleep 45
-  curl -sf -X PUT -H "x-koi-token: $KOI_TOKEN" "$KOI_URL/v1/mdns/heartbeat/$REG_ID" > /dev/null 2>&1 || break
-done) &
-HEARTBEAT_PID=$!
-
-cleanup() {
-  kill $HEARTBEAT_PID 2>/dev/null
-  curl -sf -X DELETE -H "x-koi-token: $KOI_TOKEN" "$KOI_URL/v1/mdns/unregister/$REG_ID" > /dev/null 2>&1
-}
-trap cleanup EXIT TERM INT
-
-exec "$@"
-```
-
-The difference: if the container crashes hard (OOM kill, kernel panic, host power loss), the heartbeat stops, and Koi removes the service after 90 + 30 = 120 seconds. With permanent mode, the stale registration would linger until someone manually removes it or Koi restarts.
-
----
-
-## Discovering services at startup
-
-Some containers need to find another service before they can start - a database, an API gateway, a configuration server. Koi's resolve endpoint handles this.
-
-```bash
-#!/bin/sh
-# wait-for-service.sh
-
-KOI=${KOI_HOST:-host.docker.internal}
-KOI_URL="http://$KOI:5641"
-
-# Wait for the dependency to appear on the network
-echo "Looking for $DEPEND_SERVICE..."
-while true; do
-  RESULT=$(curl -sf "$KOI_URL/v1/mdns/resolve?name=$DEPEND_SERVICE" 2>/dev/null)
-  if echo "$RESULT" | grep -q '"resolved"'; then
-    IP=$(echo "$RESULT" | grep -o '"ip":"[^"]*"' | cut -d'"' -f4)
-    PORT=$(echo "$RESULT" | grep -o '"port":[0-9]*' | cut -d: -f2)
-    echo "Found $DEPEND_SERVICE at $IP:$PORT"
-    export DEPEND_HOST="$IP"
-    export DEPEND_PORT="$PORT"
-    break
-  fi
-  sleep 2
-done
-
-exec "$@"
-```
+Use one example, not both. An environment variable can replace the announce label:
 
 ```yaml
-services:
-  worker:
-    image: my-worker:latest
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    environment:
-      - KOI_HOST=host.docker.internal
-      - DEPEND_SERVICE=Config Server._http._tcp.local.
+environment:
+  KOI_MDNS_ANNOUNCE: koi-demo
 ```
 
-The worker container waits until "Config Server" appears on the network, extracts its IP and port, then starts.
+Confirm the application responds at `http://127.0.0.1:8080/` on the host.
+A container's running state does not establish HTTP readiness.
 
----
+## 3. Inspect Koi's observations
 
-## Subscribing to events
-
-For containers that need to react to services coming and going - load balancers, monitoring dashboards, mesh proxies - use the SSE events endpoint.
-
-```bash
-curl -s -N http://$KOI_HOST:5641/v1/mdns/subscribe?type=_http._tcp
+```sh
+curl -fsS http://127.0.0.1:5641/v1/runtime/instances
+koi mdns discover _http._tcp
+koi dns lookup koi-demo
+koi health status
 ```
 
-```
-data: {"event":"found","service":{"name":"My NAS","type":"_http._tcp","host":"nas.local.","ip":"192.168.1.50","port":8080,"txt":{}}}
-data: {"event":"resolved","service":{"name":"My NAS","type":"_http._tcp","host":"nas.local.","ip":"192.168.1.50","port":8080,"txt":{}}}
-data: {"event":"removed","service":{"name":"My NAS","type":"_http._tcp","txt":{}}}
-```
+Check the correct published port and a LAN address the other machine can reach.
+A Docker bridge, VPN-only or loopback address is not interchangeable with that
+LAN address.
 
-Like browse, this stream closes after 5 seconds of quiet by default. For long-lived watching (load balancers, dashboards), set `idle_for=0`:
+The shorthand derives `koi-demo.internal` in the default Koi zone.
+The lookup above verifies Koi's answer, not another client's resolver setup.
+The health check runs from the Koi host and has a freshness window.
 
-```bash
-curl -s -N "http://$KOI_HOST:5641/v1/mdns/subscribe?type=_http._tcp&idle_for=0"
-```
+## 4. Open the actual app from another machine
 
-Each event tells you what happened:
+On a second machine with a running local Koi service:
 
-| Event      | Meaning                                   |
-| ---------- | ----------------------------------------- |
-| `found`    | A new service appeared (we know its name) |
-| `resolved` | We now have its IP, port, and TXT records |
-| `removed`  | The service is gone                       |
-
-A Python container consuming this might look like:
-
-```python
-import requests
-import json
-
-KOI = "http://host.docker.internal:5641"
-response = requests.get(f"{KOI}/v1/mdns/subscribe?type=_http._tcp&idle_for=0", stream=True)
-
-for line in response.iter_lines(decode_unicode=True):
-    if line.startswith("data: "):
-        event = json.loads(line[6:])
-        kind = event["event"]
-        name = event["service"]["name"]
-
-        if kind == "resolved":
-            ip = event["service"]["ip"]
-            port = event["service"]["port"]
-            print(f"Service up: {name} at {ip}:{port}")
-        elif kind == "removed":
-            print(f"Service gone: {name}")
+```sh
+koi mdns discover _http._tcp
 ```
 
----
+With only a binary and no local Koi service:
 
-## DNS from containers
-
-Containers can use Koi's DNS resolver to map friendly names to LAN IPs.
-
-### Lookup a local name
-
-```bash
-curl -s "http://$KOI_HOST:5641/v1/dns/lookup?name=grafana&type=A"
+```sh
+koi --standalone mdns discover _http._tcp
 ```
 
-```json
-{ "name": "grafana.internal.", "ips": ["192.168.1.42"], "source": "static" }
+Another DNS-SD browser can also inspect the announcement. Locate the demo and
+open `http://<host-lan-ip>:8080/` using its observed address; replace the
+placeholder. Success is the actual application response, not a service row.
+
+Once IP access works, configure [zone forwarding](docs/guides/dns-coexistence.md)
+through the client's existing resolver. Check that client's ordinary DNS answer
+and then open `http://koi-demo.internal:8080/`. Koi does not install
+resolver rules on every other machine.
+
+## 5. Check lifecycle and cleanup
+
+Stop the trial container:
+
+```sh
+docker stop koi-demo
 ```
 
-### List known names
+Verify the application no longer answers and observe withdrawal of the derived
+announcement, DNS record and health check. Discovery clients may retain caches
+until withdrawal or expiry; record the client and timing.
 
-```bash
-curl -s "http://$KOI_HOST:5641/v1/dns/list"
+Restart it:
+
+```sh
+docker start koi-demo
 ```
 
-### Add and remove static entries (requires the daemon token)
+Wait for application readiness, rediscover it from the second machine and open it
+again. Recreate the trial container:
 
-```bash
-curl -s -X POST -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/dns/add \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"grafana","ip":"192.168.1.42"}'
-
-curl -s -X DELETE -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/dns/remove/grafana
+```sh
+docker rm -f koi-demo
+docker run -d --name koi-demo -p 8080:80 --label koi.announce=koi-demo --label koi.health.path=/ nginx:alpine
 ```
 
-If you need to start or stop the resolver from a container, use (requires the daemon token):
+Check the new instance does not leave duplicate announcements or old derived
+resources. Finally remove only the trial container:
 
-```bash
-curl -s -X POST -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/dns/serve
-curl -s -X POST -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/dns/stop
+```sh
+docker rm -f koi-demo
 ```
 
----
+For Compose, use its own stop/up/down lifecycle. Retain pre-existing Koi state and
+unrelated workloads. Before claiming a supported persistent setup, also verify
+the chosen daemon restart and runtime reconnect recovery.
 
-## Health checks from containers
+## Diagnose by layer
 
-Use Koi to maintain a shared health view for services that containers depend on.
+| Observation | Next check |
+| --- | --- |
+| App fails on the host | Container logs, startup and published port |
+| App works, no runtime instance | Engine connection, running account and selected backend |
+| Instance exists, not opted in | Label/env spelling, explicit disable and scope |
+| Publication visible only locally | LAN interface, multicast/firewall and peer discovery |
+| Peer discovers but cannot open | Advertised address, published port, firewall and readiness |
+| IP works but name fails | Client resolver and forwarding |
+| HTTPS warns | URL/SAN, chain, expiry and the intended client's root source |
 
-### Add a TCP check (requires the daemon token)
+[Troubleshooting](docs/guides/troubleshooting.md) provides more detail. Do not use
+a TLS verification bypass to declare a trusted path successful.
 
-```bash
-curl -s -X POST -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/health/add \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"db","kind":"tcp","target":"10.0.0.10:5432"}'
+## A container discovers LAN services through HTTP
+
+This is a separate integration requiring an application using Koi or an adapter.
+It does not transparently replace native multicast calls in unmodified software.
+
+HTTP defaults to loopback. Docker Desktop supplies a
+`host.docker.internal` route; verify it on the target installation.
+On native Linux, make the API reachable deliberately:
+
+```sh
+koi --daemon --http-bind bridge
 ```
 
-### Add an HTTP check (requires the daemon token)
+Configure an existing service through its own controls instead of starting a
+second daemon. Use the actual bridge gateway or host mapping; rootless engines
+and custom networks may differ. A bridge bind is narrower than a wildcard LAN bind.
 
-```bash
-curl -s -X POST -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/health/add \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"api","kind":"http","target":"http://10.0.0.20:8080/health"}'
+On the host, write a token file in an operator-owned location:
+
+```sh
+koi token write /path/owned-by-you/koi-token
 ```
 
-### View and remove checks
+Mount it read-only as a secret using suitable platform permissions. Read it at
+runtime, not from the image. Refresh the secret when the daemon token changes.
+In a POSIX container, after setting KOI_HOST to the verified host endpoint:
 
-```bash
-curl -s http://$KOI_HOST:5641/v1/health/status
-curl -s http://$KOI_HOST:5641/v1/health/list
-curl -s -X DELETE -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/health/remove/db
+```sh
+TOKEN=$(cat /run/secrets/koi_token)
+curl -fsS "http://$KOI_HOST:5641/healthz"
+curl -N -H "x-koi-token: $TOKEN" "http://$KOI_HOST:5641/v1/mdns/discover?type=_http._tcp"
 ```
 
----
-
-## Certmesh from containers
-
-Containers can call certmesh endpoints for status, audit logs, and policy management.
-Certificate creation and enrollment are still best managed on the host so the trust
-store and cert files live in the host data directory.
-
-```bash
-curl -s http://$KOI_HOST:5641/v1/certmesh/status
-# The audit log narrates the full trust history, so it requires the daemon token
-# even though it is a GET (like /v1/mcp; the other read GETs stay token-free):
-curl -s -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/certmesh/log
-# Mutations require the daemon token:
-curl -s -X POST -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/certmesh/open-enrollment -H 'Content-Type: application/json' -d '{}'
-curl -s -X POST -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/certmesh/close-enrollment
-```
-
-If you do enroll from a container, the `/v1/certmesh/join` response includes PEM
-material you can store in the container, but it will not update the host trust store.
-
----
-
-## Proxy configuration from containers
-
-The proxy capability lets you terminate TLS on the host using certmesh-managed
-certificates and forward traffic to local backends.
-
-### Add a proxy entry (requires the daemon token)
-
-```bash
-curl -s -X POST -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/proxy/add \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"app","listen_port":443,"backend":"http://127.0.0.1:8080"}'
-```
-
-### List or remove entries
-
-```bash
-curl -s http://$KOI_HOST:5641/v1/proxy/status
-curl -s http://$KOI_HOST:5641/v1/proxy/list
-curl -s -X DELETE -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/proxy/remove/app
-```
-
----
-
-## IPC via mounted socket
-
-HTTP works for most cases, but if you want zero network overhead for same-host containers, you can mount Koi's Unix domain socket into the container.
-
-Start Koi with a known socket path (the default on Linux is `$XDG_RUNTIME_DIR/koi.sock`):
-
-```bash
-koi --daemon --pipe /var/run/koi.sock
-```
-
-Mount the socket into your container:
-
-```yaml
-services:
-  app:
-    image: my-app:latest
-    volumes:
-      - /var/run/koi.sock:/var/run/koi.sock
-```
-
-Inside the container, speak NDJSON over the socket:
-
-```bash
-echo '{"browse":"_http._tcp"}' | socat - UNIX-CONNECT:/var/run/koi.sock
-```
-
-IPC registrations use session-based leases instead of heartbeats. As long as the socket connection is open, the registration stays alive. When the connection drops (container stops, crashes, is removed), Koi starts a 30-second grace period and then removes the service. No heartbeat loop needed.
-
-This is the lowest-latency option and has the cleanest lifecycle semantics - the OS tells Koi immediately when a container's connection drops.
-
----
-
-## Port mapping considerations
-
-When a container registers a service with Koi, the port in the registration should be the **host-side** port - the one other devices on the network will connect to.
-
-```yaml
-services:
-  web:
-    image: nginx
-    ports:
-      - "8080:80" # host:container
-```
-
-Register with port `8080`, not `80` (requires the daemon token, see security model):
-
-```bash
-curl -s -X POST http://$KOI_HOST:5641/v1/mdns/announce \
-  -H "x-koi-token: $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"name": "My Web Server", "type": "_http._tcp", "port": 8080}'
-```
-
-When another device discovers this service via mDNS, it sees port 8080 and connects to the host on that port. Docker forwards the traffic to the container's port 80.
-
-If you're using `--network=host` (where there's no port mapping), use the container's actual port.
-
----
-
-## IP pinning
-
-By default, Koi advertises **all** of the host's IP addresses in the mDNS A record. On machines with Docker bridges, WSL virtual adapters, or VPN interfaces, this can include addresses that other devices on the LAN can't reach (e.g. `172.17.0.1`, `127.0.0.1`).
-
-Use the `ip` field to pin the registration to a specific LAN address (requires the daemon token, see security model):
-
-```bash
-curl -s -X POST http://$KOI_HOST:5641/v1/mdns/announce \
-  -H "x-koi-token: $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"name": "My Service", "type": "_http._tcp", "port": 8080, "ip": "192.168.1.42"}'
-```
-
-Or from the CLI:
-
-```bash
-koi mdns announce "My Service" http 8080 --ip 192.168.1.42
-```
-
-When `ip` is present, only that address is advertised. When `ip` is absent, all machine IPs are included (the original auto-detect behavior).
-
-This is especially useful for container hosts where the host machine has multiple network interfaces and you want mDNS clients to connect to the correct one.
-
----
-
-## Kubernetes
-
-Koi runs on the node, not in a pod. Deploy it as a DaemonSet so every node has an instance:
-
-```yaml
-apiVersion: apps/v1
-kind: DaemonSet
-metadata:
-  name: koi
-spec:
-  selector:
-    matchLabels:
-      app: koi
-  template:
-    metadata:
-      labels:
-        app: koi
-    spec:
-      hostNetwork: true
-      containers:
-        - name: koi
-          image: ghcr.io/sylin-org/koi:latest
-          args: ["--daemon"]
-          ports:
-            - containerPort: 5641
-              hostPort: 5641
-```
-
-Pods on each node reach Koi via the node's IP. Use the downward API to inject the node IP:
-
-```yaml
-env:
-  - name: KOI_HOST
-    valueFrom:
-      fieldRef:
-        fieldPath: status.hostIP
-```
-
-Then from any pod:
-
-```bash
-curl -s http://$KOI_HOST:5641/v1/mdns/discover?type=_http._tcp
-```
-
-The DaemonSet needs `hostNetwork: true` because mDNS requires multicast on the physical network interface. Koi handles the multicast; pods talk to it over plain HTTP.
-
----
-
-## Health checks
-
-Use Koi's health endpoint as a dependency check in your container health probes:
-
-```yaml
-services:
-  app:
-    healthcheck:
-      test: ["CMD", "curl", "-sf", "http://host.docker.internal:5641/healthz"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-```
-
-Or in Kubernetes:
-
-```yaml
-livenessProbe:
-  httpGet:
-    host: $(KOI_HOST)
-    path: /healthz
-    port: 5641
-  periodSeconds: 30
-```
-
-If Koi becomes unreachable, the container is marked unhealthy. This is useful when your application depends on service discovery being available.
-
----
-
-## Troubleshooting
-
-**Container can't reach Koi**
-
-Verify the host is reachable:
-
-```bash
-docker run --rm curlimages/curl curl -s http://172.17.0.1:5641/healthz
-```
-
-If this fails, check that:
-
-- Koi is running on the host (installed as a service, or `koi --daemon` in the foreground)
-- The firewall allows TCP port 5641 (on Windows, `koi install` configures this automatically)
-- The container can route to the host (try `ping 172.17.0.1` from inside the container)
-
-On Linux with `host.docker.internal`, you need Docker 20.10+ and either `--add-host=host.docker.internal:host-gateway` or the `extra_hosts` Compose directive.
-
-**Services aren't appearing on the network**
-
-Koi needs multicast access on the host's network interface. Check that:
-
-- The host's firewall allows UDP port 5353 (mDNS)
-- The host is on a network that supports multicast (most LANs do; some corporate networks block it)
-
-Run `koi mdns discover` on the host to verify mDNS is working at the host level before debugging the container path.
-
-**Stale registrations after container crash**
-
-Heartbeat-mode registrations expire automatically (default: 90s lease + 30s grace = 120s total). If you used permanent mode (`lease_secs: 0`), stale entries must be removed manually:
-
-```bash
-# From the host
-koi mdns admin ls
-koi mdns admin unregister <id>
-```
-
-Or via the HTTP API from another container (requires the daemon token):
-
-```bash
-curl -s -X DELETE -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/mdns/admin/unregister/<id>
-```
-
-For automatic cleanup, prefer heartbeat mode over permanent mode in containers.
-
-**CORS errors from browser-based containers**
-
-Koi restricts CORS origins to localhost / 127.0.0.1 (any port). If you run browser applications on other origins (like on physical IP addresses or external domains), they cannot call the HTTP API directly due to this browser security restriction. Use a reverse proxy or run your pages on localhost.
-
----
-
-## Quick reference
-
-```bash
-# Health check
-curl -s http://$KOI_HOST:5641/healthz
-
-# Browse for HTTP services (SSE stream)
-curl -s http://$KOI_HOST:5641/v1/mdns/discover?type=_http._tcp
-
-# Resolve a specific instance
-curl -s http://$KOI_HOST:5641/v1/mdns/resolve?name=My%20NAS._http._tcp.local.
-
-# Register a service (heartbeat mode, 90s lease, requires token)
-curl -s -X POST -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/mdns/announce \
-  -H 'Content-Type: application/json' \
-  -d '{"name": "My App", "type": "_http._tcp", "port": 8080}'
-
-# Register permanently (no heartbeat needed, requires token)
-curl -s -X POST -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/mdns/announce \
-  -H 'Content-Type: application/json' \
-  -d '{"name": "My App", "type": "_http._tcp", "port": 8080, "lease_secs": 0}'
-
-# Send heartbeat (requires token)
-curl -s -X PUT -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/mdns/heartbeat/{id}
-
-# Unregister (requires token)
-curl -s -X DELETE -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/mdns/unregister/{id}
-
-# Subscribe to lifecycle events (SSE stream)
-curl -s http://$KOI_HOST:5641/v1/mdns/subscribe?type=_http._tcp
-
-# Discover all service types
-curl -s http://$KOI_HOST:5641/v1/mdns/discover?type=_services._dns-sd._udp.local.
-
-# DNS lookup
-curl -s "http://$KOI_HOST:5641/v1/dns/lookup?name=grafana&type=A"
-
-# DNS list
-curl -s http://$KOI_HOST:5641/v1/dns/list
-
-# Add a DNS entry (requires token)
-curl -s -X POST -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/dns/add \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"grafana","ip":"192.168.1.42"}'
-
-# Health status
-curl -s http://$KOI_HOST:5641/v1/health/status
-
-# Add a health check (requires token)
-curl -s -X POST -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/health/add \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"db","kind":"tcp","target":"10.0.0.10:5432"}'
-
-# Certmesh status
-curl -s http://$KOI_HOST:5641/v1/certmesh/status
-
-# Proxy status
-curl -s http://$KOI_HOST:5641/v1/proxy/status
-```
+Non-loopback inventory and sensitive reads require authentication. A token does
+not encrypt plaintext HTTP. [API authentication](docs/guides/api-authentication.md)
+defines route rules. [mDNS](docs/guides/mdns.md) covers announcement, events,
+heartbeat and removal. [UDP relay](docs/guides/recipes/container-udp.md) is an
+explicit socket interface for participating applications.
+
+## Trusted service names are a separate extension
+
+Keep an existing proxy and certificates when they meet the need.
+`koi.proxy.port` adds a listener, not proof of a matching trusted URL.
+`koi.certmesh` records intent and does not issue or inject a workload
+certificate. Exact service-name primitives exist in development source; public
+grant/listener and client setup are incomplete.
+
+See [container TLS](docs/guides/recipes/container-trusted-cert.md),
+[host-member HTTPS](docs/tutorials/trusted-https.md) and
+[ACME limits](docs/guides/acme.md). A trusted-service extension must prove the
+intended client's trust, renewal and recovery.
+
+## Further configuration
+
+[Runtime labels](docs/guides/runtime.md) ·
+[Existing-tool integrations](docs/guides/integrations.md) ·
+[DNS forwarding](docs/guides/dns-coexistence.md) ·
+[Security model](docs/reference/security-model.md)

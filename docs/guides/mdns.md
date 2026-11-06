@@ -1,12 +1,15 @@
-# mDNS - Service Discovery
+# Discover and publish LAN services
 
-Every device on your local network already speaks mDNS. Your printer uses it. Your smart speaker uses it. AirPlay, Chromecast, Spotify Connect - they all use multicast DNS and DNS-SD to find each other without configuration servers or static IP tables.
+Koi exposes DNS-SD observations and publication through CLI, HTTP and local IPC.
+Use it to find a known application's endpoint or publish a reachable container
+host port. Not every device advertises services; discovery proves neither app
+access nor identity. A container application needs to call Koi or an adapter.
 
-The problem is that _your_ applications can't easily do the same. The OS-level APIs are platform-specific, poorly documented, and unusable from containers. Koi's mDNS module gives you this superpower through a uniform interface: CLI commands, an HTTP API, and IPC - all producing the same JSON.
+Start with the [container walkthrough](../../CONTAINERS.md). Check the independent
+client and the [selected artifact](../launch/README.md), rather than inferring
+support from the existence of a platform adapter.
 
-**When to use mDNS**: You have services on a LAN that need to find each other without hardcoded addresses. A homelab where Grafana should discover Prometheus. A fleet of Raspberry Pis that need to know about each other. Containers on a Docker host that need to find a database on the LAN. If you're reaching for a service registry but your scope is "one network segment," mDNS is the right tool.
-
-All CLI commands use the `koi mdns` prefix. All HTTP endpoints live under `/v1/mdns/`.
+## Provider behavior
 
 Koi keeps one stable mDNS control plane while its provider plan adapts to the host.
 Each platform adapter reports what is installed, configured, running, healthy, and
@@ -141,7 +144,7 @@ koi status
 ```
 
 ```
-Koi v1.0.0-dev.0
+Koi <selected-version>
   ...
   Browse:    idle      # or "active" while the meta-browse is running
 ```

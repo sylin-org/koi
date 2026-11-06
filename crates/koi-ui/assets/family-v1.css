@@ -1,14 +1,14 @@
 /* ==========================================================================
-   Ghostlight workbench.
+   Sylin workbench foundation, adapted from Ghostlight for Koi.
 
    Colour follows the sylin.org night-garden standard: the warm near-black
    ground, the five-step ink ramp, hairline edges, and the per-project accent
-   carried as --a / --al / --argb so no rule hard-codes a hue. Ghostlight's
-   accent is teal, the same one its card wears in the portfolio deck.
+   carried as --a / --al / --argb. Koi's accent is blue, the same one its
+   card wears in the portfolio deck.
 
-   The accent is a signal, not a theme: it means "Ghostlight is acting". At
-   rest the window is entirely neutral, so it brightens only when work is
-   really happening. The spring curve stays shared with the in-page renderer.
+   The operational shell stays quiet at rest; accent marks selection and
+   deliberate actions. Koi's shell owns its density, responsive layout and
+   shorter interaction beats. Domain-specific Ghostlight effects are not used.
    ========================================================================== */
 
 :root {

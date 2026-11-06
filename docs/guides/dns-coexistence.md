@@ -1,10 +1,8 @@
-# DNS coexistence — running Koi alongside your resolver
+# Forward a service zone through an existing resolver
 
-Koi's resolver does **not** want to replace the DNS server you already run. The
-collaboration pattern (Charter principle 10) is **conditional forwarding**: your
-incumbent resolver stays authoritative for everything, and forwards just the Koi
-zone (`lab.internal` in the examples below) to Koi. Stop forwarding and nothing
-breaks — Koi is purely additive.
+Use conditional forwarding after the app works by LAN address. The existing
+resolver forwards only the Koi zone; other queries use its existing policy.
+Removing the rule stops this resolution path, so account for dependent services.
 
 Koi's DNS resolver listens on `0.0.0.0:53` by default and is authoritative for its
 zone (default `internal`; the examples use `lab.internal` — set it with `--dns-zone`).
@@ -121,12 +119,17 @@ dig @<technitium-ip> grafana.lab.internal
 
 ---
 
-## Push adapters (follow-up)
+## Forwarding, exports and lifecycle
 
 The recipes above are **pull/forward** integrations — the incumbent forwards live
-queries to Koi, so Koi's records are always current with zero sync. *Push*
+queries to Koi, so Koi's records are always current with no separate record-copy job. *Push*
 adapters that write Koi's records *into* another resolver (e.g. the Pi-hole admin
-API, or RFC 2136 dynamic DNS updates) are an explicit follow-up and not yet
-provided. For static imports today, poll `GET /v1/dns/zone?format=hosts` (or
+API, or RFC 2136 dynamic DNS updates) are not provided. For static imports today, poll `GET /v1/dns/zone?format=hosts` (or
 `dnsmasq`) on a timer and feed the file to your resolver — pass
 `-H "x-koi-token: $TOKEN"` when polling from a remote host (see the auth note above).
+## Verify the intended client
+
+The examples query an explicit resolver. Also test the client's ordinary resolver
+selection, then open the actual application URL. A DNS answer does not prove its
+port, readiness or TLS trust. Record the resolver version/configuration in the
+selected artifact's [readiness evidence](../launch/README.md).

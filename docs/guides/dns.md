@@ -1,12 +1,12 @@
-﻿# DNS - Local Resolver
+# Resolve a service name through the client's DNS path
 
-Names matter. Typing `grafana.internal` into a browser is a fundamentally different experience from typing `10.0.0.42:3000`. Names are how humans think about services. DNS is how computers translate that thinking into addresses.
+Koi serves a local zone, normally internal. Use it after the application's LAN
+address and port work from the intended client. Naming does not open a firewall,
+prove readiness or configure another machine's resolver.
 
-But on a private network, DNS is usually an afterthought. You hard-code IPs in config files, add entries to `/etc/hosts` on each machine, or run a full-blown BIND instance that nobody wants to maintain. Koi's DNS capability fills the gap: a lightweight local resolver that answers queries for your private zone and forwards everything else to the system upstream.
-
-**When to use Koi DNS**: You have services on your LAN that you want to reach by name. You're tired of editing hosts files. You want certmesh SANs and mDNS discoveries to automatically become resolvable DNS names. You need split-horizon behavior where `.internal` names resolve locally but everything else goes to your normal resolver.
-
----
+Keep an existing resolver through [zone forwarding](dns-coexistence.md).
+Add or derive the record, inspect Koi's answer, inspect the client's ordinary
+answer, then open the actual application by name.
 
 ## The three record sources
 
@@ -16,7 +16,9 @@ This is the key design insight. Koi DNS doesn't just serve a static zone file - 
 2. **Certmesh SANs**. When a certmesh member has Subject Alternative Names on its certificate, those SANs become DNS entries automatically. No extra configuration. (A certmesh member's `hostname.local` SAN is an mDNS name, not an entry in this resolver's internal zone — the resolver re-suffixes the mDNS hostname into your zone, e.g. `hostname.internal`, rather than serving the literal `.local` name.)
 3. **mDNS aliases**. Services discovered via mDNS get DNS entries too. If `grafana._http._tcp` appears on the network, `grafana.internal` becomes resolvable.
 
-This layering is deliberate. Static entries give you explicit control. Certmesh SANs ensure TLS names are always resolvable. mDNS aliases mean discovered services "just work" in DNS too. The result is a local zone that stays accurate without constant maintenance.
+Records exist inside Koi's zone. Verify their current values in a live lookup.
+Consumers still require the correct resolver path, and certificate-derived names
+do not establish a client's TLS trust.
 
 Anything outside the local zone (`.internal` by default) is forwarded to your system's upstream resolver. Koi doesn't try to be a general-purpose recursive resolver - it stays in its lane.
 
@@ -48,7 +50,8 @@ See everything in the zone:
 koi dns list
 ```
 
-That's the whole cycle: serve, add, query, list. The resolver runs until you stop it or the daemon shuts down.
+Then query through the intended client's normal resolver and open the actual
+application. Configure zone forwarding before claiming that browser access works.
 
 ---
 
@@ -127,16 +130,16 @@ conditional-forwarding recipes (one per incumbent) with a `dig` test each.
 | `--dns-qps`    | `KOI_DNS_QPS`    | `200`   | Max DNS queries per second, per client IP |
 | `--no-dns`     | `KOI_NO_DNS`     | `false` | Disable DNS capability entirely          |
 
-The zone suffix determines what names the resolver claims authority over. The default `.internal` is a good choice for most environments - it's a reserved private-use TLD, so there's no collision risk. But if you prefer `.corp` or `.home`, change it:
+The zone suffix determines what names the resolver claims authority over. The default `.internal` is a good choice for most environments - it's a reserved private-use TLD, so there's no collision risk. For a subdomain within that private namespace, configure:
 
 ```
-koi --dns-zone corp
+koi --daemon --dns-zone lab.internal
 ```
 
 Port 53 is the standard DNS port, but it requires elevated privileges on most systems. For development and testing, use a high port:
 
 ```
-koi --dns-port 15353
+koi --daemon --dns-port 15353
 ```
 
 The `--dns-public` flag relaxes the client filter. By default, Koi only answers queries from private address ranges (RFC 1918, link-local). Enabling public mode lets any client query your resolver. This is almost never what you want on an open network - it's there for specific environments where the network topology demands it.
@@ -164,9 +167,10 @@ These constraints mean Koi DNS can safely run alongside your existing DNS infras
 This is the most common issue. Port 53 requires root/admin privileges. Two options:
 
 1. Run Koi with elevated privileges (suitable for production daemon mode)
-2. Use a high port for testing: `koi --dns-port 15353`
+2. Use a high port for testing: `koi --daemon --dns-port 15353`
 
-On Linux, you may also need to contend with `systemd-resolved` which holds port 53. Either disable it or configure Koi on an alternate port.
+On Linux, you may also need to contend with `systemd-resolved` which holds port 53. Inspect the current listener ownership and configure coexistence or an alternate
+port. Do not disable the existing resolver as a default repair.
 
 ### No results for `.internal` names
 

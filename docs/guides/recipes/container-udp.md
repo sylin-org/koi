@@ -1,12 +1,14 @@
-# Recipe: UDP bridging from inside a container
+# Relay a host UDP socket to a container application
 
-**Goal:** a process inside a bridge-networked Docker container binds a host UDP port through Koi and receives datagrams from the LAN — without `--network=host`, without multicast forwarding, without any UDP socket of its own.
+This advanced recipe requires an application using Koi's authenticated HTTP/SSE
+API. Containers already support UDP subject to networking and published ports;
+this relay supplies an explicit host socket and is not transparent multicast for
+unmodified software. It is optional for the [container application trial](../../../CONTAINERS.md).
 
-Bridge networking gives a container no path to raw UDP, multicast, or broadcast. Koi binds the real socket on the host and relays datagrams to the container over plain HTTP and SSE. The container only needs an HTTP client. This recipe walks the whole loop: reach the host daemon, source the token, then `bind` → `recv` → `send` → `heartbeat`.
-
-If you want the *why* behind UDP bridging and its design limits (control-plane traffic only, base64 overhead, not for media or game servers), read the [UDP guide](../udp.md) first. This recipe is the container-specific walkthrough that guide doesn't cover.
-
----
+Verify an actual sender, receiver, response and cleanup using the selected
+artifact. Base64/HTTP/SSE overhead makes this a bounded control-traffic interface,
+not a high-throughput data plane. See [UDP](../udp.md) and
+[release readiness](../../launch/README.md).
 
 ## Prerequisites
 
@@ -22,7 +24,7 @@ Koi's HTTP API binds to `127.0.0.1:5641` by default. How the container reaches i
 
 | Platform | Address | What it takes |
 | -------- | ------- | ------------- |
-| Docker Desktop (Windows/macOS) | `host.docker.internal:5641` | Works as-is — Desktop proxies into the host loopback |
+| Docker Desktop (Windows/macOS) | `host.docker.internal:5641` | Verify the Desktop host route on the target installation |
 | Native Linux | `172.17.0.1:5641` (default bridge gateway), or `host.docker.internal:5641` with `extra_hosts: ["host.docker.internal:host-gateway"]` | Bridge-networked containers **cannot** reach a loopback bind — start Koi with `--http-bind bridge` (binds the bridge IP, e.g. `172.17.0.1`) or `--http-bind 0.0.0.0` |
 
 ```bash
@@ -36,7 +38,7 @@ Inside the container we use `$KOI_HOST` as a placeholder for whichever address f
 
 ```bash
 export KOI_HOST=host.docker.internal   # Docker Desktop
-export KOI_HOST=172.17.0.1             # native Linux default bridge
+export KOI_HOST=172.17.0.1             # native Linux example bridge; verify the actual gateway
 ```
 
 Confirm reachability (no token needed for `GET /healthz`):
@@ -262,3 +264,10 @@ Full request/response schemas: [http-api.md](../../reference/http-api.md). The c
 **Binding vanished.** The lease expired — the reaper closes any socket idle past its `lease_secs`. Run a heartbeat loop at ~half the interval, or raise `lease_secs` (max `86400`).
 
 **Nothing arrives on the recv stream.** Confirm traffic is actually hitting the bound host port, and that you subscribed to the right `id` (each binding has its own stream). The payload is base64 — decode before comparing bytes.
+## Verify and remove the trial
+
+Observe the real application receiving the expected datagram from the independent
+sender. A successful bind response only establishes a socket. Check reply handling,
+lease renewal, expired-binding behavior and exact unbind/cleanup. Preserve the
+existing daemon and unrelated sockets; record application/engine/client versions
+with the artifact's readiness evidence.

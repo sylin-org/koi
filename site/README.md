@@ -1,31 +1,34 @@
-# sylin.org Koi landing page — draft (ADR-034 D2)
+# Koi landing page
 
-`index.html` is the ready-to-serve draft for the operator's Koi page. Static,
-dependency-free, no build step; visual tokens match the workbench (ground
-`#0f0e12`, accent `#60a5fa`, light `#93c5fd`).
+`index.html` is the static source for the Koi page. This checkout is not evidence
+that its current content is deployed. Publishing remains a separate action.
 
-## Hosting contract
+The page introduces the container/LAN adoption task and directs visitors to a
+named release artifact and matching documentation. It must not imply that the
+development branch, npm packaging or an unverified scenario is publicly ready.
 
-Canonical paths on the operator's site (ADR-034 D2):
+## Content contract
 
-- `<koi-page>/`            → `index.html`
-- `<koi-page>/install.sh`  → copy of the repo-root `install.sh`
-- `<koi-page>/install.ps1` → copy of the repo-root `install.ps1`
+- Lead with one container application found and opened from a second machine.
+- Describe lifecycle verification, existing-tool fit and the actual audience.
+- Give Certmesh a visible **Private-space identity and trust** pillar: a hero
+  pointer and a dedicated section linked to the [Certmesh guide](../docs/guides/certmesh.md).
+  Explain the local CA, member enrollment/renewal, signed membership/revocation
+  information for participating Koi-aware applications, and recovery options.
+- Keep network isolation, application authorization and browser HTTPS as separate
+  responsibilities. Certmesh visibility does not expand the initial preview gate
+  or imply a completed exact service-name integration.
+- Separate stable 0.9.0, prerelease 1.0.0-rc.2 and development 1.0.0-dev.0.
+- Use [release readiness](../docs/launch/README.md) to determine supported claims.
+- Treat trusted exact service-name HTTPS as a separate extension.
+- Do not claim measured setup times or broad platform acceptance without evidence.
 
-Sync rule: the served scripts must be byte-identical to a tagged release's
-scripts, or a 302 to
-`https://raw.githubusercontent.com/sylin-org/koi/<tag>/<file>` so they can
-never drift from the release manifest (which pins their SHA-256 digests).
-Prefer the redirect: one source of truth, no sync job.
+## Hosting
 
-The page's commands assume those canonical paths. If the page lives at a
-different path than the scripts, adjust the two `cmd-*` code lines.
+The owned page is https://sylin.org/koi/. If bootstrap scripts are served under
+that path, serve bytes from an identified release tag or redirect to that exact
+tagged file. Do not silently mix development instructions and stable binaries.
 
-## Channel states on the page follow ADR-025 §6
-
-- **available** — verified and publicly installable now.
-- **prepared** — merged and exercised, registry not activated (npm today).
-- **planned** — needs engineering or operational ownership (brew/winget/AUR/
-  Scoop/Nix today).
-
-Flip a state only after the channel is independently verified end to end.
+The page has no build or external runtime dependency. Before deployment, inspect
+its narrow-screen layout, keyboard links and release links; update
+the public support statement only after the named artifact's evidence is accepted.

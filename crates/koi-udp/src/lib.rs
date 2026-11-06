@@ -72,6 +72,25 @@ pub struct UdpBindRequest {
     /// for genuine cross-host datagram bridging.
     #[serde(default)]
     pub allow_remote: bool,
+    /// Enable `SO_BROADCAST` so the binding can send to the limited
+    /// (`255.255.255.255`) and subnet-directed broadcast addresses. LAN discovery
+    /// protocols that announce by broadcast need it. Requires `allow_remote`.
+    #[serde(default)]
+    pub broadcast: bool,
+}
+
+/// The same defaults as an empty JSON body, so Rust callers can write
+/// `UdpBindRequest { port, ..Default::default() }` and survive new fields.
+impl Default for UdpBindRequest {
+    fn default() -> Self {
+        Self {
+            port: 0,
+            addr: default_bind_addr(),
+            lease_secs: default_lease(),
+            allow_remote: false,
+            broadcast: false,
+        }
+    }
 }
 
 fn default_bind_addr() -> String {
@@ -79,14 +98,15 @@ fn default_bind_addr() -> String {
 }
 
 /// Validate a datagram destination before egress. Always rejects the unspecified
-/// address, multicast, and the IPv4 broadcast address; rejects any non-loopback
-/// destination unless the binding opted into `allow_remote`. This stops a token
-/// holder from using a binding as an SSRF/egress relay with the host's identity.
-fn validate_dest(dest: SocketAddr, allow_remote: bool) -> Result<(), UdpError> {
+/// address and multicast; rejects the IPv4 limited broadcast address unless the
+/// binding opted into `broadcast`; rejects any non-loopback destination unless
+/// the binding opted into `allow_remote`. This stops a token holder from using a
+/// binding as an SSRF/egress relay with the host's identity.
+fn validate_dest(dest: SocketAddr, allow_remote: bool, broadcast: bool) -> Result<(), UdpError> {
     let ip = dest.ip();
     let disallowed = ip.is_unspecified()
         || ip.is_multicast()
-        || matches!(ip, std::net::IpAddr::V4(v4) if v4.is_broadcast());
+        || (!broadcast && matches!(ip, std::net::IpAddr::V4(v4) if v4.is_broadcast()));
     if disallowed {
         return Err(UdpError::InvalidAddr(format!(
             "disallowed UDP destination {dest}"
@@ -117,6 +137,9 @@ pub struct BindingInfo {
     pub lease_secs: u64,
     /// Whether this binding may send to / listen on non-loopback addresses.
     pub allow_remote: bool,
+    /// Whether this binding may send to broadcast addresses (`SO_BROADCAST`).
+    #[serde(default)]
+    pub broadcast: bool,
 }
 
 /// Authoritative latest-value snapshot for UDP binding ownership.
@@ -413,8 +436,14 @@ impl UdpRuntime {
                 "non-loopback bind {bind_addr} requires allow_remote=true"
             )));
         }
+        if req.broadcast && !req.allow_remote {
+            return Err(UdpError::InvalidAddr(
+                "broadcast=true requires allow_remote=true".to_string(),
+            ));
+        }
 
         let socket = tokio::net::UdpSocket::bind(bind_addr).await?;
+        socket.set_broadcast(req.broadcast)?;
         let local_addr = socket.local_addr()?;
         let id = Uuid::now_v7().to_string();
         let now = Utc::now();
@@ -427,6 +456,7 @@ impl UdpRuntime {
             now,
             lease_secs,
             req.allow_remote,
+            req.broadcast,
             self.cancel.clone(),
         );
 
@@ -437,6 +467,7 @@ impl UdpRuntime {
             last_heartbeat: now,
             lease_secs,
             allow_remote: req.allow_remote,
+            broadcast: req.broadcast,
         };
 
         let mut bindings = self.bindings.write().await;
@@ -564,7 +595,7 @@ impl UdpRuntime {
             let binding = bindings
                 .get(id)
                 .ok_or_else(|| UdpError::NotFound(id.to_string()))?;
-            validate_dest(dest, binding.allow_remote())?;
+            validate_dest(dest, binding.allow_remote(), binding.broadcast())?;
             binding.sender()
         };
 
@@ -846,24 +877,34 @@ mod tests {
 
     #[test]
     fn validate_dest_allows_loopback_by_default() {
-        assert!(validate_dest("127.0.0.1:9999".parse().unwrap(), false).is_ok());
-        assert!(validate_dest("[::1]:9999".parse().unwrap(), false).is_ok());
+        assert!(validate_dest("127.0.0.1:9999".parse().unwrap(), false, false).is_ok());
+        assert!(validate_dest("[::1]:9999".parse().unwrap(), false, false).is_ok());
     }
 
     #[test]
     fn validate_dest_rejects_non_loopback_unless_allow_remote() {
-        assert!(validate_dest("10.0.0.5:9999".parse().unwrap(), false).is_err());
-        assert!(validate_dest("8.8.8.8:53".parse().unwrap(), false).is_err());
+        assert!(validate_dest("10.0.0.5:9999".parse().unwrap(), false, false).is_err());
+        assert!(validate_dest("8.8.8.8:53".parse().unwrap(), false, false).is_err());
         // ...but permitted once the binding opts in.
-        assert!(validate_dest("10.0.0.5:9999".parse().unwrap(), true).is_ok());
+        assert!(validate_dest("10.0.0.5:9999".parse().unwrap(), true, false).is_ok());
     }
 
     #[test]
     fn validate_dest_always_rejects_unspecified_multicast_broadcast() {
         // Even with allow_remote, these are never valid unicast destinations.
-        assert!(validate_dest("0.0.0.0:9999".parse().unwrap(), true).is_err());
-        assert!(validate_dest("224.0.0.1:9999".parse().unwrap(), true).is_err());
-        assert!(validate_dest("255.255.255.255:9999".parse().unwrap(), true).is_err());
+        assert!(validate_dest("0.0.0.0:9999".parse().unwrap(), true, false).is_err());
+        assert!(validate_dest("224.0.0.1:9999".parse().unwrap(), true, false).is_err());
+        assert!(validate_dest("255.255.255.255:9999".parse().unwrap(), true, false).is_err());
+    }
+
+    #[test]
+    fn validate_dest_allows_broadcast_only_on_broadcast_bindings() {
+        assert!(validate_dest("255.255.255.255:9999".parse().unwrap(), true, true).is_ok());
+        // Subnet-directed broadcast is a remote destination like any other.
+        assert!(validate_dest("192.168.1.255:9999".parse().unwrap(), true, true).is_ok());
+        // Broadcast never relaxes the other rules.
+        assert!(validate_dest("224.0.0.1:9999".parse().unwrap(), true, true).is_err());
+        assert!(validate_dest("0.0.0.0:9999".parse().unwrap(), true, true).is_err());
     }
 
     #[tokio::test]
@@ -875,6 +916,7 @@ mod tests {
                 addr: "0.0.0.0".to_string(),
                 lease_secs: 60,
                 allow_remote: false,
+                broadcast: false,
             })
             .await;
         assert!(matches!(err, Err(UdpError::InvalidAddr(_))));
@@ -890,6 +932,7 @@ mod tests {
                 addr: "127.0.0.1".to_string(),
                 lease_secs: 60,
                 allow_remote: false,
+                broadcast: false,
             })
             .await
             .expect("loopback bind should succeed");
@@ -912,6 +955,7 @@ mod tests {
                 addr: "127.0.0.1".into(),
                 lease_secs: 60,
                 allow_remote: false,
+                broadcast: false,
             })
             .await;
 
@@ -940,6 +984,7 @@ mod tests {
                 addr: "127.0.0.1".into(),
                 lease_secs: 60,
                 allow_remote: false,
+                broadcast: false,
             })
             .await
             .unwrap();
@@ -991,6 +1036,7 @@ mod tests {
                 addr: "127.0.0.1".into(),
                 lease_secs: 60,
                 allow_remote: false,
+                broadcast: false,
             })
             .await;
         assert!(matches!(bind_after_shutdown, Err(UdpError::ShuttingDown)));
@@ -1009,6 +1055,7 @@ mod tests {
                 addr: "127.0.0.1".into(),
                 lease_secs: 60,
                 allow_remote: false,
+                broadcast: false,
             })
             .await
             .expect("bind");
@@ -1038,6 +1085,7 @@ mod tests {
                 last_heartbeat: now,
                 lease_secs: 60,
                 allow_remote: false,
+                broadcast: false,
             }],
         });
         let bindings = RwLock::new(HashMap::new());
@@ -1072,6 +1120,7 @@ mod tests {
                 addr: "127.0.0.1".into(),
                 lease_secs: 60,
                 allow_remote: false,
+                broadcast: false,
             })
             .await
             .expect("bind");
@@ -1129,6 +1178,7 @@ mod tests {
                 addr: "127.0.0.1".into(),
                 lease_secs: 60,
                 allow_remote: false,
+                broadcast: false,
             })
             .await
             .unwrap();
@@ -1140,6 +1190,7 @@ mod tests {
                 addr: "127.0.0.1".into(),
                 lease_secs: 60,
                 allow_remote: false,
+                broadcast: false,
             })
             .await
             .expect("unbind success acknowledges relay and socket release");
@@ -1177,6 +1228,7 @@ mod tests {
                 addr: "127.0.0.1".into(),
                 lease_secs: 60,
                 allow_remote: false,
+                broadcast: false,
             })
             .await
             .expect("bind");
@@ -1235,6 +1287,7 @@ mod tests {
                 addr: "127.0.0.1".into(),
                 lease_secs: 60,
                 allow_remote: false,
+                broadcast: false,
             })
             .await
             .expect("bind");
@@ -1289,6 +1342,7 @@ mod tests {
             addr: "127.0.0.1".into(),
             lease_secs: 60,
             allow_remote: false,
+            broadcast: false,
         })
         .await
         .unwrap();
@@ -1313,6 +1367,7 @@ mod tests {
                 last_heartbeat: now,
                 lease_secs: 300,
                 allow_remote: false,
+                broadcast: false,
             }],
         };
         let encoded = serde_json::to_string(&status).unwrap();
@@ -1331,6 +1386,7 @@ mod tests {
             addr: "127.0.0.1".into(),
             lease_secs: 60,
             allow_remote: false,
+            broadcast: false,
         })
         .await
         .unwrap();
@@ -1366,6 +1422,7 @@ mod tests {
             addr: "127.0.0.1".into(),
             lease_secs: 60,
             allow_remote: false,
+            broadcast: false,
         })
         .await
         .unwrap();

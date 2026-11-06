@@ -1,53 +1,28 @@
 # koi-net
 
-[![Crates.io](https://img.shields.io/crates/v/koi-net.svg)](https://crates.io/crates/koi-net)
-[![Docs.rs](https://docs.rs/koi-net/badge.svg)](https://docs.rs/koi-net)
-[![License](https://img.shields.io/crates/l/koi-net.svg)](https://github.com/sylin-org/koi#license)
+The `koi-net` package builds the `koi` command and host service. Koi helps container/LAN developers and capable homelab operators expose a labeled application's reachable host endpoint, discover it from another device, and keep that view accurate when the container stops or is recreated.
 
-Let everything local find, trust, and talk.
+The daemon coordinates optional DNS, health, proxy, certificate and UDP capabilities. Their presence does not certify an end-to-end user journey.
 
-## Overview
+## Development
 
-`koi-net` is the CLI binary for Koi, an open-source local connectivity substrate.
-It makes containers, applications, and devices discoverable, secure, and
-interconnected by composing mDNS/DNS-SD, local DNS, container lifecycle, health,
-TLS and UDP bridging, and a private CA behind one daemon. The same capabilities
-are available through CLI commands, an HTTP API, and an embedded dashboard.
-
-## Install
-
-Download the prebuilt binaries from [GitHub Releases](https://github.com/sylin-org/koi/releases) for your platform, or build from source in the main workspace repository.
-
-## Usage
+Read [architecture](../../docs/reference/architecture.md) for ownership boundaries and [launch readiness](../../docs/launch/README.md) for the supported-versus-tested journey matrix. This README describes repository source; it does not assert package publication or physical acceptance.
 
 ```sh
-# Start the daemon (all capabilities enabled by default)
-koi
-
-# Discover services on the network
-koi mdns discover
-
-# Register a service
-koi mdns announce --name "My App" --type _http._tcp --port 8080
-
-# Initialize a private CA
-koi certmesh create
-
-# Start the local DNS resolver
-koi dns serve
-
-# Open the web dashboard
-koi launch
+cargo test -p koi-net --locked
 ```
 
-Run `koi --help` for the full command reference.
+Platform-dependent tests can require explicit facilities or remain ignored in ordinary runs. See [validation](../../docs/qa/validation-suite.md) before interpreting a green result.
 
-## Part of Koi
+Licensed under Apache-2.0 OR MIT; see the workspace license files.
 
-This is the binary crate of the [Koi](https://github.com/sylin-org/koi) workspace.
-See the main repository for architecture details and the full crate inventory.
+## Commands
 
-## License
+```sh
+koi --daemon
+koi status
+koi mdns discover _http._tcp
+koi mdns announce "My App" _http._tcp 8080
+```
 
-Licensed under either of [Apache License, Version 2.0](../../LICENSE-APACHE) or
-[MIT License](../../LICENSE-MIT) at your option.
+Run the daemon command in its own terminal; the following commands address the installed/running service. Bare `koi` shows status and command discovery. For an intentional daemon-free session when no local service is active, use `koi --standalone mdns discover`. Installation choices are in the [service guide](../../docs/guides/install-and-service.md).

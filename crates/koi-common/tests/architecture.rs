@@ -49,6 +49,10 @@ fn classify(pkg: &str) -> Option<Class> {
 
 const FOUNDATION: &[&str] = &["koi-config", "koi-crypto"];
 
+// ADR-044/047 retain domain-owned status contracts. This is a narrow data-type
+// exception for the shared renderer, not permission to acquire domain facades.
+const PRESENTATION_STATUS_CRATES: &[&str] = &["koi-certmesh", "koi-dns"];
+
 /// `koi-*` dependency names declared in `[dependencies]` / `[target.*.dependencies]`
 /// (NOT dev/build-dependencies, NOT `[features]`).
 fn koi_deps(manifest: &str) -> BTreeSet<String> {
@@ -402,7 +406,7 @@ fn rust_tokens(source: &str) -> Vec<RustToken<'_>> {
                 offset: index,
             });
             index += 2;
-        } else if matches!(bytes[index], b'{' | b'}' | b';') {
+        } else if matches!(bytes[index], b'{' | b'}' | b';' | b'*') {
             tokens.push(RustToken {
                 text: &source[index..index + 1],
                 offset: index,
@@ -558,7 +562,9 @@ fn dependency_graph_respects_the_layering_rules() {
             let allowed = match class {
                 Class::Kernel => false, // the kernel depends on no koi-* crate
                 Class::Foundation => dep == "koi-common",
-                Class::Presentation => dep == "koi-common",
+                Class::Presentation => {
+                    dep == "koi-common" || PRESENTATION_STATUS_CRATES.contains(&dep.as_str())
+                }
                 Class::Domain => dep == "koi-common" || FOUNDATION.contains(&dep.as_str()),
                 Class::Composition => true,
             };
@@ -579,6 +585,103 @@ fn dependency_graph_respects_the_layering_rules() {
         "crate dependency-graph violations (see CLAUDE.md §3):\n  - {}",
         violations.join("\n  - ")
     );
+}
+
+fn presentation_domain_violations(source: &str, root: &str, allowed: &[&str]) -> Vec<String> {
+    let tokens = rust_tokens(source);
+    let mut violations = Vec::new();
+    for (index, token) in tokens
+        .iter()
+        .enumerate()
+        .filter(|(_, token)| token.text == root)
+    {
+        let next = |offset: usize| tokens.get(index + offset).map(|token| token.text);
+        let accepted = if next(1) != Some("::") {
+            false // Reject crate/module aliases and extern crate declarations.
+        } else if next(2) == Some("{") {
+            let group = &tokens[index + 3..];
+            let closing = group.iter().position(|token| token.text == "}");
+            closing.is_some_and(|end| {
+                end > 0
+                    && group[..end]
+                        .iter()
+                        .all(|token| allowed.contains(&token.text))
+            })
+        } else {
+            next(2).is_some_and(|item| allowed.contains(&item)) && next(3) != Some("as")
+        };
+        if !accepted {
+            violations.push(format!(
+                "{}:{} references outside its data-only status allowlist",
+                root,
+                line_at(source, token.offset)
+            ));
+        }
+    }
+    violations
+}
+
+#[test]
+fn shared_renderer_domain_dependencies_are_only_named_status_types() {
+    let crates_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("crates/");
+    let mut violations = Vec::new();
+    for path in rust_sources(&crates_dir.join("koi-ui/src")) {
+        let source =
+            production_rust_source(&fs::read_to_string(&path).expect("read renderer source"));
+        for (root, allowed) in [
+            (
+                "koi_certmesh",
+                &["CertmeshStatus", "CertmeshRole", "IdentityCondition"][..],
+            ),
+            ("koi_dns", &["DnsCatalogSnapshot", "DnsRuntimeStatus"][..]),
+        ] {
+            violations.extend(
+                presentation_domain_violations(&source, root, allowed)
+                    .into_iter()
+                    .map(|violation| format!("{}: {violation}", path.display())),
+            );
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "shared renderer acquired domain access outside data-only status types:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn presentation_status_guard_rejects_core_module_wildcard_and_alias_bypasses() {
+    let allowed = &["DnsCatalogSnapshot", "DnsRuntimeStatus"];
+    for source in [
+        "use koi_dns::DnsRuntimeStatus;",
+        "use koi_dns::{DnsCatalogSnapshot, DnsRuntimeStatus};",
+        "fn render(status: &koi_dns::DnsRuntimeStatus) {}",
+    ] {
+        assert!(
+            presentation_domain_violations(source, "koi_dns", allowed).is_empty(),
+            "{source}"
+        );
+    }
+    for source in [
+        "use koi_dns::DnsCore;",
+        "use koi_dns::{DnsRuntimeStatus, DnsCore};",
+        "use koi_dns::runtime::DnsRuntime;",
+        "use koi_dns::commands::Command;",
+        "use koi_dns::*;",
+        "use koi_dns::{DnsRuntimeStatus, *};",
+        "use koi_dns as domain;",
+        "extern crate koi_dns as domain;",
+        "use koi_dns::{self as domain, DnsRuntimeStatus};",
+        "use koi_dns::DnsRuntimeStatus as Disguised;",
+    ] {
+        // Wildcards must remain visible to the token guard.
+        assert!(
+            !presentation_domain_violations(source, "koi_dns", allowed).is_empty(),
+            "{source}"
+        );
+    }
 }
 
 #[test]

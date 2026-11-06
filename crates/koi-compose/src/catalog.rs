@@ -1057,6 +1057,10 @@ impl ServiceBuilder {
         };
         let endpoints: Vec<_> = self.endpoints.into_values().collect();
         let mut actions = BTreeSet::from([AvailableAction::ViewDetails]);
+        if condition != ServiceCondition::Ambiguous {
+            actions.insert(AvailableAction::Favorite);
+            actions.insert(AvailableAction::SetFriendlyAlias);
+        }
         if self.has_current && condition != ServiceCondition::Ambiguous {
             if !endpoints.is_empty() {
                 actions.insert(AvailableAction::CopyEndpoint);
@@ -2129,6 +2133,12 @@ mod tests {
         assert!(services.iter().all(|service| service
             .available_actions
             .contains(&AvailableAction::CopyEndpoint)));
+        assert!(services.iter().all(|service| service
+            .available_actions
+            .contains(&AvailableAction::Favorite)));
+        assert!(services.iter().all(|service| service
+            .available_actions
+            .contains(&AvailableAction::SetFriendlyAlias)));
     }
 
     #[test]
@@ -2178,6 +2188,9 @@ mod tests {
         assert!(services
             .iter()
             .all(|service| !service.available_actions.contains(&AvailableAction::Open)));
+        assert!(services.iter().all(|service| !service
+            .available_actions
+            .contains(&AvailableAction::Favorite)));
         assert_ne!(services[0].id, services[1].id);
     }
 

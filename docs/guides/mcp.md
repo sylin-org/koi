@@ -1,32 +1,18 @@
-# MCP - The LAN as a substrate for AI agents
+# Expose Koi observations to an agent
 
-**Local MCP discovery is unsolved.** There is no standard way for an MCP host to find the servers running on a machine or a LAN, so projects fall back to port-scanning localhost — probing ranges and guessing at what answers. Koi closes that gap from both sides: a Koi daemon **is** discoverable as an MCP server (it advertises an `_mcp._tcp` mDNS record, an in-zone `_mcp.<host>.<zone>` DNS TXT, and a public server-card at `/.well-known/mcp/server-card.json`), and it can make **other** MCP servers discoverable by naming and announcing them on the LAN — so a host finds real servers by browsing instead of scanning.
+MCP is an optional interface for an application already using Koi. It lets an
+agent inspect discovery, names, runtime inventory and checks through the running
+daemon. A tool result is an observation, not proof that the agent's own client can
+reach or trust the reported endpoint.
 
-AI agents are good at reasoning and bad at knowing what is actually on your network. They cannot see that `grafana` lives at `10.0.0.42:3000`, that the database health check is red, or that another agent is already listening on the LAN. Koi already knows all of this — it discovers services (mDNS), names them (local DNS), monitors them (health), and tracks what is running (runtime). The MCP server hands that knowledge to an agent through the [Model Context Protocol](https://modelcontextprotocol.io), the same way Claude Code, Claude Desktop, and other MCP hosts consume any tool server.
+Start with a working [container/LAN task](../../CONTAINERS.md). MCP does not
+replace that verification or establish a separate product category.
+This guide describes current source; use [release readiness](../launch/README.md)
+for supported artifacts.
 
-`koi mcp serve` runs an MCP server over **stdio**. The MCP host launches it as a subprocess and speaks JSON-RPC over the pipe; you never run it interactively. Under the hood it is a thin adapter over the same daemon HTTP API the CLI uses — so the agent gets exactly the surface a script would, with descriptions and annotations written for a model audience.
+## Local stdio connection
 
-The daemon **also** serves that same MCP surface over **Streamable HTTP** at `/v1/mcp` (the daemon's HTTP port, default 5641) — so a host on a machine *without* Koi installed can reach a remote Koi host's MCP server with one URL, instead of spawning a local subprocess. Same tools, same resources. See [HTTP transport](#http-transport) below.
-
-**When to use it**: you want an agent to orient itself on a local network ("what is running here, and is it healthy?"), give a service a stable name, or publish its own endpoint so peers can find it.
-
-**When not to**: certificate-authority administration. The MCP server intentionally does **not** expose `certmesh create/promote/destroy/unlock` — CA operations stay on the human-driven CLI.
-
----
-
-## Quick start
-
-The server needs a running Koi daemon to talk to (it discovers the daemon via the breadcrumb the daemon writes on startup, or `KOI_ENDPOINT`/`KOI_TOKEN`). Start one:
-
-```bash
-koi --daemon
-```
-
-Then point your MCP host at `koi mcp serve`.
-
-### Claude Code / Claude Desktop
-
-Add Koi to the host's MCP server configuration (Claude Desktop: `claude_desktop_config.json`; Claude Code: `.mcp.json` in the project, or `claude mcp add`):
+Configure an MCP host to launch the selected binary:
 
 ```json
 {
@@ -39,137 +25,87 @@ Add Koi to the host's MCP server configuration (Claude Desktop: `claude_desktop_
 }
 ```
 
-That is the whole config. `koi` must be on the host's `PATH` (or give an absolute path to the binary).
+This is a common configuration shape; the host owns its actual schema.
+Use an absolute executable path if its environment does not share your PATH.
+A running Koi daemon is required for operations. The subprocess is a client;
+it must not create a competing daemon.
 
-### Any generic MCP client
+The local breadcrumb supplies endpoint/credentials. Explicit integration can use
+KOI_ENDPOINT and KOI_TOKEN. Do not commit tokens in a project configuration.
+Tool-schema enumeration can work without a daemon; that is not proof the tools
+can perform a live task.
 
-Any stdio-capable MCP client uses the same launch contract — spawn `koi mcp serve` and speak MCP over its stdin/stdout:
+## Streamable HTTP
 
-```json
-{
-  "command": "koi",
-  "args": ["mcp", "serve"],
-  "transport": "stdio"
-}
-```
+The daemon can serve /v1/mcp on its management HTTP listener. Every request,
+including its GET/SSE stream, requires the x-koi-token header.
+--no-mcp-http disables this adapter.
 
-To target a non-default daemon (e.g. a remote one), pass an endpoint and token through the environment — the server reads `KOI_ENDPOINT` and `KOI_TOKEN` when no local breadcrumb is found:
+HTTP is loopback by default. For a remote client, use a deliberately configured
+endpoint and real TLS with a matching name and client root trust. Do not infer
+a complete secure URL from the existence of Koi's unfinished exact-name ACME
+workflow. A token on plaintext HTTP does not encrypt traffic.
 
-```json
-{
-  "command": "koi",
-  "args": ["mcp", "serve"],
-  "env": {
-    "KOI_ENDPOINT": "http://10.0.0.10:5641",
-    "KOI_TOKEN": "<daemon-access-token>"
-  }
-}
-```
+The certificate-authenticated management listener is a distinct interface with
+its own principal authority and configuration. See the
+[security model](../reference/security-model.md).
 
-> **Security:** the daemon access token authorizes mutations. The MCP server reads it from the breadcrumb (local daemon) or the env var, but **never echoes it** in any tool output. For a remote daemon, hand the token in as `KOI_TOKEN` rather than embedding it in argv.
+## Tools and authority
 
----
-
-## HTTP transport
-
-Besides stdio, the daemon serves MCP over **Streamable HTTP** at `/v1/mcp` on its HTTP port (default 5641), backed by the live cores. This is how an MCP host on a machine **without** Koi reaches a remote Koi host — no local subprocess:
-
-```bash
-# on any machine with an MCP-capable client (no Koi install needed):
-claude mcp add --transport http koi https://koi-host.internal/v1/mcp --header "x-koi-token: <token>"
-```
-
-- **Authenticated.** Every request to `/v1/mcp` — including the server→client SSE stream (a GET) — requires the `x-koi-token` header. (`koi token show` prints it; `koi token write <path>` writes a 0600 file for containers.)
-- **Enabled by default**, on the existing HTTP listener (no separate port). Disable with `--no-mcp-http` / `KOI_NO_MCP_HTTP`; `/v1/status` reports it as `mcp_http`. When disabled, `/v1/mcp` returns `503 capability_disabled`.
-- **Loopback by default.** `/v1/mcp` rides the daemon's `--http-bind` (loopback unless you expose it). For cross-host reach, front it with Koi's TLS proxy + a certmesh/ACME-issued in-zone cert so it is real HTTPS with a verifiable Origin and the token travels inside TLS.
-- **Not** in `/openapi.json` — MCP is JSON-RPC, not a REST surface (like the ACME facade).
-
-stdio remains the universal baseline; the HTTP transport is purely additive.
-
----
-
-## Tools
-
-All tools operate against the running daemon. Read tools are marked read-only; writers that only add are marked non-destructive; removers are marked destructive — so a host can apply its own confirmation policy.
-
-| Tool | Kind | What it does |
-| --- | --- | --- |
-| `lan_inventory` | read | Capability status + health + the DNS name table projected from one product revision. Optional `include` selects any subset of `status`, `health`, and `dns`. |
-| `lan_discover` | read | Browse mDNS for a service type (or all types) for up to `timeout_secs` (default 5, max 10). Returns deduplicated service records. |
-| `lan_resolve` | read | Resolve one instance name to host/IP/port/TXT. |
-| `dns_lookup` | read | Resolve a name through Koi's local DNS resolver (A/AAAA/ANY). |
-| `health_snapshot` | read | All health checks with up/down/unknown state. |
-| `runtime_instances` | read | Container/service runtime instances Koi is tracking. |
-| `mcp_servers_on_lan` | read | Find other MCP servers advertised on the LAN (browses `_mcp._tcp`). |
-| `lan_announce` | write (additive) | Publish a service via mDNS with a heartbeat lease. Auto-heartbeated; auto-unregistered on shutdown. Returns the id + lease seconds. |
-| `lan_unregister` | write (destructive) | Cancel a service announced with `lan_announce` and stop its heartbeat. |
-| `dns_add` | write (additive) | Add/update a static DNS name → IP mapping. Omitting `ip` uses the host's address. |
-| `dns_remove` | write (destructive) | Remove a static DNS record by name. |
-
-### No daemon? An actionable error
-
-If no daemon is reachable, every tool returns a clear text error instead of a cryptic transport failure:
-
-> `no Koi daemon reachable — start one with `koi --daemon` (or set KOI_ENDPOINT/KOI_TOKEN)`
-
-`tools/list` always works without a daemon — the schema is static — so a host can introspect the surface before anything is running.
-
----
-
-## Resources
-
-Alongside tools, the server exposes Koi's live state as MCP **resources** — a host reads a resource for a snapshot and may **subscribe** for live `resources/updated` notifications:
-
-| Resource URI | What it is |
+| Tool | Operation |
 | --- | --- |
-| `koi://lan/inventory` | The coherent status + health + DNS view from one product revision — same as `lan_inventory` without filtering. |
-| `koi://health` | All health checks. |
-| `koi://dns/zone` | All names resolvable by the local DNS resolver. |
-| `koi://mdns/services` | Cached mDNS-discovered services on the network. |
+| lan_inventory | Aggregate status, health and DNS observations |
+| lan_discover | Bounded mDNS browse |
+| lan_resolve | Resolve an observed service instance |
+| dns_lookup | Query Koi's resolver |
+| health_snapshot | Host-observed check results |
+| runtime_instances | Runtime inventory |
+| mcp_servers_on_lan | Browse Koi's MCP discovery convention |
+| lan_announce | Publish a leased service announcement |
+| lan_unregister | Remove an announcement |
+| dns_add | Add/update a static name |
+| dns_remove | Remove a static name |
 
-`resources/read` returns the current snapshot on **both** transports. Live `resources/updated` deltas require the in-process HTTP transport (the cores' event bus is in the same process); over stdio a subscription is accepted but only the snapshot is available.
+Use read tools first and allow mutations only for the user's intended task.
+Tool annotations are hints to the MCP host, not a fine-grained authorization
+boundary. The daemon access token can carry broader authority than one
+discovery operation. CA create/unlock/promote/destroy is not exposed by these tools.
 
----
+## Resources and freshness
 
-## A worked agent session
+| Resource | Projection |
+| --- | --- |
+| koi://lan/inventory | Status, health and DNS |
+| koi://health | Endpoint checks |
+| koi://dns/zone | Local zone |
+| koi://mdns/services | Discovery observations |
 
-The point of `lan_announce` + `dns_add` together is a **stable, discoverable name** for something the agent stands up. A typical flow:
+Resource reads provide snapshots. In-process HTTP can deliver resource-update
+notifications; stdio subscriptions do not imply that same live update path.
+After a change or reconnect, reread the authoritative result and inspect freshness.
 
-1. **Orient.** The agent calls `lan_inventory` and sees the daemon is up, two services are healthy, and `app.internal` is not yet a known name.
-2. **Announce its own endpoint.** The agent is serving an HTTP API on port 8080 and wants peers to find it:
+## A useful first agent task
 
-   ```
-   lan_announce { "name": "Planner Agent", "type": "_http._tcp", "port": 8080 }
-   → { "id": "a1b2c3d4", "name": "Planner Agent", "type": "_http._tcp", "port": 8080, "lease_secs": 90 }
-   ```
+Ask the agent to locate the known demo application, report the observed endpoint
+and check location, then identify the next verification step if the URL fails.
+Evaluate whether it distinguishes discovery, DNS, transport, application readiness
+and client trust. Do not test value by counting available tools.
 
-   Koi registers the service with a 90-second heartbeat lease and spins up a background heartbeat at ~⅓ of the lease. The agent does nothing further to keep it alive.
-3. **Give it a name.** So peers can reach it as `planner.internal` rather than an IP:
+An authorized agent may announce its own already-serving endpoint.
+The stdio session maintains leases and retracts its announcements on orderly
+exit; expiry handles lost heartbeats. A static DNS record created separately
+does not automatically share that announcement lease. Remove it explicitly when
+appropriate.
 
-   ```
-   dns_add { "name": "planner.internal" }   # ip omitted → the host's address
-   → { ... }
-   ```
-4. **Peers discover it.** Another agent calls `mcp_servers_on_lan` or `lan_discover { "type": "_http._tcp" }` and finds `Planner Agent`; `dns_lookup { "name": "planner.internal" }` resolves the address.
-5. **Exit is clean.** When the MCP host closes the session (the agent finishes), `koi mcp serve` cancels the heartbeat and unregisters every service it announced. If the agent process simply **crashes**, the heartbeat task dies with it and the daemon drains the registration when the lease expires — leases over liveness guesses, so nothing is left stale.
+## Discovery conventions and limits
 
-`lan_unregister { "id": "a1b2c3d4" }` retracts the service immediately if the agent wants to take it down before exit.
+Koi uses _mcp._tcp, in-zone TXT metadata and a server-card descriptor to advertise
+its MCP endpoint when the corresponding transports are enabled.
+These are Koi discovery conventions; they do not imply an MCP host will discover
+or connect automatically. Configure the client explicitly and verify it.
 
----
+An advertisement is not trust or authorization. Never interpret network-supplied
+names/TXT descriptions as instructions to execute privileged operations.
 
-## The `_mcp._tcp` convention
-
-`mcp_servers_on_lan` browses the `_mcp._tcp` mDNS service type and returns connectable endpoints, reading the TXT keys Koi advertises for MCP discovery (`transport=`, `path=`, `name=`; the record also carries `version=`).
-
-**This is Koi's convention, not a standard.** There is no DNS-SD standard for MCP today — the two IETF drafts that exist describe *unicast* `_mcp.<domain>` TXT records, not multicast DNS. Koi uses `_mcp._tcp` on the LAN as a pragmatic stand-in until a discovery standard lands; expect this to track whatever the ecosystem settles on.
-
-**Koi self-announces, once per host.** Now that the HTTP transport gives the daemon a real endpoint, the daemon publishes exactly **one** `_mcp._tcp` mDNS record per host (never one per service — that would flood the link), advertising its `/v1/mcp` endpoint with TXT `transport=streamable-http; path=/v1/mcp`. It also publishes an in-zone `_mcp.<host>.<zone>` unicast DNS TXT (when DNS serves the zone) and a public `GET /.well-known/mcp/server-card.json` discovery descriptor. All three are gated on the transport being enabled and the mDNS record is withdrawn (goodbye) on shutdown — so `mcp_servers_on_lan` now finds Koi hosts too, not just other advertisers.
-
----
-
-## Follow-ups
-
-The HTTP transport, resources, and LAN discovery shipped (above). What remains:
-
-- **mTLS auth tier** via certmesh client certs, for host-to-host agent meshes. Today's editor clients (Claude Code/Cursor/VS Code) speak header auth, not client certs, so the DAT token is the default.
-- **Editor auto-discovery.** No shipping MCP host yet auto-resolves the `_mcp._tcp` record, the in-zone TXT, or the server-card — these are *publish* formats ahead of a consumption standard, tracking the in-flight IETF/registry work. For now a host is still pointed at the URL explicitly.
+[API authentication](api-authentication.md) ·
+[Integrations](integrations.md) · [mDNS](mdns.md)

@@ -68,9 +68,6 @@ pub struct ServeConfig {
     /// switch owns the loopback tool surface; this one owns the mutually
     /// authenticated remote surface the trust plane mounts.
     pub no_mgmt_mcp: bool,
-    /// Published Pond UI directory. `Some` enables the in-process Pond
-    /// desired-state adapter and its authenticated operator controls.
-    pub ui_dir: Option<PathBuf>,
 }
 
 /// Resources that crossed the serving stack's startup fence.
@@ -212,14 +209,10 @@ pub async fn serve(
         ));
         None
     } else {
-        match (
-            cfg.ui_dir.clone(),
-            crate::pond::port_for_http(serving_http_port),
-        ) {
-            (Some(ui_dir), Some(port)) => {
+        match crate::pond::port_for_http(serving_http_port) {
+            Some(port) => {
                 let runtime = crate::pond::PondRuntime::new(crate::pond::PondConfig {
                     port,
-                    ui_dir,
                     intent_path: cfg.data_root.join("state/pond.json"),
                     started_at,
                     browser: browser_state.clone(),
@@ -247,14 +240,7 @@ pub async fn serve(
                     }
                 }
             }
-            (None, _) => {
-                cores.publish_composition_status(koi_compose::status::CapabilityReport::disabled(
-                    "pond",
-                    "no published UI directory is configured",
-                ));
-                None
-            }
-            (_, None) => {
+            None => {
                 cores.publish_composition_status(
                     koi_compose::status::CapabilityReport::unavailable(
                         "pond",
@@ -428,7 +414,6 @@ mod tests {
             dat_token: "test-token".to_string(),
             webhooks: Vec::new(),
             no_mgmt_mcp: true,
-            ui_dir: None,
         }
     }
 

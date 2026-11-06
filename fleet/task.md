@@ -1,146 +1,61 @@
-# Koi fleet task — universal agent entry point
+# Koi fleet task
 
-The operator invokes this campaign with one prompt on every participating machine:
+Run this file only when the operator explicitly invokes `run fleet/task.md` on the
+participating host. Editing or reading fleet documentation does not launch a host,
+authorize deployment, or activate a remote session.
 
-```text
-run fleet/task.md
-```
+The only work selector is [Epic 004](epics/004-container-lan-adoption.md).
+The [launch ledger](launch/LEDGER.md) records assignments, dependencies and proof.
+Read the [strategy decision](../docs/adr/046-container-lan-adoption.md),
+[launch guide](../docs/launch/README.md), [protocol](PROTOCOL.md) and
+[coordination map](coordination.md) before selecting work.
+UI assignments also read the [experience contract](../docs/ux/README.md), then
+claim the dependency-ready U02–U06 package in the same ledger.
 
-This file is the complete dispatcher. Do not ask the operator to restate the hat,
-brief, authorization, or next task. Identify this machine, load its assignment,
-and execute it.
+## Identify the host
 
-## 1. Resolve this machine's hat
+Normalize the local hostname to lowercase and remove a trailing DNS suffix. Match
+an exact identity:
 
-Normalize the local hostname to lowercase and remove a trailing DNS suffix. Match it
-exactly:
+| Hostname | Role | Brief |
+| --- | --- | --- |
+| `stone-leaded-sparkle` | Windows verification | [Windows](briefs/windows.md) |
+| `test-01` | Source integration and Linux verification | [CachyOS](briefs/cachyos-linux.md) |
+| `bluefin` | Immutable Linux verification | [Bluefin](briefs/bluefin-linux.md) |
+| `test-03` | musl/OpenRC verification | [Alpine](briefs/alpine-linux.md) |
+| `stone-halcyon-savanna` | Bounded headless peer verification | [Debian](briefs/debian-linux.md) |
 
-| hostname | hat | brief |
-|---|---|---|
-| `stone-leaded-sparkle` | `windows` | `fleet/briefs/windows.md` |
-| `test-01` | `cachyos-linux` | `fleet/briefs/cachyos-linux.md` |
-| `bluefin` | `bluefin-linux` | `fleet/briefs/bluefin-linux.md` |
-| `test-03` | `alpine-linux` | `fleet/briefs/alpine-linux.md` |
-| `stone-halcyon-savanna` | `debian-linux` | `fleet/briefs/debian-linux.md` |
+Use `tools/koi-lab/lab.json` and private local notes to confirm host identity and
+repository location. An address alone is insufficient. Refuse native execution on
+an unknown host, a production host, or a host outside this table. Report the observed
+hostname and OS without disclosing credentials.
 
-The tracked address/host-key catalog in `tools/koi-lab/lab.json` may confirm an
-identity, but never use an address alone to guess after a mismatch. Refuse to execute
-on an unknown host, a retired `omarchy-linux` host, brook/granite, the phase-two Debian
-twins, or a production machine. Report the observed hostname and OS when refusing.
+## Select the next assignment
 
-## 2. Load the contract and current facts
+1. Inspect the worktree and preserve all intentional or unowned changes. Read the
+   current epic and ledger before synchronizing or selecting an artifact.
+2. CachyOS claims the first dependency-ready implementation item in the ledger.
+   Other hosts perform only an explicitly addressed verification request.
+3. Record the task ID, owner, bounded scope, candidate identity, required peer and
+   restoration plan before work. A pending task is not a standing native dispatch.
+4. Complete the applicable repository exploration and checks. This explicit fleet
+   invocation authorizes its selected in-scope work; do not ask for the same approval
+   again. Source ownership and host boundaries still apply.
+5. If no assignment is eligible, report its dependency and leave deployment unchanged.
+   Do not create unrelated work or repeat unaffected proof.
 
-1. Inspect the worktree first. Continue an intentional interrupted change; never
-   discard or overwrite someone else's work.
-2. Work on `dev`. If clean, run `git pull --ff-only origin dev`. If a prior local
-   commit exists, finish the synchronization/push before starting something else.
-   Re-read this file after synchronization if it changed.
-3. Read, in order:
-   - `fleet/PROTOCOL.md`;
-   - `fleet/coordination.md`;
-   - the current epic linked from `fleet/coordination.md`;
-   - this hat's brief from the table above;
-   - this hat's full journal and unresolved issues;
-   - the relevant ADRs, source, tests, and `docs/SURFACES.md` rows.
-4. For desktop work, also inspect the sibling `koi-desktop` repository and its
-   current installed artifact. Its branch and publication remain independent.
+The initial workflow is container label → discovery → a real application request
+from a second device → correct recreation and removal. Trusted HTTPS is a separate
+milestone. Minimum scenario claims cover Windows x64 with Docker Desktop and Linux
+glibc x64 with Docker Engine, backed by an independent physical pair. Other artifact
+and CI requirements remain governed by repository release policy; they do not
+silently expand this first scenario into an all-platform or desktop campaign.
 
-Measured machine state outranks a stale brief. Correct the brief when the machine
-proves it wrong.
+## Execute and record
 
-Within a brief, the most recent dated `next dispatch` section is the current routing
-and outranks retained baseline lists. Journal and issue evidence still determine what
-is already complete.
-
-The current epic outranks every retained brief dispatch. If it pauses a release, soak,
-installation, or system mutation while shared development validation is underway, obey that
-pause even when the hat brief's newest historical section says to begin the work.
-
-When the epic names a frozen source SHA, synchronized `dev` is the instruction and
-evidence branch, not an implicit replacement candidate. Verify that exact commit
-object locally and build product artifacts from its clean export or detached worktree.
-Never label a build from a later `dev` HEAD with the frozen SHA. Follow the epic's
-invalidation rule before accepting any product, dependency, installer/package-recipe,
-or shipped-asset correction.
-
-## 3. Select work without waiting for another prompt
-
-**Epic 003 routing:** when coordination names Epic 003, execute
-[delight-dispatch.md](delight-dispatch.md) and the R ledger. That branch includes
-the inherited Epic 002 run's handover, fixed Linux owners, dependency selection,
-claims, peer evidence and publication. Under the owner's 2026-09-06 UTC update,
-CachyOS alone owns unfinished implementation; other hosts select only addressed
-verification requests or eligible R29 native rows. They do not claim new source
-work from older briefs. It replaces the historical selector below
-and qualifies sections 4-5 for source-only work. Do not fall through to PH work.
-This same entry point resumes the next eligible R slice on later invocations.
-
-The following selector applies only to a different explicitly active epic.
-
-Choose the first unfinished, dependency-ready item in this order:
-
-1. a correctness or security defect explicitly named in the hat brief or current epic;
-2. the hat's earliest open PH workstream;
-3. evidence another hat needs from this OS for the next cross-host gate;
-4. the hat's share of the final frozen-candidate matrix or soak.
-
-Do not redo a green physical gate unless its relevant code/artifact changed or the
-epic explicitly requires it on the frozen candidate. Research locally, in repository
-history, and online using authoritative platform sources. The listed epic and protocol
-are operator approval to implement and exercise the selected in-scope item. Complete
-the repository's required exploration/plan step, then proceed without asking for the
-same approval again. A plan or status summary alone is not a completed session.
-
-If the newest dispatch says this hat is complete and waiting for the frozen source,
-perform only the named read-only readiness or peer role. Report the dependency and
-leave the deployment and repository unchanged; do not invent work, evidence, or a
-commit merely to make the session look active.
-
-When the current epic marks a coordinated run `scheduled` or `active`, every hat named
-in that run has an active assignment—including peer-host and coordinator roles that do
-not run a collector. Execute that epic assignment even when an older brief says
-`remain unchanged`, `await refreeze`, or `no further mutation`. A completed candidate
-row is the prerequisite for its soak assignment, not the end of the campaign.
-
-If an observed defect belongs to shared architecture, fix it once at the lowest
-correct shared boundary. Do not create an OS-local imitation. Breaking and rebuilding
-pre-1.0 code is authorized when it yields fewer, clearer moving parts.
-
-## 4. Execute the real product path
-
-- Capture exact service, binary, configuration, state, provider, firewall, network,
-  login/startup, and process baselines before mutation. Install interruption-safe
-  restoration before the first destructive step.
-- Keep exactly one installed Koi on the machine. No parallel daemon, helper backend,
-  alternate-port test Koi, isolated data root, fake provider, or checkout UI may count
-  as acceptance.
-- All production capabilities and endpoints are real. Fakes are permitted only inside
-  tests. Do not leave TODO-backed product behavior.
-- Use the platform's supported install, service, package, session, firewall, and
-  authorization mechanisms. Safe automatic recovery is preferable to merely describing
-  a failure; when external policy makes recovery impossible, expose one precise action.
-- Run risk-focused local tests, the full native gates appropriate to the change, then
-  deploy that exact candidate serially and exercise it in the lived-in environment.
-- Cross-host assertions use independent physical Koi peers. A peer may perform
-  run-owned API publications and reads, but system/provider mutation belongs to that
-  peer's own hat. Coordinate shared run IDs and retain both sides' PID/hash evidence.
-- Remove test-only firewall rules, provider packages/configuration, login automation,
-  credentials, keys, repositories, fixtures, and recovery tasks. Preserve only the
-  intended installed Koi state.
-
-## 5. Publish in the same session
-
-1. Append one evidence-dense entry to `fleet/<hat>/journal.md` containing the active task/slice ID,
-   source commit, installed artifact path/hash/PID, peer identities, run ID/verdict,
-   exact restoration result, and final state.
-2. File an issue only for work that remains unresolved. A defect fixed and physically
-   verified in the same session needs only the journal entry and tests.
-3. Update the epic only when a whole gate changes state. Update `docs/SURFACES.md` only
-   when physical evidence changes a public claim.
-4. Commit the coherent change, `git pull --rebase origin dev`, and push directly to
-   `origin/dev`. Never force-push and never leave a completed local-only commit.
-5. For `koi-desktop`, commit/rebase/push its own repository too. Record both SHAs.
-
-The session ends only when temporary state is gone, the intended real deployment is
-healthy, process counts are exact, repositories are synchronized, and the agent reports
-what landed plus the next dependency—not merely what it plans to try.
+Follow the protocol for own-host mutation, exact artifact proof, cleanup and
+publication. New launch results start pending. Record evidence in the ledger's
+current evidence structure, with the exact source and installed artifact identities.
+Never turn source tests, a local request, or a previous artifact's result into
+second-device application proof. Update only the gates that the current evidence
+actually satisfies.

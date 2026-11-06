@@ -1,33 +1,17 @@
 # koi-health
 
-[![Crates.io](https://img.shields.io/crates/v/koi-health.svg)](https://crates.io/crates/koi-health)
-[![Docs.rs](https://docs.rs/koi-health/badge.svg)](https://docs.rs/koi-health)
-[![License](https://img.shields.io/crates/l/koi-health.svg)](https://github.com/sylin-org/koi#license)
+HTTP/TCP service checks, transition events and machine-health projections for Koi's known participants.
 
-Machine and service health monitoring for the local network.
+Health provides operational evidence for a target from the probing host. A successful local probe does not establish second-device reachability, hostname resolution or browser trust. Checks and lifecycle state remain authoritative in this domain.
 
-## Overview
+## Development
 
-`koi-health` provides HTTP and TCP health checks for services on your local
-network. It runs periodic probes with configurable intervals and timeouts,
-tracks status transitions (Up/Down/Unknown) with timestamps, broadcasts
-state-change events, and exposes an HTTP API for managing checks and querying
-current health snapshots.
+Read [architecture](../../docs/reference/architecture.md) for ownership boundaries and [launch readiness](../../docs/launch/README.md) for the supported-versus-tested journey matrix. This README describes repository source; it does not assert package publication or physical acceptance.
 
-## Features
+```sh
+cargo test -p koi-health --locked
+```
 
-- HTTP and TCP health check probes
-- Configurable check intervals and timeouts
-- Status transition tracking with event broadcast
-- Machine-level health aggregation
-- HTTP API for check management and status queries
+Platform-dependent tests can require explicit facilities or remain ignored in ordinary runs. See [validation](../../docs/qa/validation-suite.md) before interpreting a green result.
 
-## Part of Koi
-
-This crate is part of the [Koi](https://github.com/sylin-org/koi) workspace.
-See the main repository for architecture details.
-
-## License
-
-Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
-[MIT License](LICENSE-MIT) at your option.
+Licensed under Apache-2.0 OR MIT; see the workspace license files.

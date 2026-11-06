@@ -1,26 +1,20 @@
-# Troubleshooting & FAQ
+# Diagnose a container/LAN task by its failing step
 
-Most first-run trouble with Koi is one of a handful of things: a port that something
-else already owns, multicast that the network silently drops, or a request that's
-missing the daemon token. This guide is a symptom-first lookup table — find the line
-that matches what you're seeing, read the cause, apply the fix.
+Record the artifact, OS/engine/client, expected result, first failing observation
+and recovery attempt. Do not combine state from different daemons or versions.
 
-Each section is `symptom → cause → fix`. The headings are written the way the problem
-actually shows up, so you can scan for yours.
+| First failing check | Investigate |
+| --- | --- |
+| App fails on the host | Logs, startup and published port |
+| No runtime observation | Backend, socket and running account |
+| No peer publication | Interface, multicast/firewall and discovery source |
+| Record exists, peer cannot open | Advertised endpoint, route and readiness |
+| IP works, name fails | Client resolver and zone forwarding |
+| HTTPS alone fails | URL/SAN, chain, expiry and actual client root source |
 
-When in doubt, start by asking the daemon what it thinks is going on:
-
-```
-koi status
-```
-
-That single command shows every capability's daemon-owned state (running / disabled /
-inactive) and the bind address. If it cannot reach a daemon, the same ten rows say
-`not observed`; they are not reconstructed from files or launch configuration. In that
-case, jump straight to
-[The CLI says "No daemon endpoint found"](#the-cli-says-no-daemon-endpoint-found).
-
----
+[Container walkthrough](../../CONTAINERS.md) defines the outcome checks;
+[release readiness](../launch/README.md) defines accepted scope. Neither healthz
+nor a service row establishes that whole task.
 
 ## The daemon won't start / "address in use" on port 5641
 

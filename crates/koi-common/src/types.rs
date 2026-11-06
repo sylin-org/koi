@@ -173,7 +173,7 @@ impl ServiceType {
 
 /// Split a DNS presentation name without treating an escaped dot as a label
 /// separator. The returned slices retain their presentation escaping.
-fn split_presentation_labels(value: &str) -> Option<Vec<&str>> {
+pub(crate) fn split_presentation_labels(value: &str) -> Option<Vec<&str>> {
     if value.is_empty() {
         return Some(Vec::new());
     }

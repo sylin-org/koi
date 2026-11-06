@@ -160,8 +160,16 @@ pub struct MdnsDiscoveryObservation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MdnsDiscoveryValue {
-    ServiceType { service_type: String },
-    ServiceRecord { record: ServiceRecord },
+    ServiceType {
+        service_type: String,
+    },
+    ServiceRecord {
+        record: ServiceRecord,
+    },
+    /// An observed instance whose resolution has not completed.
+    UnresolvedInstance {
+        record: ServiceRecord,
+    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -200,7 +208,8 @@ impl MdnsDiscoverySnapshot {
                     }
                     match &observation.value {
                         MdnsDiscoveryValue::ServiceRecord { record } => Some(record),
-                        MdnsDiscoveryValue::ServiceType { .. } => None,
+                        MdnsDiscoveryValue::ServiceType { .. }
+                        | MdnsDiscoveryValue::UnresolvedInstance { .. } => None,
                     }
                 })
                 .collect();

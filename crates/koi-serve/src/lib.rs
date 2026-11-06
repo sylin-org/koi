@@ -40,7 +40,6 @@ pub mod mtls;
 pub mod network;
 pub mod pond;
 pub mod pond_public_status;
-pub mod pond_ui;
 pub mod preferences;
 pub mod prometheus_sd;
 pub mod serve;

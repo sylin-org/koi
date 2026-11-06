@@ -93,6 +93,24 @@ pub trait BrowseSource: Send + Sync {
         Box<dyn std::future::Future<Output = Result<BrowseHandle, BrowseError>> + Send + '_>,
     >;
 
+    /// Resolve through the owning domain. Unsupported adapters fail explicitly.
+    fn resolve(
+        &self,
+        _instance: &str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Option<ServiceRecord>, BrowseError>>
+                + Send
+                + '_,
+        >,
+    > {
+        Box::pin(async {
+            Err(BrowseError(
+                "Instance resolution is unavailable from this provider.".into(),
+            ))
+        })
+    }
+
     /// Subscribe to this adapter instance's event broadcast channel.
     fn subscribe(&self) -> broadcast::Receiver<BrowserEvent>;
 
@@ -167,6 +185,26 @@ impl BrowseSource for MdnsBrowseAdapter {
                 .await
                 .map_err(|e| BrowseError(e.to_string()))?;
             Ok(BrowseHandle::from_domain(subscription))
+        })
+    }
+
+    fn resolve(
+        &self,
+        instance: &str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Option<ServiceRecord>, BrowseError>>
+                + Send
+                + '_,
+        >,
+    > {
+        let instance = instance.to_owned();
+        Box::pin(async move {
+            match self.core.resolve(&instance).await {
+                Ok(record) => Ok(Some(record)),
+                Err(koi_mdns::error::MdnsError::ResolveTimeout(_)) => Ok(None),
+                Err(error) => Err(BrowseError(error.to_string())),
+            }
         })
     }
 

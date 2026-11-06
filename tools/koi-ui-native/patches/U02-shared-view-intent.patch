@@ -1,0 +1,109 @@
+diff --git a/src/ui.rs b/src/ui.rs
+index 7d0895ae2485a0c8675ca2725c6e0259b8ad4e91..d41856d287a68503b412bad17515ec2156f453f5 100644
+--- a/src/ui.rs
++++ b/src/ui.rs
+@@ -1,11 +1,12 @@
+ //! Normal shared shell. The authenticated catalog and rendered document stay in Rust.
+ 
+ use koi_client::KoiClient;
+-use koi_ui::{Links, View};
++use koi_ui::{EndpointActions, Links, UiState, View};
+ use tauri::http::{Method, Request, Response, StatusCode};
+ 
+ const SCHEME: &str = "koi-ui";
+ pub const URL: &str = "koi-ui://localhost/";
++// Shared policy permits same-origin presentation forms, without scripts.
+ const CSP: &str = koi_ui::DOCUMENT_CSP;
+ 
+ pub fn register(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
+@@ -14,17 +15,21 @@ pub fn register(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wr
+             responder.respond(response(StatusCode::NOT_FOUND, String::new()));
+             return;
+         }
++        let Ok(state) = UiState::parse_query(request.uri().query().unwrap_or_default()) else {
++            responder.respond(response(StatusCode::BAD_REQUEST, String::new()));
++            return;
++        };
+         // Never block the webview thread on local-control I/O. The existing client
+         // owns discovery, authentication, timeouts and schema validation.
+         tauri::async_runtime::spawn_blocking(move || {
+             let (status, document) = match read_catalog() {
+                 Ok(catalog) => (
+                     StatusCode::OK,
+-                    koi_ui::render(View::Snapshot(&catalog), links()),
++                    koi_ui::render_with_state(View::Snapshot(&catalog), links(), &state),
+                 ),
+                 Err(_) => (
+                     StatusCode::SERVICE_UNAVAILABLE,
+-                    koi_ui::render(View::Unavailable, links()),
++                    koi_ui::render_with_state(View::Unavailable, links(), &state),
+                 ),
+             };
+             responder.respond(response(status, document));
+@@ -41,6 +46,8 @@ fn links() -> Links<'static> {
+     Links {
+         refresh: Some("./"),
+         advanced: ADVANCED_URL,
++        endpoint_actions: EndpointActions::None,
++        preference_actions: false,
+     }
+ }
+
+@@ -90,7 +96,7 @@ fn allowed(label: &str, request: &Request<Vec<u8>>) -> bool {
+         && request.method() == Method::GET
+         && local_origin
+         && uri.path() == "/"
+-        && uri.query().is_none()
++        && UiState::parse_query(uri.query().unwrap_or_default()).is_ok()
+         && request.body().is_empty()
+ }
+ 
+@@ -137,6 +142,34 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn only_bounded_shared_view_queries_are_admitted() {
++        for root in [URL, "http://koi-ui.localhost/"] {
++            for query in [
++                "tab=services&q=printer&state=attention&sort=host",
++                "tab=private-space",
++                "tab=settings",
++                "tab=services&selected=svc_one",
++            ] {
++                let request = request("GET", &format!("{root}?{query}"));
++                assert!(allowed(crate::MAIN_WINDOW, &request));
++                assert!(UiState::parse_query(request.uri().query().unwrap()).is_ok());
++            }
++            for query in [
++                "tab=unknown".to_string(),
++                "token=secret-token".to_string(),
++                "path=/etc/passwd".to_string(),
++                "sort=unknown".to_string(),
++                format!("q={}", "a".repeat(8192)),
++            ] {
++                assert!(!allowed(
++                    crate::MAIN_WINDOW,
++                    &request("GET", &format!("{root}?{query}")),
++                ));
++            }
++        }
++    }
++
+     #[test]
+     fn return_navigation_uses_the_platform_registered_protocol_origin() {
+         for (windows, scheme, host) in [
+@@ -171,9 +204,12 @@ mod tests {
+         assert_eq!(reply.status(), StatusCode::SERVICE_UNAVAILABLE);
+         assert_eq!(reply.headers()["cache-control"], "no-store");
+         assert_eq!(reply.headers()["content-security-policy"], CSP);
++        assert!(CSP.contains("form-action 'self'"));
++        assert!(CSP.contains("default-src 'none'"));
++        assert!(!CSP.contains("script-src"));
+         let body = String::from_utf8(reply.into_body()).unwrap();
+         assert!(!body.contains("<script"));
+         assert!(!body.contains("x-koi-token"));
+-        assert!(body.contains("Cannot read the local catalog."));
++        assert!(body.contains("Cannot read the local catalog"));
+     }
+ }

@@ -1,224 +1,135 @@
-# Trusted HTTPS across two machines in ~10 minutes
+# Verify HTTPS for a host member name
 
-You have a service on host **B** — say a dashboard on `127.0.0.1:3000`. You want to open it from a laptop **C** as a real HTTPS URL with **no certificate warning**, and you don't want to buy a public domain, run a DNS challenge, or hand-copy PEM files around.
+This advanced manual path uses a host's certmesh identity for an application
+already reachable on the LAN. It does not automatically issue a certificate for
+an arbitrary container name.
 
-This is the end-to-end journey: stand up a private CA on host **A**, enroll host **B**, put a TLS endpoint in front of the service, and teach a non-member laptop **C** to trust the CA root. By the end you open `https://<name>` in a browser and it's green.
+Complete the [container application check](../../CONTAINERS.md) first.
+HTTPS does not gate that initial trial. See [release readiness](../launch/README.md)
+for accepted artifacts and client combinations; this procedure does not establish
+a new trusted-service preview.
 
-Three machines, one for each role:
+## Prerequisites
 
-| Role | Machine | What it does |
-| ---- | ------- | ------------ |
-| **A** | CA host | Runs the certmesh CA (the root of trust) |
-| **B** | service host | Joins the mesh, runs the service + the TLS proxy |
-| **C** | client | A plain laptop with **no Koi membership** — it just needs to trust the root |
+- A daemon on the application host and a known HTTP backend, for example
+  `127.0.0.1:3000`.
+- A certmesh CA on that host or another reachable daemon.
+- A separate client where the intended resolver and root source can be configured.
+- Matching artifact documentation for [certmesh](../guides/certmesh.md),
+  [proxy](../guides/proxy.md) and [security](../reference/security-model.md).
 
-> A and B can be the **same** machine if you only have two boxes — create the CA and run the service on one host, and treat the laptop as C. The steps don't change.
+Use an existing service's normal lifecycle; do not start a second daemon.
 
-Every step below is a real Koi command; nothing here is invented. Each capability has a deeper guide linked inline if you want the full story — this page is just the shortest correct path through all of them.
+## Create or join the CA
 
-> **Prerequisite — a running daemon on A and B.** Certmesh, DNS, and proxy are all daemon-mediated. On each of A and B, either install Koi as a service (`koi install`) or run `koi --daemon` in a terminal. The CLI talks to that daemon for you.
+On the intended CA host:
 
----
-
-## Step 1 — On host A: create the CA
-
-The CA is your network's root of trust. Creating it is a deliberate act, so it runs an interactive ceremony:
-
-```
-koi certmesh create
-```
-
-The ceremony asks you to pick a **posture** (one of three presets — **Just Me**, **My Team**, **My Organization** — or **Custom**), contribute keyboard entropy, set a passphrase, and scan a **TOTP** QR code into an authenticator app. For a homelab, take the **Just Me** preset — it auto-unlocks on boot and opens enrollment with no approval queue:
-
-```
+```sh
 koi certmesh create --profile just-me
-```
-
-When it finishes, A has an ECDSA P-256 CA, has self-enrolled its own certificate, and has installed the CA root in its own system trust store. Confirm:
-
-```
 koi certmesh status
 ```
 
-```
-Certificate mesh: active
-  CA locked:  false
-  Enrollment: open (no approval)
-  Members:    1
-    host-a (primary) - active
-```
+Creation is interactive, including passphrase and TOTP setup. Understand custody,
+unlock and recovery before relying on it. The just-me profile permits enrollment
+without an approval queue; choose a different policy when needed.
 
-Keep the **TOTP authenticator** handy — host B needs a live code to join. (Posture presets, unlock methods, and the envelope encryption that protects the CA key are covered in the [certmesh guide](../guides/certmesh.md).)
+If the application host is separate, enroll using the supported invitation or
+interactive join procedure:
 
----
-
-## Step 2 — On host B: join the mesh
-
-From host B, a single command browses the LAN for the CA over mDNS and enrolls:
-
-```
+```sh
 koi certmesh join
+koi certmesh status --json
 ```
 
-```
-Searching for certmesh CA on the local network...
-Found CA: host-a Certmesh CA at http://192.168.1.10:5641
-Enter the TOTP code from your authenticator app:
-123456
-Enrolled as: host-b
-Certificates written to: /var/lib/koi/certs/host-b
-```
+Discovery alone does not authorize enrollment. The [certmesh guide](../guides/certmesh.md)
+covers endpoint selection, invites and locked-CA recovery.
 
-You type the **current TOTP code from A's authenticator** — that's the whole authorization handshake. No CSR, no key exchange, no approval queue (unless your posture requires approval, which **Just Me** does not).
+Inspect the application's host certificate SANs in the actual status. Current
+default-zone issuance uses its hostname and configured-zone FQDN; persisted or
+older certificates can differ. Do not assume localhost or a vanity name is covered.
 
-If mDNS discovery can't find exactly one CA (different broadcast domains, multiple CAs), point at the endpoint directly:
+## Configure the matching name and listener
 
-```
-koi certmesh join http://192.168.1.10:5641
-```
+Use a real SAN. On the resolver host, add the application's LAN address if the
+needed record is absent:
 
-B now holds a certmesh-issued member certificate at `certs/host-b/`. Current Koi
-issues the hostname plus its configured-zone FQDN: with the default zone the SANs
-are **`host-b` and `host-b.internal`**. Confirm the exact `cert_sans` in
-`koi certmesh status --json`; persisted or older releases can differ (notably v0.9.0
-used `.local`). (Full join flow, including the `503 CA locked` case and
-`koi certmesh unlock`, is in the [certmesh guide](../guides/certmesh.md).)
-
----
-
-## Step 3 — On host B: put a TLS endpoint in front of the service
-
-Two parts: give the service a name, then bind a TLS listener that terminates with the member cert.
-
-First, make sure Koi's DNS resolver is running and register the name (run this on whichever host is your resolver — typically A, or wherever you point clients):
-
-```
-koi dns serve
-koi dns add host-b 192.168.1.20      # B's LAN IP
+```sh
+koi dns add host-b 192.0.2.20
+koi dns lookup host-b
 ```
 
-`koi dns add` takes a **name and an IP** (positional). Now `host-b.internal` resolves to B. (Koi DNS owns the `.internal` zone by default; coexisting with an existing resolver is covered in the [DNS guide](../guides/dns.md) and [DNS coexistence guide](../guides/dns-coexistence.md).)
+Replace the documentation name/address. Configure the client's
+[resolver or forwarding](../guides/dns-coexistence.md), then test its ordinary
+lookup. A Koi lookup alone is not this test.
 
-Then, on B, bind the proxy:
+On the application host:
 
-```
+```sh
 koi proxy add app --listen 9443 --backend 127.0.0.1:3000
-```
-
-`--backend` is a `host:port`; loopback backends need no extra flag (the proxy→backend hop is plaintext, so non-loopback backends require `--backend-remote`). Check what's serving:
-
-```
 koi proxy status
 ```
 
-```
-NAME  LISTEN  BACKEND          TLS       STATE
-app   :9443   127.0.0.1:3000   certmesh  running
-```
+Verify the listener is running with the intended identity. A self-signed fallback
+is not successful trusted setup. Proxy state does not prove client reachability.
 
-The `TLS: certmesh` column is the win — Certmesh supplied its healthy local identity through Koi's live domain boundary, and Proxy is terminating TLS with that **member certificate**, the one every mesh member already trusts. Proxy never reaches into Certmesh's private files. (How the proxy resolves its cert, including explicit overrides and the `self-signed` fallback, is in the [proxy guide](../guides/proxy.md).)
+## Configure the actual client
 
-> **The name has to match the cert.** Use a hostname listed in the live
-> `cert_sans`. For a current default-zone mesh that is
-> **`https://host-b.internal:9443`** (or `https://host-b:9443`). A vanity name such
-> as `app.internal` needs its own certificate; see below.
+On the CA host:
 
----
-
-## Step 4 — On laptop C: trust the CA root
-
-This is the crucial, often-skipped part. C is **not** a mesh member, so nothing has told its trust store about your CA. Members trust the root automatically; a non-member must be handed the root once.
-
-**On host A**, export the certmesh root to a file:
-
-```
+```sh
 koi trust export --ca > koi-root.pem
 ```
 
-That prints the CA root certificate (PEM) to stdout. Copy `koi-root.pem` to laptop C by whatever you'd normally use (scp, a USB stick, a chat to yourself).
+Transfer the public root through a channel you control and verify its identity
+through the intended bootstrap process. On a client with Koi:
 
-**On laptop C**, install it into the OS trust store:
-
-```
+```sh
 koi trust install ./koi-root.pem
-```
-
-`install` validates that the file is a real X.509 **CA** certificate (a leaf/server
-cert is rejected with `not a CA certificate`), then adds it to the OS trust store.
-That does not prove every browser or language runtime uses that store; some clients
-have a separate root source. Verify the specific client you intend to use. You can
-see and later undo what Koi installed:
-
-```
 koi trust list
-koi trust remove koi-koi-root        # untrust later — every door has an exit
 ```
 
-(`koi trust` and its interop with step-ca / mkcert / Caddy roots is in the [trust guide](../guides/trust.md).)
+Root installation can require elevation. Without Koi, use the platform's own
+root-installation mechanism. Some browsers/runtimes use another root source;
+configure and test the actual client. See [root trust](../guides/trust.md).
 
-> **`koi trust` needs Koi on C, but C never joins the mesh.** Installing the binary just to run one `trust install` is the easy path. If you can't put Koi on C at all, you can still trust `koi-root.pem` by hand through the OS's normal "add a trusted root" UI / `update-ca-certificates` flow — `koi trust` is the convenience, not a requirement.
+## Verify without bypasses
 
----
-
-## Step 5 — Confirm green
-
-On laptop C, configure DNS so the current Koi zone resolves (the default is
-`.internal`; see the [DNS coexistence guide](../guides/dns-coexistence.md)). Use the
-exact name from B's `cert_sans`.
-
-Verify on the command line first — `curl` exits `0` and prints no TLS error:
+From the client, use the exact certificate name and listener port:
 
 ```sh
 curl -v https://host-b.internal:9443/
-#  * SSL certificate verify ok.
 ```
 
-This proves the `curl` build you ran trusts the chain. Test the browser separately;
-it may use a different root store. Open:
+On Windows select the intended curl executable or native HTTP client. Verify the
+application response, name and chain without an insecure flag or trust exception.
+Then open the same URL in the intended browser and test it separately.
 
+Record the artifact, OS/browser/runtime, DNS result, certificate fingerprint and
+expiry, and actual application response. A successful curl build does not certify
+another client's trust source.
+
+For continued use, verify renewal and the application after daemon restart.
+Keep [CA recovery](../guides/certmesh-ha-recovery.md) available.
+
+## A service name such as app.internal
+
+A container label does not add app.internal to the host certificate. Development
+source implements exact service-name grants and leaf lifecycle primitives, but
+the public grant/listener operation is incomplete. ACME also requires an
+account-bound grant and provider wiring.
+
+Read [container TLS](../guides/recipes/container-trusted-cert.md) and
+[ACME](../guides/acme.md). Do not apply an older “any in-zone name” recipe to
+current source or modify private state to bypass a missing public workflow.
+
+## Remove the trial
+
+Remove only the listener created for this trial:
+
+```sh
+koi proxy remove app
 ```
-https://host-b.internal:9443
-```
 
-No warning, a real padlock. The chain is: the proxy presented B's member cert → that cert chains to your CA root → C trusts that root (Step 4). End to end, trusted HTTPS between two machines with no public CA and no per-client PEM juggling.
-
-If you instead pointed C at Koi's resolver for the `.internal` zone (see the [DNS coexistence guide](../guides/dns-coexistence.md)), `https://host-b:9443` works the same way — `host-b` is also a SAN on the member cert.
-
----
-
-## What this required (the honest version)
-
-- **C must trust the root.** There is no way around handing a non-member the CA root once (Step 4). That single trust step is what removes the warning — TLS validation is doing exactly its job.
-- **The URL name must be on the cert.** The proxy serves B's member certificate.
-  Current issuance includes the hostname and configured-zone FQDN; inspect
-  `cert_sans` instead of assuming a suffix. A different name needs a different cert.
-- **The proxy is a byte passthrough.** It terminates TLS and pipes bytes to the backend; it does no path routing or header rewriting. For that, run Caddy/Traefik and let them get certs from Koi over ACME (next section).
-
----
-
-## Want `app.internal` instead?
-
-To open a *vanity* zone name like `https://app.internal` (not the host's own name) with no warning, the served cert has to list `app.internal` as a SAN — and `koi certmesh join` does **not** add arbitrary SANs to the member cert. The clean way to get an `app.internal` cert is Koi's **ACME facade**, which issues for any name **inside your DNS zone** (`.internal` by default):
-
-1. Point a standard ACME client (Caddy, Traefik, `lego`) at Koi's directory: `koi certmesh acme enable` prints the URL and the one-time root-trust recipe.
-2. Its dns-01 provider publishes and removes the proof through `koi dns txt set/clear`; Koi validates it through the same local DNS core and returns a leaf that chains to your CA.
-3. Either let that reverse proxy serve `app.internal` directly, or drop the issued `fullchain.pem` + `key.pem` into `certs/app/` and run `koi proxy add app --listen 9443 --backend 127.0.0.1:3000` — the proxy serves the **per-entry** cert (it's checked ahead of the member cert) and `https://app.internal:9443` goes green.
-
-The full ACME walk-through — scope, wildcards, and the bootstrap recipe — is in the [ACME guide](../guides/acme.md).
-
----
-
-## Where to go next
-
-- [certmesh guide](../guides/certmesh.md) — postures, unlock methods, renewal hooks, revocation, backup/restore.
-- [proxy guide](../guides/proxy.md) — cert resolution order, remote backends, WebSockets/gRPC passthrough.
-- [DNS guide](../guides/dns.md) — the three record sources, the `.internal` zone, port 53.
-- [ACME guide](../guides/acme.md) — get certs for any in-zone name with the tools you already run.
-- [trust guide](../guides/trust.md) — `koi trust` across step-ca / mkcert / Caddy.
-- [security model](../reference/security-model.md) — the daemon access token (`x-koi-token`), bind addresses, what is and isn't protected.
-
-> **A note on the API.** Everything above used the CLI, which reads the daemon's
-> access token for you. Operator mutations such as DNS/proxy changes require it.
-> `POST /v1/certmesh/join` is the intentional exception: its handler authorizes an
-> invite or TOTP because a new member cannot know the remote daemon's DAT. See the
-> [route/auth matrix](../reference/http-route-auth-matrix.md) for the exact boundary.
+Remove trial static DNS entries through the DNS command, and remove a trial root
+by its actual tracked name only when no remaining service depends on it.
+Destroying a shared CA is not routine trial cleanup.

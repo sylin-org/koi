@@ -1,199 +1,54 @@
-# Networking & Security Model
+# Security model
 
-> Precise technician voice: this page describes the binary as it ships today.
-> Every other document (README, GUIDE, CONTAINERS, guides) defers to this page for
-> bind addresses, authentication, and CORS behavior.
+Koi is an owner-operated LAN tool. Its management interface, discovery observations, certificate identities and application listeners are separate boundaries. The initial container preview requires no CA or remote management exposure; trust features are an extension with their own acceptance evidence in [launch readiness](../launch/README.md).
 
----
+## Management access
 
-## Listeners
+The main HTTP adapter defaults to `127.0.0.1:5641`. `--http-bind` deliberately selects loopback, a runtime bridge address, a specific IP or all IPv4 interfaces. This changes reachability, not authorization or transport encryption. Container access through Docker Desktop or a host alias must be verified for that runtime; a hostname is not a guarantee that a loopback socket is reachable.
 
-| Listener | Bind | Purpose |
-| -------- | ---- | ------- |
-| HTTP API + dashboard | `127.0.0.1:5641` (default; see `--http-bind`) | All `/v1/*` endpoints, dashboard (`/`), mDNS browser (`/mdns-browser`), OpenAPI (`/docs`) |
-| mTLS plane | `0.0.0.0:5642` | Certmesh inter-node traffic and optional remote `/v1/mcp`. Client certificates required; CN-based authorization |
-| DNS resolver (if started) | `0.0.0.0:53` (configurable) | `koi dns serve` — rate-limited, private-client-only by default |
+Every daemon start generates a fresh daemon access token (DAT). Protected requests carry the bare token in `x-koi-token`, compared in constant time. It must not appear in URLs or discovery records. Normal mutations require it; enrollment is authorized by an invite/TOTP and policy instead. Protected reads and local-only preferences are classified in [the route matrix](http-route-auth-matrix.md).
 
-**The HTTP API is loopback-only by default.** Processes on the same machine can
-reach it; other machines and (on native Linux) containers on bridge networks cannot.
-On Docker Desktop (Windows/macOS), `host.docker.internal` proxies into the host's
-loopback, so container access works there with no extra flags.
+Many read-only endpoints are intentionally readable locally. Some remain public when the operator exposes HTTP; sensitive catalog, inventory, zone and trust reads require DAT remotely and fail closed if peer identity is unknown. Authentication does not encrypt the HTTP link. Use an authenticated encrypted transport for remote operator credentials.
 
-To reach the daemon from a container on native Linux — or from elsewhere on the LAN —
-expose it deliberately with `--http-bind` (env `KOI_HTTP_BIND`):
+Browser CORS accepts exact HTTP loopback origins (`localhost`, `127.0.0.1`, `[::1]`, with optional ports); it does not admit arbitrary web origins. CORS is a browser policy, not client authorization. The authenticated operator browser transport also refuses sending a token to remote cleartext HTTP.
 
-| Value | Binds | Use |
-| ----- | ----- | --- |
-| `loopback` (default) | `127.0.0.1` | Local processes only — quiet |
-| `bridge` | the docker/podman bridge IPv4 (e.g. `172.17.0.1`) | Bridge-networked containers on native Linux |
-| `<ip>` | that interface | A specific NIC |
-| `0.0.0.0` | all interfaces | Whole LAN — loudest warning |
+## Local operator and token custody
 
-Non-loopback binds log a warning at startup and surface in `koi status` (`Bind:`
-line / `http_bind` JSON field) and the breadcrumb. **Exposure does not relax auth** —
-mutations still require the token; on Windows the exposed HTTP port also gets a
-firewall rule. `0.0.0.0` exposes the unauthenticated `GET` subset to any device on the
-network; protected reads still require the DAT.
+The private breadcrumb records the daemon endpoint and a `dat:`-prefixed token line. That prefix is storage syntax, not part of the header value.
 
-## The daemon access token (DAT)
+| Platform | Default breadcrumb |
+| --- | --- |
+| Windows | `%ProgramData%\\koi\\koi.endpoint` |
+| Linux/macOS | `$XDG_RUNTIME_DIR/koi.endpoint`, otherwise `/var/run/koi.endpoint` |
 
-Every daemon start generates a fresh random token. **All HTTP requests except most
-`GET`/`HEAD`/`OPTIONS` requests must carry it** in the `x-koi-token` header, or they receive
-`401 {"error": "unauthorized", ...}`. Comparison is constant-time. The header value is
-the **bare token** — the breadcrumb file stores it with a `dat:` line prefix, but that
-prefix is not part of the header value.
+An installed machine service owns its files privately. Installation records one interactive operator; local IPC verifies the peer UID/SID before returning endpoint/token information. Windows uses a protected named-pipe DACL and exact operator SID validation. Unix admits root and the recorded UID. An explicit remote CLI endpoint never inherits the local token.
 
-Carve-outs to that rule:
+`koi token show` requires a terminal unless forced; `koi token write PATH` exports a private file for an authorized consumer. Granting the token grants broad daemon authority. There are no per-token scopes.
 
-The compact, tested cross-listener view is the
-[HTTP route/auth matrix](http-route-auth-matrix.md).
+## Discovery and application reachability
 
-- **`/v1/mcp`** (the in-process MCP transport) requires the token on every
-  resource-bearing method — including its `GET` server→client SSE stream, which is a live
-  channel, not a read. Body-free CORS `OPTIONS` preflight remains exempt.
-- **`/v1/events`** is also a live SSE channel and requires the token. **`/v1/pond`** is
-  operator desire/state and is protected on every method; Pond's separate LAN listener
-  exposes only its privacy-reduced read projection.
-- **`/v1/certmesh/posture` and `/v1/certmesh/log`** require the token on every
-  resource-bearing method. Posture exposes live identity readiness; the audit log narrates
-  joins/revocations, auth rotations, failed unlock attempts, and backup/restore.
-- **The whole `/v1/udp/*` surface** requires the token on every resource-bearing method. `GET
-  /v1/udp/status` enumerates every binding's id and `GET /v1/udp/recv/{id}` streams a
-  binding's inbound datagrams — both expose other token-holders' bindings.
-- **`/v1/certmesh/{status,diagnose}`, `/v1/dns/{list,zone,entries}`, and
-  `/v1/dashboard/{snapshot,events}`** are token-free for a **loopback** peer (local tooling,
-  the CLI, and the dashboard) but require the token from a
-  **non-loopback** peer — the authoritative trust state/diagnosis and full DNS zone are fine
-  to read locally but not safe to leave world-readable once the adapter is bound to a
-  routable address. The dashboard carries those same details, including snapshot resyncs on
-  its SSE stream. When the peer address is unknown, these fail closed (token required).
-- **`/v1/certmesh/bootstrap` and `/v1/certmesh/trust-bundle` stay open on every peer** —
-  by design. A joining node reads the minimal bootstrap projection's CA fingerprint and
-  enrollment readiness before it holds a credential. Members pull the trust bundle (an
-  ES256-signed, self-verifying document) over plain HTTP. Full status is not used for
-  bootstrap and remains token-protected from remote or unknown peers.
-- **`POST /v1/certmesh/join`** does *not* require the token. A node enrolling against a
-  remote CA has no way to know that host's local token, so enrollment is authorized by
-  the TOTP code in the request body instead — the join handler verifies it along with
-  the open/closed enrollment policy and rate limiting. This is the one mutation the DAT
-  layer deliberately lets through.
+mDNS is public, link-local discovery. Names, TXT records, posture hints and observed endpoints are untrusted input. They do not prove certificate identity or authorize an operation. A label/record does not open an application firewall, publish a missing container port, configure a resolver or create a route.
 
-`OPTIONS` is always let through (a CORS preflight carries no credentials and returns
-only CORS headers, never a resource body).
+Health probes establish what the probing host can reach. The launch journey separately requires the actual application response on a second physical device. That distinction prevents a healthy management daemon from concealing an unreachable application.
 
-The token is distributed via the **breadcrumb file**, written at daemon startup
-(owner-only permissions on Unix):
+## Certificate boundaries
 
-| Platform | Breadcrumb path |
-| -------- | --------------- |
-| Windows | `%ProgramData%\koi\koi.endpoint` |
-| Linux/macOS | `$XDG_RUNTIME_DIR/koi.endpoint`, fallback `/var/run/koi.endpoint` |
+Certmesh supports local private-key custody, CSR signing, hostname-bound single-use invitations, TOTP enrollment authentication and policy/approval checks. CA material is envelope-encrypted at rest; [unlock slots](envelope-encryption.md) describe the auto-unlock and platform-secret trade-offs. A process already controlling the operator account or an unlocked authority is outside that protection boundary.
 
-Format — two lines: the endpoint URL, then the token prefixed with `dat:`:
+The authority's mTLS listener validates a CA-chained client certificate and authorizes member operations. Remote MCP additionally checks its CN against active, unexpired, unrevoked roster membership. Principal authority is coarse, comparable to DAT access minus human-only surfaces; it is not tenant isolation or a read-only agent permission system.
 
-```
-http://localhost:5641
-dat:8a31…base64url…
-```
+Exact service-name authorization is separate from host membership. ACME requires a registered account and a grant for one exact nonwildcard service name. Its client must use P-256 accounts, trust the root and provide dns-01 TXT operations. The public grant/listener workflow is incomplete; see [ACME](../guides/acme.md).
 
-An installed machine service normally owns that breadcrumb as root/SYSTEM. Koi does
-not make it world-readable. `koi install` records one interactive operator
-(`--operator` when elevation provenance is unavailable), and the CLI/workbench can
-request the endpoint and DAT over Koi's authenticated local-control Unix socket or
-Windows named pipe. The transport verifies the peer UID/SID before returning bytes;
-it also carries the optional resolved data root for local UI truth. That path is not
-part of public HTTP status and is not available to LAN clients.
+Revocation has two consumers: Koi-authorized boundaries reject revoked members, and Koi-aware message verification consumes signed trust-bundle metadata. Ordinary TLS applications receive no CRL/OCSP status from this system and may accept the leaf until its actual expiry. A trusted root alone does not establish trust in every browser/runtime/container image.
 
-### Worked example
+## Other surfaces
 
-```bash
-# Linux/macOS
-BC="${XDG_RUNTIME_DIR:-/var/run}/koi.endpoint"
-TOKEN=$(sed -n 's/^dat://p' "$BC")
+Pond runs a separate reduced read-only router. Its public projection is not the main management API. Publication and desired-state controls remain DAT-protected. UDP reads as well as writes require DAT; bind/destination policies and lease cleanup apply.
 
-# Reads work without a token:
-curl "http://localhost:5641/v1/mdns/discover?type=_http._tcp"
+DNS defaults to private clients with per-source-IP rate limits, a global load backstop and bounded client tracking. Rate-limited queries receive REFUSED. This does not make the resolver suitable as an unattended public recursive service.
 
-# Writes require it:
-curl -X POST -H "x-koi-token: $TOKEN" \
-  http://localhost:5641/v1/mdns/announce \
-  -d '{"name": "My App", "type": "_http._tcp", "port": 8080}'
-```
+## Persistence, recovery and verification
 
-```powershell
-# Windows
-$token = (Get-Content "$env:ProgramData\koi\koi.endpoint")[1] -replace '^dat:', ''
-Invoke-RestMethod -Method Post -Uri http://localhost:5641/v1/mdns/announce `
-  -Headers @{ 'x-koi-token' = $token } `
-  -Body '{"name":"My App","type":"_http._tcp","port":8080}'
-```
+Identity/roster changes use journaled multi-file persistence. Interrupted recovery and unknown/corrupt schemas must remain visible instead of resetting security state. Platform trust changes and native installation have ownership/rollback contracts; read [fleet contract](../../fleet/CONTRACT.md) before acceptance work on an existing host.
 
-The `koi` CLI handles all of this automatically: it tries its readable private
-breadcrumb, then the authenticated local-control transport, and attaches the token.
-An explicit remote `--endpoint` never inherits the local token.
-
-To hand the token to another process or container, use `koi token` instead of
-parsing the breadcrumb by hand:
-
-```bash
-koi token show                 # print the token (tty only; --force to pipe)
-koi token write /run/koi/token # write a 0600 file to mount as a container secret
-```
-
-## CORS
-
-Browser requests are accepted only from `http://localhost` / `http://127.0.0.1`
-origins (any port). The API is **not** open to arbitrary web origins.
-
-## What is *not* protected
-
-Be aware of the trade-offs in the current model:
-
-- **Most `GET` endpoints are unauthenticated on loopback.** Any local process (or any
-  localhost-origin web page, via CORS) can read daemon status and discovered services.
-  Treat local processes as trusted readers; if that doesn't fit your machine, don't run
-  the daemon there. Certmesh posture/audit, Pond control, event streams, MCP, and
-  `/v1/udp/*` require the token even on loopback (see the carve-outs above); full certmesh
-  status/diagnosis and the DNS zone require it from a remote peer. Certmesh bootstrap and
-  the signed trust bundle remain intentionally public.
-- **The token authorizes writes, not identities — on loopback.** There is one token
-  per daemon and no per-caller scopes. Non-loopback callers can hold a *principal*
-  identity instead (ADR-026): an enrolled client-role certificate that names its holder,
-  is individually revocable, and authorizes at coarse grain (any active principal ≈
-  the token holder, minus human-only surfaces like invite minting).
-- **Revocation has two audiences.** The CA and authenticated-principal boundaries
-  reject a revoked identity immediately. Koi-aware verification also consumes revoked
-  fingerprints from the signed trust bundle. Ordinary TLS clients do not consume that
-  metadata; without CRL/OCSP they can accept the issued leaf until its real `NotAfter`.
-
-## DNS rate limiting
-
-The resolver rate-limits queries **per source IP**: each client gets its own
-per-second budget (`--dns-qps`, env `KOI_DNS_QPS`, default 200), so one noisy or hostile
-LAN peer can't starve resolution for everyone else. A whole-resolver backstop
-(`10 ×` the per-client budget) caps aggregate load — the only meaningful guard against
-spoofed-source floods — and the tracked-client map is hard-bounded so a burst of distinct
-source IPs can't grow it without limit. Shed queries return `REFUSED` (not `SERVFAIL`,
-which would invite immediate retries and amplify a flood).
-
-## Supply chain
-
-Every release archive **and** the GHCR image (`ghcr.io/sylin-org/koi`) carry a signed
-build-provenance attestation (GitHub Artifact Attestations / Sigstore, keyless) proving
-the artifact was built by this repository's release workflow. The container image also
-ships an SBOM. Verify before trusting:
-
-```bash
-gh attestation verify koi-<target>.tar.gz --repo sylin-org/koi
-gh attestation verify oci://ghcr.io/sylin-org/koi:<version> --repo sylin-org/koi
-```
-
-## Threat-model summary
-
-Koi is a **LAN tool operated by the machine's owner**. It defends against: remote
-networks (loopback-only API), unauthorized local writes (DAT), passive theft of the
-CA key at rest (envelope encryption — see
-[envelope-encryption.md](envelope-encryption.md)), and rogue enrollment (TOTP
-ceremony + rate limiting). It does not defend against: a hostile process already
-running as your user, a hostile LAN device intercepting *reads* of mDNS (mDNS is
-public by design), or a compromised machine that holds an issued certificate.
+Release checksums and available build attestations verify artifact integrity/provenance, not security certification or product behavior. Consult the exact release's assets and [launch gate](../launch/README.md) before claiming a distribution channel or scenario is verified.

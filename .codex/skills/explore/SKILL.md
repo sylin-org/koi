@@ -1,121 +1,41 @@
 ---
 name: explore
-description: Run a mandatory pre-implementation exploration workflow before writing production code. Use when a task requires code changes and Codex must first map concerns/layers, read relevant files, check existing constants and types, identify the closest existing pattern, plan exact code placement, and confirm architectural guardrails.
+description: Map source ownership, existing types and patterns before Koi production code changes; plan exact placement and risk-focused verification. Documentation-only edits need relevant source/example checks rather than a full code exploration.
 ---
 
-# Explore
+# Explore before implementation
 
-Before implementing anything for a task, complete the following steps in order.
-Do not write production code until all steps are done.
+Use this workflow before changing production code. Keep it proportional to the
+actual task; documentation tooling does not require surveying unrelated domains.
 
-## Step 1: Understand the task
+1. Read [.agentic/CONTEXT.md](../../../.agentic/CONTEXT.md), the current epic and
+   ledger. State the user task, affected layers and intended observable outcome.
+2. Read the relevant existing implementation, callers and tests. Search with rg
+   for existing types, constants and the closest working pattern. Summarize what
+   already exists and what must be created.
+3. Identify the owner of each proposed change. Use current source paths, not a
+   hand-maintained module inventory:
+   - domain state/commands/events stay in their owning crate;
+   - shared contracts and small status/event primitives belong in koi-common;
+   - cross-domain coordination belongs in koi-compose;
+   - listener/auth/transport assembly belongs in koi-serve;
+   - CLI commands and platform entry points belong in crates/koi/src;
+   - UI rendering belongs in koi-ui and consumes authoritative projections;
+   - documentation generation remains in scripts/AiDocDist.ps1.
+4. State exact file placement, the reused pattern and required tests/checks.
+   Search new protocol names and constants before adding them. Keep constants
+   co-located; avoid parallel inventories and lifecycle owners.
+5. Check architecture: no domain-to-domain imports, no native provider types
+   crossing their adapter, no mdns-sd import outside
+   crates/koi-mdns/src/native.rs, no secrets in public output, and no guessed
+   success/readiness. Preserve cancellation, durable identity and teardown rules.
+6. Present a concise implementation plan with task, files read, reuse, new
+   placement, risks and verification. Proceed when the work is already authorized.
+   Ask only for genuinely missing authority or requirements.
 
-Restate the task in your own words. Identify:
-- What crate this touches: `koi-common`, `koi-client`, `koi-mdns`, `koi-config`, `koi-dns`, `koi-health`, `koi-proxy`, `koi-certmesh`, `koi-crypto`, `koi-embedded`, `koi` binary
-- Which layer is involved: transport, business logic, wire format, CLI
-- Expected output: new feature, refactor, bug fix, extension
-
-## Step 2: Read existing code
-
-Open and read the 3-5 most relevant existing files.
-Use searches like:
-
-```bash
-# Find types related to the task
-rg "struct|enum|trait" crates/ -l | head -20
-
-# Find functions related to the task
-rg "fn keyword_from_task" crates/
-
-# Find the closest existing implementation to what we're building
-rg "similar_feature_keyword" crates/ -l
-```
-
-For each file read, state in one sentence what it does and whether it is relevant.
-
-## Step 3: Check for existing constants and types
-
-Run these searches explicitly and report results:
-
-```bash
-# Constants in the binary crate
-rg "const " crates/koi/src/
-
-# Shared types and utilities
-rg "struct|enum" crates/koi-common/src/
-rg "struct|enum" crates/koi-mdns/src/protocol/
-
-# Client types
-rg "struct|enum" crates/koi-client/src/
-
-# Domain crate types
-rg "struct|enum" crates/koi-dns/src/
-rg "struct|enum" crates/koi-health/src/
-rg "struct|enum" crates/koi-proxy/src/
-rg "struct|enum" crates/koi-certmesh/src/
-```
-
-For each required piece of functionality, state clearly:
-- `Already exists`
-- `Needs to be created`
-
-## Step 4: Identify the closest pattern to follow
-
-Find the most similar existing feature in the codebase.
-Examples:
-- New HTTP endpoint: read `crates/koi/src/adapters/http.rs` or `crates/koi/src/adapters/dispatch.rs`
-- New CLI command: read a module in `crates/koi/src/commands/`
-- New shared types: read `crates/koi-common/src/types.rs` or `crates/koi-common/src/api.rs`
-- New domain logic: read the relevant domain crate (e.g., `crates/koi-mdns/`, `crates/koi-dns/`)
-- Platform integration: read `crates/koi/src/platform/`
-- Formatting: read `crates/koi/src/format.rs`
-- Client operations: read `crates/koi-client/src/lib.rs`
-
-State:
-- `Following the pattern from [specific file]`
-
-## Step 5: Plan where new code will live
-
-For every new file, type, function, or constant, state location and justification:
-
-| New code | Location | Justification |
-|----------|----------|---------------|
-| (type/fn/const) | (exact path) | (why here and not elsewhere) |
-
-Apply crate placement rules:
-- Shared types, traits, utilities: `crates/koi-common/`
-- mDNS protocol types: `crates/koi-mdns/`
-- HTTP client methods: `crates/koi-client/`
-- CLI commands / subcommands: `crates/koi/src/commands/`
-- HTTP server / adapters: `crates/koi/src/adapters/`
-- OS integration: `crates/koi/src/platform/`
-- Output formatting: `crates/koi/src/format.rs`
-- DNS domain logic: `crates/koi-dns/`
-- Health checks: `crates/koi-health/`
-- Reverse proxy: `crates/koi-proxy/`
-- Certificate mesh: `crates/koi-certmesh/`
-- Crypto primitives: `crates/koi-crypto/`
-- Configuration / breadcrumb: `crates/koi-config/`
-
-## Step 6: Check for potential violations
-
-Before proceeding, confirm:
-
-- [ ] No `mdns-sd` imports outside `crates/koi-mdns/`
-- [ ] No new type duplicates one in `koi-common` or domain crates
-- [ ] Constants are co-located with usage (not in a centralized module)
-- [ ] New protocol types have serde round-trip tests planned
-- [ ] Cross-crate dependencies flow downward (binary -> domain crates -> koi-common)
-
-## Step 7: Present the plan
-
-Summarize findings in this exact format:
-
-**Task:** (one sentence)
-**Files read:** (list with one-sentence relevance notes)
-**Reusing:** (list what already exists)
-**Creating new:** (table from Step 5)
-**Pattern:** (which existing file you're following)
-**Risks:** (anything you're unsure about)
-
-Then stop and wait for approval before implementing.
+For an HTTP change, inspect the domain's route module and
+crates/koi-serve/src/http.rs. For a CLI change, inspect crates/koi/src/cli.rs and
+the relevant commands module. For container behavior, inspect
+crates/koi-runtime/src/instance.rs and crates/koi-compose/src/orchestrator.rs.
+For docs/tooling, verify examples, source links, release claims and generated
+outputs without treating documentation edits as fresh native acceptance.

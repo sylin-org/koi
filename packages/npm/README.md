@@ -1,30 +1,13 @@
-# Koi for `npx`
+# Native npm launcher packaging
 
-Let everything local find, trust, and talk.
+This directory implements the JavaScript launcher and metadata for Koi's native platform carriers. It is packaging source, not evidence that an npm package is available. Use the verified installation channels in [launch readiness](../../docs/launch/README.md).
 
-```console
-npx @sylin-org/koi@1.0.0-rc.2 -- mdns discover
+The entry package pins six optional carriers for macOS, Linux and Windows on x64/arm64. npm selects the matching carrier; the launcher resolves its executable and passes arguments through. There is no postinstall downloader.
+
+For `koi install`, the launcher first copies the executable to a stable user location so a registered service does not depend on npm's cache or package directory. Other commands run the carrier directly.
+
+```sh
+node --test packages/npm/test/launcher.test.js
 ```
 
-This package carries Koi's native binary for your platform. npm downloads
-exactly one of the six platform carriers (`@sylin-org/koi-darwin-arm64`,
-`-darwin-x64`, `-linux-arm64`, `-linux-x64`, `-win32-arm64`, `-win32-x64`) as an
-exact-version optional dependency; the launcher resolves it and runs it. There
-is no download step, no `postinstall` script, and no runtime JavaScript
-dependencies.
-
-One deliberate exception keeps npm's hands off system state: `koi install`
-first copies the carried binary to Koi's stable per-user location and runs the
-installation from there, so a registered service never points at an
-npm-managed path. Everything else (`mdns discover`, `status`, `dns`, …) runs
-the carried binary directly.
-
-After a real install, use Koi normally:
-
-```console
-koi mdns discover
-koi status
-```
-
-Koi is open source under Apache-2.0 OR MIT. Source, native release artifacts,
-checksums, and verification instructions live at <https://github.com/sylin-org/koi>.
+Before advertising an npm installation command, publish the matching carriers and entry package, verify registry availability, then perform a clean install and the actual container/LAN journey. Record the exact versions and artifacts in the launch ledger. Launcher unit tests establish argument/path behavior, not publication or native service acceptance.

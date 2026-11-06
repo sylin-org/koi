@@ -1,206 +1,96 @@
-# Recipe: a container with a stable name and a trusted TLS cert
+# Container HTTPS: names, certificates and current limits
 
-Goal: start a container, give it one set of labels, and reach it over real HTTPS from
-another machine on the LAN — DNS name and trusted certificate, no manual cert wiring.
+[Publication and second-machine application access](../../../CONTAINERS.md) is
+the first adoption task. Trusted exact service-name HTTPS is a separate extension.
+This page explains current pieces and the missing public operation; it is not a
+finished label-to-HTTPS recipe.
 
-This is a cross-cutting recipe: it leans on four capabilities at once (mDNS, DNS,
-certmesh, proxy) and the runtime adapter that ties them together. If you only want one of
-those, read its guide instead — [runtime.md](../runtime.md), [proxy.md](../proxy.md),
-[dns.md](../dns.md), [certmesh.md](../certmesh.md). This page shows the current
-substrate and is explicit about the coordinator work that still separates labels
-from a complete secure-service operation.
+These limits describe 1.0.0-dev.0 source. Stable 0.9.0 and prerelease 1.0.0-rc.2
+have separate contracts. [Release readiness](../../launch/README.md) states
+artifact-specific support.
 
----
+## What labels configure
 
-## What you'll have at the end
-
-- `app.internal` resolves to the host running the container.
-- A TLS listener on the host that proxies to the container.
-- A certificate that chains to a CA your network trusts, so clients that trust the root
-  don't see an "unknown issuer" warning.
-
-One catch, stated up front because it shapes the whole recipe: labels create a DNS
-name and listener, but they do **not** invoke the service-name grant and certificate
-facade. The proxy therefore serves the host member certificate, whose SANs do not
-include `app.internal`. R20 provides an exact-name, host-custodied leaf lifecycle;
-R21 still has to compose it with labels and Proxy reload. No private key is injected
-into the container — see [The honest reality](#the-honest-reality).
-
----
-
-## Prerequisites
-
-A Koi daemon running on the container host, with mDNS, DNS, certmesh, and the proxy all
-enabled (they are on by default), and a certmesh CA that is **created and unlocked**:
-
-```bash
-koi install                 # or: koi --daemon
-koi certmesh create         # one-time, on the host that owns the CA
-koi certmesh unlock         # after each daemon restart, unless auto-unlock is on
-koi certmesh status         # CA locked: false  ← required for a trusted cert
+```yaml
+services:
+  app:
+    image: nginx:alpine
+    ports:
+      - "8080:80"
+    labels:
+      koi.announce: app
+      koi.health.path: /
+      koi.proxy.port: "9443"
 ```
 
-If certmesh is locked or uninitialized the proxy still starts, but it serves a
-*self-signed* cert (warning everywhere). Confirm `CA locked: false` before continuing.
+This illustrative app requests discovery, naming, health and a host TLS proxy.
+It does not issue a certificate for app.internal. Record a pinned image digest
+for acceptance; this example is not an accepted fixture.
 
-The runtime adapter connects to Docker (or Podman) automatically. Check it sees the
-daemon:
+The koi.certmesh label is request metadata. It does not create a workload
+identity or inject a private key.
 
-```bash
-curl -s http://localhost:5641/v1/runtime/status
+## Inspect the certificate source
+
+```sh
+koi proxy status
+koi certmesh status --json
 ```
 
----
+Current Proxy selects:
 
-## The label set that works
+1. A Proxy-owned override at
+   `<data-dir>/proxy-certs/<entry-name>/{fullchain.pem,key.pem}`.
+2. A healthy local member identity supplied by Certmesh.
+3. A generated self-signed fallback.
 
-```bash
-docker run -d \
-  -p 8080:80 \
-  --label koi.announce=app \
-  --label koi.proxy.port=443 \
-  nginx:alpine
-```
+A certmesh chain does not imply the service name is in the SANs. Inspect the
+actual certificate, which may differ between releases or persisted installations.
+Root trust and name matching are both required.
 
-That is the whole thing. What each label does — verified against the runtime adapter's
-label parser:
+## Manual configurations
 
-| Label | Effect |
-| --- | --- |
-| `koi.announce=app` | Shorthand that sets the service **name**, the **DNS name** (`app`), and `enable=true`. Result: `app._http._tcp` on mDNS (port 80 → HTTP heuristic) and `app.internal` in the local resolver, pointing at the host. |
-| `koi.proxy.port=443` | Adds a TLS proxy entry named `app` that **listens on host port 443** and forwards to the container's published port (`8080` here, over plain HTTP on the host loopback). |
+If a host member name is acceptable, follow
+[host-member HTTPS](../../tutorials/trusted-https.md) and verify it using the
+intended client's ordinary resolver and browser root source.
 
-The proxy listener binds `0.0.0.0`, so it is reachable from other machines on the LAN
-(unlike the daemon's management API, which is loopback by default).
+Existing proxy/CA tooling can continue to manage service certificates.
+An explicit Proxy-owned override is possible, but the operator owns its secure
+permissions, renewal and reload verification. Inspect the SAN, chain, key match
+and expiry; a filename is not certificate identity.
 
-> A `koi.certmesh=true` label exists and is parsed, but it is **inert** today: it does not
-> trigger a per-container certificate. The proxy uses the host's existing member cert
-> regardless. Setting it changes nothing — don't rely on it.
+## Exact service-name setup in development
 
-Want the proxy reachable from another host *and* the backend on a different machine? Add
-`koi.proxy.remote=true` (the proxy→backend hop is then plaintext on the wire — opt in
-knowingly). For a custom service type, health path, or TXT records, see the
-[full label reference](../runtime.md#full-label-reference).
+Certmesh implements durable grants binding one service and configured-zone name
+to either the host proxy owner or a named ACME account. Host leaf issuance and
+renewal preserve prior usable material if replacement cannot commit.
 
----
+The public operation granting the name and composing the certificate with Proxy
+is incomplete. Neither container labels nor the ordinary CLI finish this workflow.
+Do not hand-edit Certmesh's private state.
 
-## Verify the wiring
+External ACME requires one exact account-bound grant and a provider mapping DNS
+challenges to Koi's TXT operations. Its [guide](../acme.md) explains why a stock
+proxy configuration alone is not a complete setup.
 
-```bash
-koi mdns discover _http._tcp      # → app._http._tcp on port 8080
-koi dns lookup app                # → app.internal = <host IP>
-koi proxy status                  # → app  :443  127.0.0.1:8080  certmesh  running
-```
+## Evidence needed for a trusted-service extension
 
-The `TLS` column in `koi proxy status` is the tell. `certmesh` means the proxy found the
-host's member cert on disk and is serving it. `self-signed` means certmesh is locked or
-the member cert hasn't been issued — go back and `koi certmesh unlock`.
+- The intended name resolves through the second client's ordinary resolver.
+- The listener serves an unexpired certificate covering that exact name.
+- The actual browser/runtime trusts the intended chain without a bypass.
+- The app remains usable after container recreation and daemon restart.
+- Renewal replaces the certificate and key without losing the endpoint.
+- Failure/recovery exposes a precise action and retains usable prior state where possible.
+- Removal cleans up trial resources without affecting unrelated services.
 
-From the host itself, the host's own name is already warning-free once the root is trusted
-locally (certmesh installs the CA into the host's trust store at creation time):
+Ordinary TLS clients do not consume Koi's revocation metadata. Removing a grant
+does not force rejection of a copied unexpired leaf by those clients.
 
-```bash
-curl https://$(hostname):443/        # trusted: the member cert's SAN is the host name
-```
+## Cleanup and related guides
 
----
+Remove runtime-owned resources through their container lifecycle; manually
+created listeners through koi proxy remove; trial roots by their tracked names
+only when no longer needed.
 
-## Trust the root on the client
-
-Any *other* machine needs the certmesh CA root in its trust store. Export it from the host
-and install it on the client with `koi trust` (local-only; touches the OS store directly,
-needs elevated privileges):
-
-```bash
-# On the host: print the CA root.
-koi trust export --ca > koi-root.pem
-
-# Copy koi-root.pem to the client, then on the client:
-koi trust install ./koi-root.pem
-koi trust list                       # confirm it's there
-```
-
-`koi trust install` validates that the PEM is a real CA certificate and rejects a
-leaf/server cert, so you can't install the wrong file as a root. It tracks only the roots
-it installed and never touches the rest of your OS store; `koi trust remove <name>` undoes
-it. Full details and the step-ca/Caddy/mkcert variations are in the
-[trust how-to](../trust.md).
-
-Now, from the client, the host's name is trusted:
-
-```bash
-curl https://<host>.internal:443/         # if the host is itself in the zone as <host>.internal,
-                                     # but see the catch below for app.internal specifically
-```
-
----
-
-## The honest reality
-
-Here is the part the labels can't finish, and why.
-
-The proxy serves the **host's certmesh member certificate**. That certificate's Subject
-Alternative Names are the host's identity — its hostname, `localhost`, `127.0.0.1`, `::1` —
-**not** `app.internal`. (See [certmesh.md → Certificate details](../certmesh.md#certificate-details).)
-
-So after you trust the root on the client:
-
-- `https://<host-with-a-SAN-match>` → **fully trusted, no warning.** The chain is trusted
-  *and* the name matches a SAN.
-- `https://app.internal:443` → trusted chain, but the browser/`curl` still flags a **name
-  mismatch**, because `app.internal` is not in the certificate. The `koi.certmesh` label does
-  not fix this — there is no per-container cert.
-
-To make `https://app.internal` itself warning-free, you need a certificate whose only
-SAN is `app.internal`. Koi's Certmesh domain now models that as an exact grant bound to
-the stable service ID and either the host Proxy or one ACME account. Name conflicts,
-out-of-zone names, multi-name orders, and every wildcard fail closed. The two
-certificate-consumer paths are:
-
-1. **Host Proxy termination (the supported secure-service strategy).** Certmesh keeps
-   the key on the host and atomically installs `cert.pem`, `key.pem`, `ca.pem`, and
-   `fullchain.pem` beneath `<data-dir>/certs/services/app.internal/`. Renewal rotates
-   the key and preserves the previous usable files if signing or persistence fails.
-   R21 owns the operation that grants the name and hands this material to Proxy's
-   existing hot-reload input; the label alone does not perform those steps yet.
-2. **Account-bound ACME.** Register the external proxy's P-256 account, have the secure
-   operator bind `app.internal` to that exact account, and use the
-   [RFC 8555 facade](../acme.md). Being merely in-zone is insufficient and wildcard
-   orders are rejected. R24 owns the finished maintained external-proxy workflow.
-
-This is the substrate doctrine: the labels assemble name + listener + trusted chain
-automatically; the SAN-matching cert is a separately authorized step. Certmesh offers
-a standard ACME endpoint for external consumers and a typed host facade for Koi Proxy.
-The public composition remains deliberately deferred to R21/R24 rather than implied
-by labels.
-
----
-
-## Cleanup
-
-Stop the container and every resource it created is removed within seconds — the mDNS
-announcement, the `app.internal` DNS entry, the health check, and the `:443` proxy listener:
-
-```bash
-docker stop <container>
-koi proxy status        # the app entry is gone
-koi dns lookup app      # no longer resolves
-```
-
-Untrust the root on a client when you're done with it:
-
-```bash
-koi trust remove <name>     # the name from `koi trust list`
-```
-
----
-
-## See also
-
-- [runtime.md](../runtime.md) — every label, the start/stop lifecycle, port heuristics.
-- [proxy.md](../proxy.md) — how the proxy resolves its cert and the per-entry override.
-- [certmesh.md](../certmesh.md) — what the member cert covers, unlock, the CA file layout.
-- [acme.md](../acme.md) — getting an in-zone cert (the warning-free `app.internal` path).
-- [trust how-to](../trust.md) — `koi trust` in full.
-- [security model](../../reference/security-model.md) — the daemon access token, for any
-  mutating HTTP call you script instead of using the CLI.
+[Runtime](../runtime.md) · [Proxy](../proxy.md) ·
+[Root trust](../trust.md) · [CA recovery](../certmesh-ha-recovery.md)

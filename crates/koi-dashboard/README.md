@@ -1,24 +1,20 @@
 # koi-dashboard
 
-Presentation layer for the [Koi](https://github.com/sylin-org/koi) local connectivity
-substrate. Hosts the two single-file, zero-build HTML surfaces and their backing
-endpoints:
+Snapshot/SSE and lazy mDNS browser adapters over composition-owned state.
 
-- **Dashboard** (`GET /`, `/v1/dashboard/snapshot`, `/v1/dashboard/events`) — system
-  overview with a live SSE activity feed.
-- **mDNS browser** (`GET /mdns-browser`, `/v1/mdns/browser/snapshot`,
-  `/v1/mdns/browser/events`) — live LAN service-discovery explorer.
+The crate owns no product HTML. `koi-ui` is the sole presentation owner; these
+adapters supply current observations to it and to documented data clients.
+Network browsing is lazy and shared. A visible catalog entry is evidence of
+observation, not a guarantee that its application is reachable from another device.
 
-This is a **composition crate**, not a domain crate: it depends on the event-bearing
-domain crates so it can host a single event forwarder and a single mDNS browse adapter.
-Nothing else in the workspace depends on it, so the `koi-common` kernel and the domain
-crates keep clean dependency closures.
+## Development
 
-Rendering is done with DOM construction (`createElement` + `textContent`/`dataset`),
-never HTML-string concatenation of dynamic values, and launch links are restricted to an
-`http`/`https` scheme allowlist — closing the LAN-attacker XSS class structurally.
+Read [architecture](../../docs/reference/architecture.md) for ownership boundaries and [launch readiness](../../docs/launch/README.md) for the supported-versus-tested journey matrix. This README describes repository source; it does not assert package publication or physical acceptance.
 
-The browser cache is a revision-aware presentation projection of mDNS's authoritative
-discovery snapshot; best-effort events never reconstruct membership. The LAN-wide
-meta-browse that feeds that domain snapshot is **lazy**: it starts on the first browser
-request and idles out after inactivity (`koi status` reports whether it is active).
+```sh
+cargo test -p koi-dashboard --locked
+```
+
+Platform-dependent tests can require explicit facilities or remain ignored in ordinary runs. See [validation](../../docs/qa/validation-suite.md) before interpreting a green result.
+
+Licensed under Apache-2.0 OR MIT; see the workspace license files.

@@ -1,76 +1,89 @@
-# fleet/PROTOCOL.md — the agent contract (one page)
+# Fleet execution protocol
 
-You are one **hat** of the Koi fleet: an OS agent on a real machine, making
-sure Koi *simply works* there. The universal entry point is `fleet/task.md`;
-it resolves this machine to `fleet/briefs/<hat>.md`. The campaign's home is
-`fleet/coordination.md`.
+This protocol applies to an explicitly activated assignment selected through
+[the fleet task](task.md), [Epic 004](epics/004-container-lan-adoption.md), and
+[the launch ledger](launch/LEDGER.md). It is not authority to start another host.
 
-## The loop (every session)
+## Ownership and authorization
 
-1. `cd` to your repo path (in your brief) and inspect the worktree. Continue an
-   intentional interrupted change; never overwrite another agent's work. Otherwise
-   `git switch dev` → `git pull --ff-only origin dev` → record the commit you are
-   testing.
-2. Build + test natively: `. ~/.cargo/env` first (rustup is per-user;
-   non-login shells will not find cargo otherwise). The gates are
-   `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
-   `cargo test --locked`, `cargo build --locked --release -p koi-net`.
-3. Install/run FOR REAL via the product's own path (`koi install`, or
-   `--user` where your brief says so). No sandboxing, no KOI_DATA_DIR
-   shelters: fidelity is the test. Uninstall is a real exercise too. You are
-   authorized on your own hat machine to install required platform/build
-   dependencies and to upgrade, restart, enroll, uninstall/reinstall, and
-   exercise Koi and its native session integrations as the brief requires.
-4. Exercise the surfaces your brief names (daemon HTTP, CLI, pond UI,
-   desktop UX). Collect evidence: command + output, log tails after at least one
-   periodic retry interval, and visible captures for desktop claims. A generated
-   startup file counts only after its executable target is proved durable.
-5. Report: append to `fleet/<hat>/journal.md` (commit under test, gates,
-   what your machine's real koi state is now, findings). File defects as
-   `fleet/<hat>/issues/NNN-short-slug.md` with reproduction evidence.
-6. Commit to `dev`, synchronize, and publish in the same session:
-   `git add <owned paths> && git commit`, then `git pull --rebase origin dev`
-   and `git push origin HEAD:dev`. Every agent is authorized and expected to
-   push directly. If another agent wins the race, rebase and retry; never
-   force-push and never leave the completed commit local-only.
+- CachyOS owns source implementation and integration. Other hosts supply requested
+  native verification and their own evidence. A separately authorized repository
+  documentation task may edit the documentation it owns without transferring the
+  ongoing source role.
+- Each host owns its own system mutations and evidence. Do not start another
+  host's session, install there, change its provider/network/firewall/trust state,
+  or borrow its credentials. Peers execute their own addressed requests.
+- Production LAN machines, garden-moss on limpid-dune/topaz-butte, and anything
+  outside the explicitly assigned host remain out of scope. Private local notes
+  contain protected machine and credential details.
+- An activated native assignment permits required build/platform dependencies and
+  the named install, upgrade, restart, enrollment, uninstall, service, provider,
+  firewall, trust-store and session exercises on that host. Capture baseline and
+  rollback material first; mutate only the named surfaces.
+- Documentation maintenance alone authorizes no remote execution, installation,
+  deployment, push or service mutation.
 
-## Rules
+## Repository work
 
-- Your machine, your namespace (`fleet/<hat>/`), your hat only.
-- One shared branch: work directly on `dev`; do not create per-agent branches.
-  A session with `HEAD` ahead of `origin/dev` is unfinished. Resolve ordinary
-  push races with `git pull --rebase origin dev` and retry the push.
-- Real state, real lifecycle; leave your machine in a *working real*
-  koi state at session end and journal exactly what that state is.
-- One koi per machine, including during validation: no parallel test daemon,
-  second service, alternate-port Koi, or isolated data-root copy. Capture
-  rollback material, then stop → upgrade/migrate → start → verify as
-  one serial transition. If your brief migrates the standing shape, enroll the
-  replacement with its single-use hostname-bound invite, retire the old shape,
-  and verify the roster and process count. Shift ports only for a genuine
-  non-Koi incumbent the final deployment must coexist with, never to make room
-  for a test instance.
-- Untouchable: garden-moss on limpid-dune/topaz-butte; anything outside
-  your machine; production LAN boxes (see local/NOTES.md).
-- Credentials: only your brief's. Never reuse another machine's. When the lab already provides
-  test credentials, pass them through the platform's noninteractive standard channel instead of
-  opening an operator-facing privilege dialog. Any askpass file, environment value, copied key,
-  or other credential material created for a run is volatile, untracked, excluded from evidence,
-  and removed before the run can pass.
-- Test latitude: on your own hat machine, install the platform/build
-  dependencies and exercise the system services, responder/provider lifecycle,
-  immutable deployment, firewall, trust store, and graphical-session surfaces
-  necessary for the brief's real acceptance gates. Capture exact baseline and
-  rollback material first, mutate only the named surface, settle-check it, and
-  restore anything not intended as the final Koi deployment. This authority does
-  not extend to another fleet or production machine.
-- Truthful or silent: never report a state you did not observe.
+Inspect the worktree before synchronization. Preserve interrupted work and edits
+owned by others. Fleet source/evidence publication uses `dev` and direct authenticated
+pushes when the fleet assignment is activated. On a clean checkout synchronize with
+`git pull --ff-only origin dev`. Commit only owned paths, resolve ordinary publication
+races with `git pull --rebase origin dev`, then push `origin HEAD:dev`. Never
+force-push or discard another change. Separate repositories retain separate identities.
 
-## Journal format (append-only)
+Source integration stays with CachyOS. Appropriate native hosts or hosted CI execute
+the required checks, including locked builds/tests and lint gates specified by the
+repository. A source-only task does not require installing Koi or running unrelated
+native workbooks. Debian's capacity restriction applies before assigning any check.
 
-```
-## YYYY-MM-DD HH:MM <tz> — session N
-commit: <sha> | gates: fmt/clippy/test <pass|fail notes>
-koi state now: <what is actually running, where, which ports>
-findings: <numbered, or none>
-```
+## Native execution
+
+Keep one installed Koi per host. Capture the exact binary, configuration, state,
+service descriptor and enablement, provider, ports, network, firewall, trust roots,
+startup entries and process baseline relevant to the assignment.
+
+Arm interruption-safe restoration before destructive steps. Upgrade serially:
+stop → replace/migrate through the supported product path → start → verify.
+Do not create a second service, alternate-port test Koi, isolated data root, or
+checkout-only UI to obtain acceptance. A different port is justified only by an
+actual non-Koi incumbent required by the intended deployment.
+
+Use native system/package/service mechanisms. Preserve unrelated services,
+application state, roots, keys and firewall rules. Where a task enrolls a replacement
+shape, use its own single-use hostname-bound invitation, retire the old shape and
+verify the roster and process count. A cancellation must not abandon admitted
+native changes.
+
+Use provided credentials through the platform's noninteractive standard channel
+when available. Temporary askpass files, environment secrets, copied keys and
+credentials are untracked, excluded from evidence and removed before passing.
+Never print tokens or credential material.
+
+Restore all run-owned temporary state and prove restoration. Leave only the intended
+working Koi deployment. Capture settled state after the relevant recovery/retry
+interval, rather than inferring success from command exit alone.
+
+## Evidence
+
+Every native claim identifies source commit, artifact/package origin, installed
+path and SHA-256, process identity, OS/runtime/provider, relevant configuration,
+command and result, peer identity, run ID and final restoration state. A named
+candidate is built from that exact source with the locked dependency graph. Later
+HEAD is not a substitute. Changes to product bytes, dependencies, recipes or shipped
+assets invalidate affected candidate evidence under the epic's rules.
+
+Discovery, resolution, local reachability, peer application response, and named-client
+TLS validation are distinct facts. A generated URL, certificate file, UI screenshot,
+root installation, or successful TCP connection proves only that measured step.
+A `passed` result requires the task's full applicable proof; unknown, not run and
+pending remain explicit.
+
+A second-device claim uses an independent physical client, the intended name/URL,
+and a real application operation. Record both sides' artifact and configuration
+identities where Koi runs. Do not use `-k` or equivalent TLS bypasses for trust proof.
+Unsupported/unavailable counters or providers remain explicitly unavailable.
+
+Bounded tests may use fakes where appropriate; release and user-workflow evidence
+uses the actual supported artifact and native path. Repeat proof only when an
+affected artifact, behavior, configuration or declared gate changes.

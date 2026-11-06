@@ -6,11 +6,11 @@
 
 use std::path::Path;
 
-/// The three-line contract: LAN name, dashboard URL, one suggested next step.
+/// The three-line contract: LAN name, interface URL, one suggested next step.
 pub fn banner_lines(lan_name: &str, dashboard_url: &str, next_step: &str) -> [String; 3] {
     [
         format!("  LAN name:  {lan_name}"),
-        format!("  Dashboard: {dashboard_url}"),
+        format!("  Interface: {dashboard_url}"),
         format!("  Next:      {next_step}"),
     ]
 }
@@ -39,12 +39,12 @@ mod tests {
     fn banner_is_exactly_three_lines_with_labels() {
         let lines = banner_lines(
             "web-01.internal",
-            "http://127.0.0.1:5641/v1/dashboard",
+            "http://127.0.0.1:5641/ui",
             "koi certmesh create",
         );
         assert_eq!(lines.len(), 3);
         assert!(lines[0].starts_with("  LAN name:  web-01.internal"));
-        assert!(lines[1].starts_with("  Dashboard: http://127.0.0.1:5641/v1/dashboard"));
+        assert!(lines[1].starts_with("  Interface: http://127.0.0.1:5641/ui"));
         assert!(lines[2].starts_with("  Next:      koi certmesh create"));
     }
 

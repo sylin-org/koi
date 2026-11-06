@@ -1,131 +1,43 @@
-# Ceremony Protocol
+# Ceremony protocol
 
-Interactive multi-step operations (creating a CA, joining a mesh, unlocking) use a server-driven ceremony engine. The design separates transport (CLI terminal I/O, HTTP JSON) from domain logic (what to ask, how to validate, when to complete).
+Koi's guided certificate operations use a server-driven dialogue. Clients render prompts and submit values; domain rules decide what is required and when an operation is complete. This is an advanced protocol reference, not a requirement for the container discovery preview.
 
----
+## Evaluation model
 
-## Architecture
+[The shared ceremony engine](../../crates/koi-common/src/ceremony.rs) owns sessions. A session is a bag of JSON key/value data, not a numbered implementation stage. Each submission merges values and re-evaluates `CeremonyRules`.
 
-The engine lives in `koi-common/src/ceremony.rs`. Domain ceremonies implement the `CeremonyRules` trait.
+| Type | Role |
+| --- | --- |
+| `CeremonyHost<R>` | Session storage, expiry and rule dispatch |
+| `CeremonyRequest` | Optional session ID/type, submitted data and render hints |
+| `CeremonyResponse` | Session ID, prompts/messages and completion information |
+| `EvalResult` | Need input, validation error, complete or fatal result |
 
-```
-Client (CLI/HTTP)          CeremonyHost<Rules>           Domain Rules
-  │                              │                           │
-  │── CeremonyRequest ───────▶│── merge bag ────────────▶│
-  │                              │   evaluate(bag) ◀────────│
-  │◀─ CeremonyResponse ───────│                           │
-```
-
-The core model is a **bag of key-value pairs** (session state). There is no stage index or linear pipeline. Every client submission merges into the bag and triggers re-evaluation by the rules function.
-
----
-
-## Key types
-
-| Type                  | Purpose                                                   |
-| --------------------- | --------------------------------------------------------- |
-| `CeremonyHost<R>`     | Generic host managing sessions (UUIDv7 IDs, 5-minute TTL) |
-| `CeremonyRules` trait | `evaluate(type, bag, render_hints) → EvalResult`          |
-| `CeremonyRequest`     | Inbound: session ID, ceremony type, data map              |
-| `CeremonyResponse`    | Outbound: prompts, messages, completion status            |
-| `Prompt`              | Single input request with `InputType`                     |
-| `Message`             | Informational display (info, QR code, summary, error)     |
-| `EvalResult`          | `NeedInput`, `ValidationError`, `Complete`, `Fatal`       |
-
----
-
-## Wire types
-
-### Request
+Start with a ceremony name and empty data; subsequent requests retain the returned session ID.
 
 ```json
-{
-  "session_id": "0195abc...",
-  "ceremony": "init",
-  "data": { "profile": "just_me" }
-}
+{"ceremony":"init","data":{}}
 ```
 
-First request uses `"data": {}` to begin a session.
+Prompt keys belong to the selected domain rules. Clients should render the returned prompts rather than assuming a fixed question order. Validation failure keeps the dialogue distinct from successful completion; a completed or expired session cannot be silently reused.
 
-### Response
+## Rendering vocabulary
 
-```json
-{
-  "session_id": "0195abc...",
-  "prompts": [
-    {
-      "key": "passphrase",
-      "prompt": "Choose a passphrase",
-      "input_type": "secret_confirm",
-      "required": true
-    }
-  ],
-  "messages": [
-    { "kind": "info", "title": "Profile", "content": "Just Me selected" }
-  ],
-  "complete": false
-}
-```
+Input types include `select_one`, `select_many`, `text`, `secret`, `secret_confirm`, `code` and `entropy`. Messages include informational text, QR content, summaries and errors. Treat secret/code/entropy values as sensitive: do not put the session bag into logs, screenshots or analytics.
 
----
+The default session TTL is 300 seconds and the sweep interval is 60 seconds. Sessions are memory-only. A daemon restart requires a new dialogue; it must not be interpreted as permission to repeat an already-committed destructive operation.
 
-## Input types
+## Certmesh rules
 
-| Type             | Purpose                          |
-| ---------------- | -------------------------------- |
-| `select_one`     | Numbered list with default       |
-| `select_many`    | Multi-select list                |
-| `text`           | Free-form text                   |
-| `secret`         | Masked input                     |
-| `secret_confirm` | Masked with confirmation         |
-| `code`           | Short code (e.g., TOTP 6-digit)  |
-| `entropy`        | Raw keyboard mashing for entropy |
+[InitCeremonyRules](../../crates/koi-certmesh/src/init_ceremony.rs) accepts `init`, `join`, `invite` and `unlock`. The rules own prompts, normalization, validation and completion. Transport authentication still applies to the HTTP operation that hosts the dialogue.
 
-## Message types
+Named presets map to ordinary enrollment/approval/auto-unlock values:
 
-| Kind      | Purpose                                 |
-| --------- | --------------------------------------- |
-| `info`    | Informational text                      |
-| `qr_code` | QR code (UTF-8 art, PNG base64, or URI) |
-| `summary` | Styled summary box                      |
-| `error`   | Error message                           |
+| Preset | Enrollment | Approval | Unlock |
+| --- | --- | --- | --- |
+| `just_me` | Open | No | Auto-unlock |
+| `my_team` | Open | Yes | Auto-unlock |
+| `my_organization` | Closed | Yes | Passphrase |
+| `custom` | Chosen explicitly | Chosen explicitly | Chosen explicitly |
 
----
-
-## Session management
-
-- Sessions use UUIDv7 IDs (time-ordered)
-- Default TTL: 5 minutes
-- Expired sessions swept every 60 seconds
-- No persistent storage - sessions exist in memory only
-
----
-
-## Certmesh ceremonies
-
-`InitCeremonyRules` in `koi-certmesh/src/init_ceremony.rs` implements four ceremonies:
-
-| Ceremony | Purpose                   | Key bag entries                                                   |
-| -------- | ------------------------- | ----------------------------------------------------------------- |
-| `init`   | Create a new CA           | profile, operator, entropy, passphrase, unlock method, TOTP setup |
-| `join`   | Enroll into existing mesh | endpoint, auth code, certificate                                  |
-| `invite` | Generate invitation       | passphrase, invite token                                          |
-| `unlock` | Unlock a locked CA        | method selection, credential                                      |
-
-The mesh's security posture is just two booleans — `enrollment_open` and `requires_approval` — stored in the roster. There is no trust-profile enum. The named presets below are labels only: each maps to a `(enrollment_open, requires_approval, auto_unlock)` tuple, and `custom` asks for the two booleans directly:
-
-| Preset            | Enrollment   | Approval     | Unlock       |
-| ----------------- | ------------ | ------------ | ------------ |
-| `just_me`         | Open         | No           | Auto-unlock  |
-| `my_team`         | Open         | Yes          | Auto-unlock  |
-| `my_organization` | Closed       | Yes          | Passphrase   |
-| `custom`          | Configurable | Configurable | Configurable |
-
----
-
-## CLI render loop
-
-`ceremony_cli.rs` is a "dumb render loop" - it sends requests, renders prompts (with color, box drawing, QR codes), collects terminal input, and repeats until completion. The CLI never contains domain logic; all branching, validation, and content decisions live in the rules function.
-
-This separation means the same ceremony works identically from CLI and HTTP with the same business logic.
+These are configuration presets, not enterprise role isolation or independently enforced profile classes. Enrollment has no timed auto-close or CIDR/domain scope controls. Review [security](security-model.md) and [envelope encryption](envelope-encryption.md) when choosing unattended unlock.

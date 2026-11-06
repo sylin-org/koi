@@ -227,7 +227,7 @@ pub enum Command {
     },
     /// Show version information
     Version,
-    /// Open the dashboard in a web browser
+    /// Open Koi's interface in a web browser
     Launch,
     /// Show status of all capabilities
     Status,

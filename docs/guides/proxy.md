@@ -1,177 +1,114 @@
-# Proxy - TLS Passthrough Endpoint
+# Terminate TLS in front of a local service
 
-Here's the problem: you have a service running on `127.0.0.1:3000`, and you want clients to reach it over TLS using a certificate the rest of your network already trusts. Setting that up by hand means managing certificates, wiring reload hooks, and maintaining yet another config file.
+Koi's proxy accepts TLS and forwards decrypted bytes to a TCP backend. Use it
+when a known service needs a TLS endpoint and its certificate matches the client
+URL. It does not route HTTP paths, rewrite headers or configure client trust.
 
-Koi's proxy collapses that into a single command. It binds a TLS listener, terminates the connection with a certmesh-issued certificate (or a generated self-signed one when no cert is present), and pipes the decrypted bytes straight to your backend over plain TCP. Certmesh rotation is delivered through Koi's live domain boundary, and an explicit Proxy-owned certificate override is watched on disk; either change is served on the next handshake without a restart.
+For the first adoption trial, establish [container application access](../../CONTAINERS.md)
+before adding this layer. This guide describes current source; consult
+[release readiness](../launch/README.md) and release-matched docs for a packaged artifact.
 
-It is a **passthrough**, not an application proxy. Once TLS is terminated, Koi copies bytes in both directions and never looks at them. That has a deliberate consequence: **WebSockets and any other bidirectional or upgraded protocol just work** — and equally, Koi does **not** do path routing, header injection, or request rewriting. It is the pre-wired TLS endpoint for certmesh certs, not a Caddy/Traefik replacement.
+## Create and inspect a listener
 
-**When to use the proxy**: you have a local TCP service that doesn't speak TLS natively and you want clients to reach it over HTTPS with a trusted cert. A homelab service that should open in a browser without certificate warnings. A backend that needs to present a valid cert to other certmesh members.
+With a running daemon and an application on port 3000:
 
-**When to reach for something else**: if you need path-based routing (`/api` → one service, `/` → another), header rewriting, or redirects — run [Caddy](https://caddyserver.com/) or [Traefik](https://traefik.io/). And you don't have to hand them a certificate by hand: **bring your own proxy via ACME**. Koi runs an [RFC 8555 ACME server](acme.md) in front of its CA, so Caddy/Traefik/lego can request and auto-renew trusted certs for your zone the same way they'd talk to Let's Encrypt — no Koi-specific config on the proxy. Koi's built-in passthrough proxy and the ACME facade are two first-class paths to the same trusted cert: use the passthrough when you just need a TLS endpoint for one backend, and ACME when you're already running a full reverse proxy. Koi is the substrate; it's meant to sit under the tools you already use, not replace them.
-
-All CLI commands use the `koi proxy` prefix. All HTTP endpoints live under `/v1/proxy/`. Proxy commands require a running daemon - use `koi install` or `koi --daemon` first.
-
----
-
-## How it works
-
-1. You `proxy add` a named entry with a listen port and a backend `host:port`.
-2. Koi binds a TLS listener on the listen port.
-3. Koi resolves a certificate (see [Certificates](#certificates) below) and terminates TLS with it.
-4. For each accepted connection, Koi opens a plain `TcpStream` to the backend and pumps bytes both ways until either side closes.
-5. When Certmesh rotates the composed identity, or a Proxy override changes on disk, the next handshake serves the new certificate — no restart, no dropped connections.
-
-Because step 4 is a byte-level copy, the proxy is protocol-agnostic above TLS: HTTP/1.1, HTTP/2 (h2c is not negotiated, but HTTP/2-over-TLS to an h2 backend passes through), WebSockets, gRPC, and raw TCP all work.
-
----
-
-## Certificates
-
-The proxy resolves its certificate in priority order:
-
-1. `<data-dir>/proxy-certs/<entry-name>/{fullchain.pem,key.pem}` — an explicit per-entry override owned by Proxy and placed there by you or an external tool.
-2. The **local certmesh member identity**, supplied live by Certmesh through Koi's typed composition boundary. Proxy does not inspect Certmesh's private storage.
-3. A **generated self-signed certificate** — the zero-config fallback so a proxy always starts and serves TLS, even with no certmesh at all.
-
-`koi proxy status` reports which one is in use as the `TLS` column: `override`, `certmesh`, or `self-signed`. The HTTP status also includes `cert_revision`, which advances when the selected bytes or source changes.
-
-> The certmesh integration is the point. When the proxy serves the certmesh member cert, it presents a certificate that every other certmesh member already trusts — no manual distribution, no per-client trust store fiddling. A self-signed cert is fine for local development (you just need TLS to be *present*), but external clients will see a warning until they trust it.
-
-Certificate renewal is transparent: when Certmesh rotates the member identity, its latest-value feed wakes Proxy and the next handshake uses the new certificate. Removing or invalidating that identity immediately selects the next usable source instead of retaining stale key material.
-
----
-
-## Getting started
-
-Expose a local dev server over TLS:
-
-```
-koi proxy add devserver --listen 9443 --backend 127.0.0.1:3000
-```
-
-Now clients can connect to `https://localhost:9443`. On a certmesh member, the certificate is the mesh cert — fully trusted by other members, no warnings.
-
-`--backend` takes a `host:port`. A URL is also accepted for convenience (`--backend http://127.0.0.1:3000`), but only its `host:port` is used — the path is meaningless to a byte passthrough.
-
-By default the backend must be loopback, because the proxy→backend hop is **unencrypted**. To forward to a backend on another host, opt in explicitly:
-
-```
-koi proxy add remote-svc --listen 8443 --backend 10.0.0.20:8080 --backend-remote
-```
-
-Check what's running, with real state:
-
-```
+```sh
+koi proxy add app --listen 9443 --backend 127.0.0.1:3000
 koi proxy status
-```
-
-```console
-NAME      LISTEN  BACKEND          TLS          STATE
-devserver :9443   127.0.0.1:3000   certmesh     running
-old-app   :8443   127.0.0.1:9000   self-signed  error: address in use
-```
-
-The `STATE` column is real — it reflects the listener task's actual liveness. If a port is already in use, the entry shows `error: address in use` instead of pretending to run, and the rest of the daemon is unaffected.
-
-See all configured entries (independent of whether they're currently running):
-
-```
 koi proxy list
 ```
 
-Remove one (the listener stops and the port is released immediately):
+Status reports listener state and selected TLS source; list reports configured
+entries. A bind failure is an error, not a running listener. Adding the same name
+updates its configuration.
 
-```
-koi proxy remove devserver
-```
+The backend is host:port. The proxy-to-backend hop is plaintext. A non-loopback
+backend requires explicit consent through the command flag:
 
----
-
-## CLI commands
-
-```
-koi proxy add NAME --listen PORT --backend HOST:PORT [--backend-remote]
-koi proxy remove NAME      # Remove and stop a proxy
-koi proxy status           # Listeners with real state (running / error)
-koi proxy list             # Configured entries
+```sh
+koi proxy add app --listen 9443 --backend 192.0.2.20:3000 --backend-remote
 ```
 
-Adding a proxy with an existing name updates it in place — the listener restarts with the new configuration.
+Replace the documentation address. This flag concerns the backend destination,
+not client authorization on the listener.
 
-The distinction between `status` and `list` is intentional: `status` shows runtime state (is the listener actually bound? which cert? did it fail?), while `list` shows configuration (what's defined, regardless of whether it's running).
+## Certificate selection
 
----
+Current source selects the first usable source:
 
-## HTTP API
+1. `<data-dir>/proxy-certs/<entry-name>/{fullchain.pem,key.pem}`,
+   an explicit override owned by Proxy.
+2. A healthy local member identity supplied live by Certmesh.
+3. A generated self-signed certificate.
 
-When the daemon is running, proxy endpoints live under `/v1/proxy/`:
+Status identifies override, certmesh or self-signed, and HTTP status includes a
+certificate revision. A usable self-signed listener still requires deliberate
+client trust; it is not a successful warning-free HTTPS setup by itself.
 
-| Method   | Path                      | Purpose                       |
-| -------- | ------------------------- | ----------------------------- |
-| `GET`    | `/v1/proxy/status`        | Revisioned runtime status of all proxies |
-| `GET`    | `/v1/proxy/list`          | Configured proxy entries      |
-| `POST`   | `/v1/proxy/add`           | Add or update a proxy         |
-| `DELETE` | `/v1/proxy/remove/{name}` | Remove a proxy                |
+Certmesh identity changes reach Proxy through composition. An explicit override
+is watched on disk. A new handshake uses the replacement certificate without
+requiring existing connections to close. Inspect status and perform a real
+handshake after renewal; file replacement alone is not proof.
 
-### Add example
+## Verify the client URL
 
-```
-POST /v1/proxy/add
-Content-Type: application/json
+Inspect the actual SANs. Host-member certificates do not automatically cover a
+container's vanity name. Do not assume localhost appears in every certificate.
+The client must resolve the chosen name, reach the listener, trust the intended
+root and receive an unexpired matching leaf.
 
-{"name": "web", "listen_port": 8443, "backend": "127.0.0.1:8080"}
-```
+Follow [host-member HTTPS](../tutorials/trusted-https.md). Test the intended
+browser/runtime independently; OS root installation is not proof that every
+client uses that source.
 
-Mutating endpoints require the daemon access token (`x-koi-token`) — see the security model. `status`/`list` are read-only and unauthenticated by default.
+Container labels currently do not compose an exact service-name grant with this
+listener. See [container TLS limits](recipes/container-trusted-cert.md).
 
----
+## Existing reverse proxies and protocols
 
-## The certmesh connection
+Keep Caddy/Traefik or another application proxy for routing, redirects and
+application-specific policy. Koi's [ACME](acme.md) interface requires an exact
+account-bound name grant and a DNS provider; its public end-user grant workflow
+is incomplete.
 
-The proxy is most powerful combined with certmesh:
+Byte forwarding can carry bidirectional application traffic, but TLS negotiation
+and backend protocol expectations still need verification. Do not infer support
+for every HTTP/2, gRPC or upgraded protocol from the TCP forwarding design.
 
-1. You create a certmesh (`koi certmesh create`).
-2. Other machines join (`koi certmesh join`) — Certmesh publishes each local member identity through its private typed port.
-3. You add a proxy on any member (`koi proxy add web --listen 8443 --backend 127.0.0.1:8080`).
-4. The proxy serves that member's certmesh cert.
-5. Every other mesh member already trusts the mesh CA.
-6. Result: genuinely trusted TLS between any two machines on the LAN, with no certificate distribution.
+## HTTP interface
 
-Without certmesh the proxy still works — it serves a generated self-signed cert. That's enough when you just need TLS to be present (testing secure cookies, CORS, HTTP/2), but non-member clients will see a certificate warning until they trust it.
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | /v1/proxy/status | Runtime listeners and TLS state |
+| GET | /v1/proxy/list | Configured entries |
+| POST | /v1/proxy/add | Add/update an entry |
+| DELETE | /v1/proxy/remove/{name} | Remove an entry |
 
----
+Example authenticated mutation body:
 
-## Troubleshooting
-
-### Port already in use
-
-`koi proxy status` will show the entry in the `error` state with `address in use`. Another process is holding the listen port. Find it:
-
-```powershell
-# Windows
-netstat -ano | findstr :8443
-
-# Linux/macOS
-lsof -i :8443
-```
-
-Either stop the conflicting process or `proxy add` the entry again with a different `--listen` port.
-
-### Certificate not trusted by clients
-
-The `TLS` column shows `self-signed`, or the client isn't a certmesh member. Members trust the mesh CA automatically; non-members (external browsers, API clients) need the CA in their trust store. Install Koi's CA through `koi trust` on that machine, or export the root with `koi trust export --ca` and trust it (`curl --cacert <ca>.pem`, system store, etc.).
-
-### Proxy shows `self-signed` despite certmesh
-
-Either the CA is locked after a daemon restart, or the member cert hasn't been issued yet. Unlock the CA:
-
-```
-koi certmesh unlock
+```json
+{"name":"app","listen_port":9443,"backend":"127.0.0.1:3000"}
 ```
 
-Once Certmesh has a healthy local identity, the composed feed wakes Proxy and the next handshake serves it — no restart needed. (If you placed a per-entry override at `proxy-certs/<entry-name>/`, that one takes priority.)
+Use [API authentication](api-authentication.md) for tokens and protected reads.
+Exposing management HTTP is separate from exposing a proxy listener.
 
-### A backend on another host is refused
+<a id="troubleshooting"></a>
 
-By default only loopback backends are allowed, because the proxy→backend hop is unencrypted. Re-add the entry with `--backend-remote` to opt in, and be aware that traffic between the proxy and that backend is plaintext on the wire.
+## Failure and removal
+
+- Address in use: choose a free listener port or resolve the existing owner.
+- Self-signed source: inspect Certmesh state and identity health, or the configured override.
+- Name mismatch: use an actual SAN or obtain a certificate covering the intended name.
+- Unknown issuer: configure the intended client's root source.
+- Backend refusal: verify the published application endpoint from the proxy host.
+- Remote backend rejected: understand the plaintext hop before using backend-remote.
+
+Remove only the entry intended for removal:
+
+```sh
+koi proxy remove app
+```
+
+A runtime-owned entry should instead be removed by changing the owning
+container configuration/lifecycle.

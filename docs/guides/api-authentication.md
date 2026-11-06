@@ -1,16 +1,12 @@
-# Authenticate to the HTTP API
+# Authenticate an application to Koi
 
-You want a script, a container, or a non-Rust client to make a *write* to the Koi
-daemon — register a service, add a DNS entry, add a proxy — and you keep getting
-`401 {"error": "unauthorized", "message": "Missing or invalid x-koi-token header"}`.
-This guide gets you from that 401 to a successful authenticated `POST` in both bash
-and PowerShell.
+Use this guide when a container, script or HTTP client calls the host daemon.
+Normal local CLI operations handle credentials; another application must choose
+the endpoint and supply authority for protected reads and mutations.
 
-If you use the `koi` CLI, you never see any of this: it reads the token and attaches
-it for you. This guide is for everything that *isn't* the CLI — `curl`, `Invoke-RestMethod`,
-a language SDK, a CI job, a sidecar container.
-
----
+The [label-driven container path](../../CONTAINERS.md) does not require giving
+every workload an API token. A token grants daemon access, not proof that a
+service discovered through it is reachable or trusted by that application's client.
 
 ## The model: most reads are open; protected reads and writes need a token
 
@@ -209,7 +205,7 @@ koi --endpoint http://node-01:5641 --token "$REMOTE_TOKEN" dns list
 
 There are no per-client scopes: one token per daemon authorizes all writes to that
 daemon. Treat it as a machine-wide secret. Remote callers that need *identity* rather
-than a shared bearer token enroll as principals (ADR-026) — a named client-role
+than a shared bearer token can enroll as principals — a named client-role
 certificate, individually revocable, authorized by CN on the mTLS management plane.
 For the rest of the model — CORS, what `GET` does *not* protect, certificate
 revocation, and the LAN threat model — see the

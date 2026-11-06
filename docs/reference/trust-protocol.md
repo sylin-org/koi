@@ -1,428 +1,117 @@
-# Koi Trust Protocol (ADR-020) — language-neutral wire contract
+# Trust protocol
 
-This is the published, versioned wire contract for Koi's mode-transparent trust
-primitives (ADR-020): the **Posture** descriptor, the signed **Envelope**, the
-**Sealed** confidentiality envelope, the **same-port dual-mode handshake**, and the
-**diagnose** report. It exists so a non-Rust sibling can implement *identical*
-primitives and interoperate byte-for-byte with a Rust Koi node.
+Language-neutral contracts for posture, signed envelopes, confidentiality wrappers, peer transport, diagnosis and MCP discovery. These are advanced interfaces over implemented Koi capabilities; their existence does not certify exact-service HTTPS or change [launch scope](../launch/README.md).
 
-It is the realization of the STACK-0001 **D7** amendment ("envelope/posture
-descriptor + dual-mode transport" added to the contract surface). The Rust types
-backing every shape here live in `koi-common` (`posture`, `envelope`, `sealed`,
-`peer`, `diagnosis`); this document is the source of truth for *other* languages.
+Rust contracts live in `koi-common`; verification and identity custody live in `koi-certmesh`/`koi-crypto`. [Conformance vectors](vectors/trust-vectors.json) freeze interoperable examples. The preserved [trust-primitives decision](../adr/020-mode-transparent-trust-primitives.md) records rationale.
 
-> **Neutral vocabulary (STACK-0001 K2).** Every term here is standard security
-> vocabulary — *posture / Open / Authenticated / Confidential / Assurance*. A
-> consumer layer may alias these (e.g. call a level a "degree"); that naming never
-> enters this contract.
-
----
-
-## 1. Posture
-
-A node's (or a discovered peer's) trust posture is two orthogonal booleans:
+## Posture
 
 ```json
-{ "signed": false, "encrypted": false }
+{"signed":true,"encrypted":false}
 ```
 
-| Field       | Meaning |
-|-------------|---------|
-| `signed`    | A usable cryptographic identity is present (can sign / speak mTLS). |
-| `encrypted` | Group-key confidentiality is available (the future Confidential rung). |
+`signed` means usable cryptographic identity; `encrypted` represents group-key confidentiality. Derived wire levels are `open` when unsigned, `authenticated` when signed without group confidentiality, and `confidential` when both hold. Current sealing produces passthrough, not group encryption.
 
-Derived **level** (the wire strings used in mDNS TXT and `/v1/status`):
+mDNS may publish advisory `posture`, `fp` (SHA-256 of CA DER, lowercase hex), `expires` (absolute RFC 3339 timestamp) and optional `cn`. Explicit posture wins during discovery interpretation; a fingerprint without it hints authenticated, otherwise open. None of those hints authenticates the peer. Verify its certificate/message before deriving authority.
 
-| `signed` | `encrypted` | Level (`snake_case`) |
-|----------|-------------|----------------------|
-| false    | (any)       | `open`               |
-| true     | false       | `authenticated`      |
-| true     | true        | `confidential`       |
-
-`encrypted` without `signed` is meaningless and resolves to `open`. "Secure"
-≡ `signed == true`.
-
-### Posture in discovery (mDNS TXT)
-
-A node MAY stamp its posture into its own mDNS announcements. The keys (all
-**advisory hints** — a verifier still adjudicates via §3, never trusting the wire):
-
-| TXT key   | Value |
-|-----------|-------|
-| `fp`      | CA fingerprint the node anchors to — SHA-256 of the CA cert DER, lowercase hex. |
-| `posture` | The level wire string (`open` / `authenticated` / `confidential`). |
-| `expires` | When the node's identity expires — an **absolute** RFC 3339 timestamp (never a countdown, so a cached record cannot report a stale value). |
-| `cn`      | Optional identity CN (advisory; the trusted CN comes from §3, not here). |
-
-Posture resolution from a record: an explicit `posture=` wins; otherwise a record
-carrying `fp=` is treated as `authenticated`; otherwise `open`.
-
----
-
-## 2. Envelope (signed message) — `koi-envelope-v1`
-
-A versioned, signed (or freshness-stamped) message. JSON:
+## Signed envelope: version 1
 
 ```json
 {
-  "v": 1,
-  "payload": "<base64-standard of the message bytes>",
-  "nonce":   "<base64-standard of a random per-message nonce>",
-  "ts":      1718900000,
-  "sig": {
-    "alg": "ES256",
-    "signature":  "<base64-standard of the ES256 signature>",
-    "signer_cert": "<base64-standard of the signer's leaf certificate, DER>"
+  "v":1,
+  "payload":"<standard padded base64>",
+  "nonce":"<standard padded base64>",
+  "ts":1718900000,
+  "sig":{
+    "alg":"ES256",
+    "signature":"<standard padded base64>",
+    "signer_cert":"<leaf certificate DER, standard padded base64>"
   }
 }
 ```
 
-| Field      | Notes |
-|------------|-------|
-| `v`        | Wire version. **The verifier selects its construction from `v`**, never from `sig.alg` (this closes the JWT `alg:"none"` / algorithm-confusion class). v1 = ES256 over the canonical bytes below. |
-| `payload`  | The message bytes, base64 (standard alphabet, with padding). |
-| `nonce`    | A random per-message nonce, base64 — replay uniqueness input to the signing bytes. **Koi keeps no seen-nonce cache** — application-layer replay defence is the consumer's responsibility. |
-| `ts`       | Signer's clock at sign time, **unix seconds** (integer). Drives freshness. |
-| `sig`      | The signature block. **Absent** in Open posture (a freshness-stamped passthrough). |
-| `sig.alg`  | Closed set; currently only `ES256` (ECDSA P-256 + SHA-256). Not negotiated in-band — a new algorithm is a new `v`. |
-| `sig.signer_cert` | **Carry-cert model:** the signer embeds its leaf certificate (DER, base64). The verifier validates it against the pinned CA it already trusts and derives the authoritative CN + public key from it — never from a claimed field. This is what lets a pure member node (which keeps no roster of others' keys) verify. |
+The signature block is absent for unsigned/Open envelopes. Verification selects the construction from `v`, not from a negotiable algorithm field. Version 1 uses ECDSA P-256/SHA-256; `signature` carries the DER-encoded ECDSA signature in standard padded base64, not the fixed-width JOSE signature encoding. Unknown versions are rejected.
 
-### Canonical signing bytes (v1)
+Canonical signed bytes are UTF-8:
 
-The signature covers exactly these bytes (UTF-8), domain-separated and trivially
-reproducible in any language:
-
-```
+```text
 koi-envelope-v1\n{v}\n{payload}\n{nonce}\n{ts}
 ```
 
-where `{payload}` and `{nonce}` are the **base64 strings** as they appear in the
-JSON (not the decoded bytes), `{v}` is the decimal version, `{ts}` is the decimal
-unix-seconds, and `\n` is a single line-feed (0x0A). The domain prefix
-`koi-envelope-v1` ensures a signature can never be replayed across protocols.
+Each `\n` denotes one LF byte. Payload/nonce are the exact base64 strings appearing in JSON, not decoded bytes; version and timestamp are decimal integers. Prefixes and constructions are versioned and must not be repurposed.
 
-### Verification → Assurance
+The carried leaf is validated against the verifier's pinned CA. Its authenticated CN/public key come from that validation, never a claimed field. The nonce contributes message uniqueness but Koi keeps no seen-nonce cache: applications requiring replay exclusion must implement it.
 
-`verify` returns an **assurance level**, never a bool. Shapes (`snake_case`,
-externally tagged on the variant key):
+## Assurance and request binding
 
-```json
-{ "anonymous":     { "freshness": "fresh" } }
-{ "authenticated": { "cn": "web-01", "freshness": "fresh" } }
-{ "rejected":      { "reason": "expired", "signer_cn": "web-01" } }
-{ "rejected":      { "reason": "bad_signature" } }
-```
+Verification returns one of these externally tagged result classes:
 
-- **Anonymous** — no identity claim (Open posture / unsigned, or a verifier with no
-  CA anchor). Carries only a `freshness` verdict.
-- **Authenticated** — signature valid against a leaf that chains to the pinned CA,
-  is not expired, and is not revoked. `freshness` is a sub-field, so "authenticated"
-  cannot exist without a freshness verdict.
-- **Rejected** — a distinct, named `reason` (never one opaque error). The optional
-  `signer_cn` names the signer **only** when the carried leaf chained to the pinned
-  CA but is stale (`reason` ∈ `expired` / `revoked`) — a *trusted* attribution for
-  audit and a warm "your identity expired — rejoin" by name. It is **absent** for
-  `malformed` / `unsupported_version` / `bad_signature` / `unknown_signer`, where the
-  CN would be an attacker-controllable claim (any CN can ride a non-chained or
-  bad-signature leaf) and must never be attributed.
+- `anonymous`, with `freshness`.
+- `authenticated`, with certificate-derived `cn` and `freshness`.
+- `rejected`, with a named `reason` and optional trusted `signer_cn`.
 
-`freshness` ∈ `fresh | stale`. **One identity door:** a trusted CN is readable
-*only* when the verdict is `authenticated` AND `freshness == fresh`. A `stale` or
-`anonymous` message is never a trusted identity (this makes `if !rejected { trust }`
-insufficient by design).
+Freshness is `fresh` when the absolute timestamp difference is at most 300 seconds, otherwise `stale`. A valid signature can therefore return authenticated-but-stale; it must not be treated as a fresh identity. Unsigned input can remain anonymous even in an authenticated context; the consuming operation decides whether identity is mandatory.
 
-**Request binding (authorization).** `verify` attests the *signer*, decoupled from
-the payload — the verifier cannot know a consumer's request canonicalization. So
-reading the CN alone authorizes a *captured* envelope replayed against a *different*
-request. For request authorization, bind the identity to the request: accept the CN
-only when the envelope's signed payload equals the canonical bytes of *this* request
-(typically embedding a hash of the body). The reference implementation exposes this
-as `identity_for(env, expected)` — `Some(cn)` iff the verdict is a trusted identity
-**and** the signed payload equals `expected`. A sibling implementation should provide
-the same request-bound door, not just the signer-only one.
+Reject reasons are `malformed`, `unsupported_version`, `bad_signature`, `unknown_signer`, `revoked` and `expired`. Trusted attribution may accompany an expired/revoked leaf that chains to the pinned CA. Do not attribute a caller from an untrusted/bad-signature leaf.
 
-**Freshness window:** `|now - ts| <= 300` seconds ⇒ `fresh`, else `stale`. 300 s
-tolerates un-NTP'd LAN clock drift (a tighter window spuriously rejects).
+Signer verification alone does not authorize a request. Bind the signed payload to the canonical bytes of the actual request, including relevant body/method/path context. `identity_for(env, expected)` is the request-bound interface: it returns an identity only for fresh authenticated input whose signed payload equals the expected bytes. Reusing a captured envelope against a different request must fail this comparison.
 
-`RejectReason` (`snake_case`): `malformed`, `unsupported_version`, `bad_signature`,
-`unknown_signer`, `revoked`, `expired`.
+## Revocation
 
-Implementation note: an unsigned envelope in an Authenticated context produces
-`anonymous`, **not** `rejected` — the consumer decides whether to require identity
-at the application layer. A timestamp outside the ±300 s window produces
-`authenticated { freshness: stale }`, **not** `rejected`; the CN is still readable,
-the freshness verdict is `stale`. Only hard cryptographic failures produce `rejected`.
+The CA enforces its authoritative membership state at operation boundaries. Members consume the complete revoked projection from a verified signed trust bundle, subject to its monotonic sequence anti-rollback floor. Replace the known projection rather than appending only the caller's own entry. A self-revoked node stands down its authenticated outbound identity.
 
-Revocation is **best-effort** (eventual-consistent, like the mTLS path): the CA
-chain is the hard gate; a leaf whose SHA-256 fingerprint is in the verifier's known
-revoked set is `revoked`.
+Message verification rejects a leaf fingerprint in the verifier's known revoked set. Propagation depends on the latest accepted bundle; it is not a universal immediate TLS revocation mechanism. Ordinary clients receive no CRL/OCSP status and may accept a leaf until its real expiry.
 
-A member sources its known revoked set from the signed **trust bundle**: it replaces the
-set with the bundle's full revoked projection — the union of the `revoked[]` list and any
-member with `status == "revoked"`, keyed by fingerprint — on every verified pull
-(full-replace, so an un-revocation also clears), gated by the bundle's monotonic `seq`
-anti-rollback floor. A non-Rust sibling implements the same: apply the whole projection,
-not only your own entry. A node that finds **its own** identity revoked stands itself down —
-it stops signing authenticated envelopes, so its outbound messages verify as `anonymous`
-(ADR-023).
+## Sealed wrapper
 
----
+Version 0 contains an `envelope` field and is passthrough: integrity/freshness when signed, no encryption. Version 1 reserves group-key authenticated encryption and the distinct HKDF label `koi-seal-group-v1`; current nodes reject that unsupported construction. Unknown versions must not trigger best-effort plaintext fallback.
 
-## 3. Sealed (confidentiality envelope)
+`open` verifies the contained envelope and never returns payload bytes from a rejected message. Callers must still distinguish anonymous/stale assurance from authorized fresh identity. Status uses `passthrough` for the current confidentiality mode; a wrapper named Sealed is not evidence that its payload is secret.
 
-`seal`/`open` are the confidentiality rung, shipped **today as passthrough**. JSON:
+## Optional same-port transport
 
-```json
-{ "v": 0, "envelope": { ...an Envelope (§2)... } }
-```
+A consumer of the peer-serving primitive can choose plaintext or mTLS at connection acceptance based on live posture. The first byte `0x16` selects a TLS handshake; other input takes the plaintext path.
 
-| `v` | Name | Meaning |
-|-----|------|---------|
-| `0` | passthrough | A signed Envelope, **not encrypted** (integrity + freshness only). Today's rung. |
-| `1` | group-key   | AEAD group-key encryption. **Reserved**, not yet produced. |
+| Identity posture | Connection | Action |
+| --- | --- | --- |
+| Open | Plain HTTP | Accept |
+| Open | TLS | Refuse: no usable identity |
+| Authenticated | TLS | Require CA-chained client certificate |
+| Authenticated | Plain HTTP | Refuse |
 
-The **version is the single source of truth** for both the `open` construction and
-the confidentiality level — `open` dispatches on it and never guesses:
+This describes the peer primitive, not a claim that Koi's main port 5641 transparently changes into TLS. The daemon's management, authority and ACME listeners are separate [port contracts](ports.md). An accepted connection's transport decision does not retroactively change; operation-level authorization still applies.
 
-| `v` | `confidentiality()` (wire: `snake_case`) |
-|-----|------------------------------------------|
-| 0   | `none` (wire string for status: `passthrough`) |
-| 1   | `group_key` (wire string for status: `groupkey`) |
-| other | `none` (conservative — never claim unverifiable secrecy) |
+## Diagnosis
 
-`open` of a v0 Sealed verifies the inner Envelope (§2) and returns the payload —
-**but never returns bytes from a rejected (tampered/unknown-signer/expired/revoked)
-envelope.** A v1 (or unknown) version is rejected by a node that does not implement
-it (anti-downgrade extension point).
+Diagnosis contains posture, an overall result and named checks with detail and optional remedy. Check status is `ok`, `warn`, `red` or `not_applicable`; overall is `healthy`, `degraded` or `red`, taking the worst applicable finding. Red is a failed check and produces a nonzero CLI result. A warning is distinct from red.
 
-When the group-key rung lands it will derive keys with the new, K3-distinct HKDF
-label `koi-seal-group-v1` — each HKDF use has its own frozen, versioned `koi-*-v1` label.
+The Certmesh HTTP diagnosis covers its domain facts. `koi trust diagnose` combines those with independently owned OS Trust observations. It must report unavailable verification honestly; host-root installation does not prove that a particular browser/runtime trusts the application.
 
----
+## Events
 
-## 4. Same-port dual-mode handshake
+`GET /v1/events` is DAT-protected SSE. A data field carries a `KoiEventWire` object with `event_v`, `event_type`, `id` and event-specific `data`. Skip unknown event versions. Use current source/schema for event payloads; do not assume a fixed event list establishes exhaustive future coverage.
 
-A Koi node MAY serve plaintext HTTP and mTLS on **one** socket, choosing per
-connection by **posture at accept time** — so a posture flip never drops an
-in-flight connection.
+Events are observations, not a replayable durable queue. Recover from loss using the corresponding latest state. The catalog has a separate full-snapshot SSE contract with process epoch/revision; see [HTTP API](http-api.md).
 
-Discriminator: peek the **first byte** of each accepted TCP connection.
+## MCP discovery
 
-| First byte | Interpretation |
-|------------|----------------|
-| `0x16`     | A TLS record (ContentType = handshake / ClientHello) → TLS path. |
-| anything else | Plaintext HTTP (a method char, or the h2c `PRI` preface) → plain path. |
-
-(HTTP/1.x and h2c plaintext always begin with a printable ASCII byte, never `0x16`,
-so one byte suffices.)
-
-Dispatch by `(node_is_secure, connection_is_tls)`:
-
-| Node | Connection | Action |
-|------|------------|--------|
-| Open          | plaintext | serve plain HTTP |
-| Open          | TLS       | **refuse** (no identity to terminate TLS) |
-| Authenticated | TLS       | mTLS: require a client cert chaining to the CA; inject the peer CN |
-| Authenticated | plaintext | **refuse** (secure-by-default; mTLS required) |
-
-Refusals are loud (logged with a reason), never a silent downgrade. The mTLS path
-is standard RFC 8446 TLS 1.2+/1.3 with a `WebPkiClientVerifier` over the mesh CA;
-the client presents the node's CA-signed leaf.
-
----
-
-## 5. Diagnose report
-
-`diagnose` returns a structured trust-doctor report (the same shape on
-`GET /v1/certmesh/diagnose` and behind `koi trust diagnose --json`):
+The public `/.well-known/mcp/server-card.json` contains a version and an `mcp` object with enabled state, transport, path and auth descriptor:
 
 ```json
 {
-  "posture": { "signed": true, "encrypted": false },
-  "overall": "healthy",
-  "checks": [
-    { "name": "posture",  "status": "ok",  "detail": "Authenticated" },
-    { "name": "renewal",  "status": "ok",  "detail": "leaf healthy (expires in 5 days)" },
-    { "name": "self_revocation", "status": "red", "detail": "...REVOKED...",
-      "remedy": "re-enroll with a fresh invite: koi certmesh join <endpoint>" }
-  ]
-}
-```
-
-- `status` (`snake_case`) ∈ `ok | warn | red | not_applicable`.
-- `overall` ∈ `healthy | degraded | red` — worst check wins.
-- `remedy` is present only when there is an action; it is an exact, runnable command.
-- A consumer of the report MUST treat `overall == "red"` as a failure (the CLI
-  exits non-zero). Warnings are loud but not failures.
-
-A check never reports a fake success over something it cannot verify (e.g. OS
-trust-store membership is not queryable on all platforms — that check states the
-limitation and the remedy instead of claiming "installed").
-
----
-
-## 6. Versioning & compatibility
-
-- Each wire shape carries an explicit version (`Envelope.v`, `Sealed.v`). A reader
-  selects its construction from the version, never from an in-band negotiated field.
-- A new algorithm or construction is a **new version**, never a renegotiated field
-  on an existing one (no in-band agility).
-- Unknown versions are **rejected**, not best-effort-guessed.
-- The domain-separation prefixes (`koi-envelope-v1`, the reserved
-  `koi-seal-group-v1`) are frozen once published.
-
-## 7. Event-wire DTO (`GET /v1/events`)
-
-The unified SSE event stream exposed at `GET /v1/events` (DAT-gated; see
-`docs/reference/http-api.md` for auth requirements) emits `KoiEventWire` objects —
-one JSON object per `data:` field. A consumer MUST skip events whose `event_v` it
-does not understand (forward-compatible design).
-
-```json
-{
-  "event_v":    1,
-  "event_type": "certmesh.cert_renewed",
-  "id":         "01j0abc123",
-  "data":       { "expires_at": "2027-06-22T12:00:00Z" }
-}
-```
-
-| Field        | Notes |
-|--------------|-------|
-| `event_v`    | Outer wire version. Currently always `1`. **Skip events with unknown versions.** |
-| `event_type` | Dotted-namespace string (see table below). |
-| `id`         | Monotonically increasing, globally-unique event ID (UUID v7 prefix). |
-| `data`       | Event-type-specific payload. See schemas below. |
-
-### Event types and `data` schemas
-
-**mDNS domain:**
-
-| `event_type`        | `data` fields |
-|---------------------|---------------|
-| `mdns.found`        | `ServiceRecord` (see wire-protocol.md) |
-| `mdns.resolved`     | `ServiceRecord` |
-| `mdns.removed`      | `{ name, service_type }` |
-
-**DNS domain:**
-
-| `event_type`         | `data` fields |
-|----------------------|---------------|
-| `dns.entry_updated`  | `{ name: string, ip: string }` |
-| `dns.entry_removed`  | `{ name: string }` |
-
-**Health domain:**
-
-| `event_type`      | `data` fields |
-|-------------------|---------------|
-| `health.changed`  | `{ name: string, status: "up" | "down" | "unknown" }` |
-
-**Certmesh domain:**
-
-| `event_type`                    | `data` fields |
-|---------------------------------|---------------|
-| `certmesh.joined`               | `{ hostname: string, fingerprint: string }` |
-| `certmesh.revoked`              | `{ hostname: string }` |
-| `certmesh.destroyed`            | `{}` |
-| `certmesh.cert_renewed`         | `{ expires_at: string (RFC 3339) }` |
-| `certmesh.cert_expiring_soon`   | `{ days_left: integer }` |
-| `certmesh.cert_renewal_failed`  | `{ reason: string, consecutive_failures: integer }` |
-| `certmesh.bundle_updated`       | `{ self_revoked: bool }` |
-
-**Proxy domain:**
-
-| `event_type`            | `data` fields |
-|-------------------------|---------------|
-| `proxy.entry_updated`   | `ProxyEntry` — `{ name, listen_port, backend, allow_remote }` |
-| `proxy.entry_removed`   | `{ name: string }` |
-
-**Runtime domain:**
-
-| `event_type`                   | `data` fields |
-|--------------------------------|---------------|
-| `runtime.instance_started`     | `{ name: string, backend: string }` |
-| `runtime.instance_stopped`     | `{ name: string }` |
-
-**Heartbeat:**
-
-| `event_type` | `data` fields |
-|--------------|---------------|
-| `heartbeat`  | `{}` — emitted every 15 s to keep the connection alive |
-
-### Posture endpoint (`GET /v1/certmesh/posture`)
-
-Also DAT-gated. Returns the live posture as JSON:
-
-```json
-{ "signed": true, "encrypted": false, "level": "authenticated" }
-```
-
-A consumer that receives `signed: false` knows the node is Open and will route
-plaintext HTTP; `signed: true` means mTLS is available and `client_for` should be
-used. This is the HTTP path for consumers that cannot embed Koi — a non-Rust
-sibling, a browser dashboard, any HTTP client.
-
----
-
-## 8. Agent-Door (MCP discovery contract)
-
-The **Door** is how a non-human caller finds Koi's tool surface without prior
-configuration. It is unauthenticated by design (no secrets) and pinned as a
-conformance vector (`docs/reference/vectors/agent-door-card.json`, executed
-against the reference implementation).
-
-### Server card
-
-`GET /.well-known/mcp/server-card.json` → exactly:
-
-```json
-{
-  "name": "koi",
-  "version": "<semver>",
-  "mcp": {
-    "enabled": true,
-    "transport": "streamable-http",
-    "path": "/v1/mcp",
-    "auth": { "scheme": "bearer", "header": "x-koi-token" }
+  "name":"koi",
+  "version":"<semver>",
+  "mcp":{
+    "enabled":true,
+    "transport":"streamable-http",
+    "path":"/v1/mcp",
+    "auth":{"scheme":"bearer","header":"x-koi-token"}
   }
 }
 ```
 
-- `mcp.enabled: false` when the loopback MCP transport is disabled; the shape
-  does not otherwise change.
-- The card never names principals, tokens, or sinks.
+The header contains the bare DAT; the descriptor does not mean adding a `Bearer ` prefix. A disabled surface retains its descriptor shape with enabled false. The card contains no credentials, principal roster or sink secrets.
 
-### Discovery records
+Main HTTP MCP requires DAT for resource-bearing methods. Optional authority mTLS MCP validates a CA-chained certificate and active/unexpired/unrevoked roster CN. Rejections are named and audited. Principal permissions remain coarse; tool read-only hints are not per-principal authorization scopes.
 
-| Record | Shape |
-|--------|-------|
-| mDNS `_mcp._tcp` | One per host; TXT `transport=streamable-http`, `path=/v1/mcp`. |
-| DNS TXT `_mcp.<host>.<zone>` | Present when the node serves the zone. |
-
-### Authenticating at the Door (two sanctioned shapes)
-
-1. **Loopback / token:** every `/v1/mcp` method carries the DAT header named by
-   `mcp.auth.header`. Loopback-only trust model (ADR-026 §5/§7).
-2. **Principal (ADR-026):** the same `path` mounted on the inter-node **mTLS**
-   listener; the caller presents a CA-chained client-role certificate whose CN
-   must resolve to an active, unexpired, unrevoked roster member. Rejections are
-   named (`unknown_signer` / `expired` / `revoked`) and audited
-   (`mtls_unknown_cn` / `mtls_expired_cn` / `mtls_revoked_rejected`). Coarse
-   authority: any active principal ≈ the DAT holder minus human-only surfaces;
-   per-principal scopes are explicitly out of scope.
-
-A consumer dials a principal-authenticated Door by a name the server leaf's SAN
-carries (e.g. `<host>.<zone>`) — generic TLS clients enforce hostname
-verification against DNS SANs; Koi leaves carry no IP SANs.
-
----
-
-## References
-
-- ADR-020 (mode-transparent trust primitives) — the design + rationale.
-- ADR-016 §2 (the trust plane's primary surfaces), ADR-017 (trust ledger, CSR-only
-  issuance, mTLS), ADR-003 (envelope encryption — the future seal rung).
-- STACK-0001 D7 (contract surface; this document realizes the ADR-020 amendment),
-  K2 (consumer-neutral vocabulary), K3 (frozen HKDF labels).
-- Conformance vectors: `docs/reference/vectors/` (language-neutral test vectors for
-  the Envelope and Sealed shapes).
+Generic TLS clients must use a server name covered by its SAN. An IP address is not automatically a valid identity name. mDNS/DNS discovery hints never bypass certificate hostname validation. [The MCP card vector](vectors/agent-door-card.json) and client/Rust tests guard the shared descriptor shape.

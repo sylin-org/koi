@@ -7,13 +7,13 @@
 use std::future::IntoFuture as _;
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex as StdMutex, RwLock as StdRwLock};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
-use axum::extract::{Extension, Path as AxumPath};
+use axum::extract::{Extension, Request};
 use axum::http::{header, StatusCode};
-use axum::response::{IntoResponse, Json, Redirect, Response};
-use axum::routing::{get, put};
+use axum::response::{IntoResponse, Json, Response};
+use axum::routing::get;
 use axum::Router;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, oneshot, watch, Mutex, Notify};
@@ -25,9 +25,6 @@ use koi_common::persist::AtomicCommit;
 use koi_common::status::StatusFeed;
 use koi_dashboard::browser::BrowserState;
 
-use crate::pond_ui::{PondUiRepository, UiBundle, UiStore, UI_FILES, VERSIONED_UI_PREFIX};
-
-pub use crate::pond_ui::{PondUiFile, PondUiPublish};
 pub use koi_common::pond::{
     PondFirewallState, PondFirewallStatus, PondState, PondStatus, PondUiStatus,
 };
@@ -43,9 +40,7 @@ const SERVER_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 // than abort its Tokio waiter while the process-owning blocking task is still reaping.
 const RECONCILER_STOP_TIMEOUT: Duration = Duration::from_secs(6);
 const FIREWALL_ASSESS_TIMEOUT: Duration = Duration::from_secs(5);
-const POND_HTML_CSP: &str = "default-src 'self'; script-src 'self'; \
-    style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; \
-    object-src 'none'; base-uri 'none'; frame-ancestors 'none'";
+const POND_HTML_CSP: &str = koi_ui::DOCUMENT_CSP;
 
 /// Derive the fourth port in a Koi install's contiguous port run.
 pub fn port_for_http(http_port: u16) -> Option<u16> {
@@ -55,7 +50,6 @@ pub fn port_for_http(http_port: u16) -> Option<u16> {
 #[derive(Clone)]
 pub struct PondConfig {
     pub port: u16,
-    pub ui_dir: PathBuf,
     pub intent_path: PathBuf,
     pub started_at: Instant,
     pub browser: Option<BrowserState>,
@@ -105,28 +99,14 @@ pub enum PondEvent {
         running: bool,
         reason: Option<String>,
     },
-    /// One complete UI bundle became the currently visible serving revision.
-    /// This is a visible-state fact, not a crash-durability acknowledgement.
-    UiPublished {
-        revision: String,
-    },
-    /// The visible serving selection was cleared; retained generations remain addressable.
-    /// This is a visible-state fact, not a crash-durability acknowledgement.
-    UiCleared,
 }
 
 struct PondDomainInner {
     config: PondConfig,
     status: StatusFeed<PondStatus>,
     event_tx: broadcast::Sender<PondEvent>,
-    /// Serializes every status + semantic-event publication across lifecycle and UI.
-    ///
-    /// This critical section is deliberately synchronous and tiny: it makes the status feed
-    /// the causal boundary for Pond without coupling it to long-running listener work.
+    /// Serializes status and semantic-event publication across lifecycle transitions.
     transition: StdMutex<()>,
-    publish: Mutex<()>,
-    ui_repository: PondUiRepository,
-    ui_store: StdRwLock<UiStore>,
     reconcile_now: Notify,
     #[cfg(test)]
     force_intent_uncertain: std::sync::atomic::AtomicBool,
@@ -196,22 +176,18 @@ impl PondRuntime {
                 )
             })?
             .unwrap_or_default();
-        let (ui_repository, ui_store, ui_bundle) = PondUiRepository::open(config.ui_dir.clone())?;
         let mut initial = if intent.desired {
             PondStatus::awaiting_reconciliation(config.port)
         } else {
             PondStatus::disabled(config.port)
         };
-        initial.ui = ui_status(ui_bundle.as_deref());
+        initial.ui = shared_ui_status();
         let domain = PondDomain {
             inner: Arc::new(PondDomainInner {
                 config,
                 status: StatusFeed::new(initial),
                 event_tx: koi_common::events::event_channel().0,
                 transition: StdMutex::new(()),
-                publish: Mutex::new(()),
-                ui_repository,
-                ui_store: StdRwLock::new(ui_store),
                 reconcile_now: Notify::new(),
                 #[cfg(test)]
                 force_intent_uncertain: std::sync::atomic::AtomicBool::new(false),
@@ -240,116 +216,8 @@ impl PondRuntime {
         self.inner.domain.inner.event_tx.subscribe()
     }
 
-    /// Atomically commit and activate one complete five-file UI bundle.
-    ///
-    /// Validation happens before persistence. The durable model writes an immutable,
-    /// content-addressed generation before atomically advancing its current pointer, so a
-    /// crash can expose either the preceding complete bundle or the new complete bundle,
-    /// never a mixture. In-memory serving and status advance only after the visible pointer
-    /// has been committed and reconciled.
-    pub async fn publish_ui(
-        &self,
-        publish: PondUiPublish,
-    ) -> Result<PondStatus, PondUiPublishError> {
-        let prepared = PondUiRepository::prepare(&publish).map_err(PondUiPublishError::Invalid)?;
-        let _publish_guard = self.inner.domain.inner.publish.lock().await;
-        // This commit and the status/event tail deliberately contain no await point. The
-        // five-file repository is a small bounded local transaction, so cancellation can
-        // withdraw while waiting for ownership but cannot split an accepted pointer commit
-        // from its authoritative in-memory publication (ADR-043).
-        let commit = self
-            .inner
-            .domain
-            .inner
-            .ui_repository
-            .commit(prepared)
-            .map_err(PondUiPublishError::Persist)?;
-        let uncertainty = match commit.durability {
-            AtomicCommit::Durable => None,
-            AtomicCommit::DurabilityUncertain(error) => Some(error),
-        };
-        let bundle = commit.bundle;
-
-        self.inner
-            .domain
-            .inner
-            .ui_store
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .retain(Arc::clone(&bundle));
-
-        self.inner
-            .domain
-            .publish_ui_status(ui_status(Some(&bundle)));
-        drop(_publish_guard);
-
-        // `notify_one` retains a permit if the reconciler is between attempts. There is one
-        // reconciler, so a broadcast notification can only lose useful work here.
-        self.inner.domain.inner.reconcile_now.notify_one();
-        let status = self.status().as_ref().clone();
-        if let Some(error) = uncertainty {
-            // The replacement is visible, so serving/status/events must describe
-            // it before the initiating boundary receives the weaker guarantee.
-            tracing::error!(
-                revision = ?status.ui.revision,
-                %error,
-                "Pond UI pointer is visible, but its crash durability could not be confirmed"
-            );
-            return Err(PondUiPublishError::DurabilityUncertain(error));
-        }
-        Ok(status)
-    }
-
-    /// Atomically clear the active UI selection without deleting retained generations.
-    ///
-    /// The durable pointer commits first, then the authoritative status advances, then the
-    /// semantic event is emitted. Calling this while already clear is a validated no-op.
-    pub async fn clear_ui(&self) -> Result<PondStatus, PondUiClearError> {
-        let _publish_guard = self.inner.domain.inner.publish.lock().await;
-        // As with publish, pointer commit -> status -> event is one short no-await section.
-        // A caller may cancel before this lock is acquired, never after disk truth changes
-        // but before the Pond boundary catches up.
-        let Some(durability) = self
-            .inner
-            .domain
-            .inner
-            .ui_repository
-            .clear()
-            .map_err(PondUiClearError::Persist)?
-        else {
-            return Ok(self.status().as_ref().clone());
-        };
-        let uncertainty = match durability {
-            AtomicCommit::Durable => None,
-            AtomicCommit::DurabilityUncertain(error) => Some(error),
-        };
-
-        self.inner.domain.publish_ui_status(PondUiStatus::default());
-        drop(_publish_guard);
-        self.inner.domain.inner.reconcile_now.notify_one();
-        let status = self.status().as_ref().clone();
-        if let Some(error) = uncertainty {
-            tracing::error!(
-                %error,
-                "Pond UI clear is visible, but its crash durability could not be confirmed"
-            );
-            return Err(PondUiClearError::DurabilityUncertain(error));
-        }
-        Ok(status)
-    }
-
-    #[cfg(test)]
-    fn ui_bundle(&self) -> Option<Arc<UiBundle>> {
-        self.inner.domain.ui_bundle()
-    }
-
-    #[cfg(test)]
-    fn ui_file(&self, name: &str) -> Option<Arc<[u8]>> {
-        self.ui_bundle()?.file(name)
-    }
-
     fn ui_status(&self) -> PondUiStatus {
-        self.inner.domain.ui_status()
+        shared_ui_status()
     }
 
     /// Reconcile the desire already loaded by construction, then own daemon shutdown.
@@ -629,25 +497,8 @@ impl PondRuntime {
 }
 
 impl PondDomain {
-    fn status(&self) -> Arc<PondStatus> {
-        self.inner.status.current()
-    }
-
-    fn ui_bundle(&self) -> Option<Arc<UiBundle>> {
-        let revision = self.status().ui.revision.clone()?;
-        self.ui_generation(&revision)
-    }
-
-    fn ui_generation(&self, revision: &str) -> Option<Arc<UiBundle>> {
-        self.inner
-            .ui_store
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .generation(revision)
-    }
-
     fn ui_status(&self) -> PondUiStatus {
-        ui_status(self.ui_bundle().as_deref())
+        shared_ui_status()
     }
 
     async fn reconcile(
@@ -662,20 +513,6 @@ impl PondDomain {
                 return;
             }
             self.set_reconciling(generation);
-
-            if self.ui_bundle().is_none() {
-                self.set_waiting(
-                    generation,
-                    self.inner.config.port,
-                    "published UI is incomplete; open Koi Desktop and choose Phone".to_string(),
-                    unknown_firewall(),
-                );
-                signal_initial(&mut initial);
-                if self.wait_retry(&cancel).await {
-                    return;
-                }
-                continue;
-            }
 
             let listener = match tokio::net::TcpListener::bind((
                 Ipv4Addr::UNSPECIFIED,
@@ -862,17 +699,6 @@ impl PondDomain {
     }
 
     async fn refresh_observation(&self, generation: u64, port: u16) {
-        if self.ui_bundle().is_none() {
-            let current = self.status();
-            self.set_bound_waiting(
-                generation,
-                port,
-                "published UI is incomplete; open Koi Desktop and choose Phone".to_string(),
-                current.firewall.clone(),
-                current.urls.clone(),
-            );
-            return;
-        }
         let interfaces = match crate::network::lan_ipv4_interfaces() {
             Ok(interfaces) => interfaces,
             Err(error) => {
@@ -986,18 +812,6 @@ impl PondDomain {
         })
     }
 
-    /// Publish only the UI-owned portion of Pond status.
-    ///
-    /// The transition gate also covers event emission, so subscribers cannot observe UI and
-    /// lifecycle events in an order different from the status revisions that caused them.
-    fn publish_ui_status(&self, ui: PondUiStatus) -> Arc<PondStatus> {
-        self.transition_status(move |current| {
-            let mut next = current.clone();
-            next.ui = ui;
-            Some(next)
-        })
-    }
-
     /// The only status/event publication path for this Pond instance.
     fn transition_status(
         &self,
@@ -1041,19 +855,6 @@ impl PondDomain {
                     running: current.running,
                     reason: current.reason.clone(),
                 });
-            }
-            if previous.ui.revision != current.ui.revision {
-                match current.ui.revision {
-                    Some(revision) => {
-                        let _ = self
-                            .inner
-                            .event_tx
-                            .send(PondEvent::UiPublished { revision });
-                    }
-                    None => {
-                        let _ = self.inner.event_tx.send(PondEvent::UiCleared);
-                    }
-                }
             }
         }
         published
@@ -1410,10 +1211,126 @@ fn assess_firewall_blocking(
     }
 }
 
-fn ui_status(bundle: Option<&UiBundle>) -> PondUiStatus {
+fn shared_ui_status() -> PondUiStatus {
     PondUiStatus {
-        available: bundle.is_some(),
-        revision: bundle.map(|bundle| bundle.revision().to_string()),
+        available: true,
+        revision: Some("shared-renderer".to_string()),
+    }
+}
+
+/// Project only mDNS-discovered services into Pond's unauthenticated document.
+/// Operator preferences, local candidates, health checks, operations and identity posture
+/// stay behind the authenticated adapter.
+fn public_catalog(
+    snapshot: &koi_common::service::CatalogSnapshot,
+) -> koi_common::service::CatalogSnapshot {
+    use koi_common::service::{AvailableAction, KoiPresence, MeshIdentityState, ObservationKind};
+
+    let mut services = snapshot
+        .services
+        .iter()
+        .filter(|service| {
+            service
+                .observations
+                .iter()
+                .any(|observation| observation.kind == ObservationKind::Mdns)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    for service in &mut services {
+        service.alias = None;
+        service.favorite = false;
+        service.checks.clear();
+        service.active_operations.clear();
+        service.ambiguity = None;
+        service.observations.clear();
+        service
+            .available_actions
+            .retain(|action| *action == AvailableAction::Open);
+        for endpoint in &mut service.endpoints {
+            endpoint.reachability.clear();
+            endpoint.client_tls.clear();
+            endpoint.authority_needs.clear();
+            if let Some(scope) = &mut endpoint.network_scope {
+                scope.interface = None;
+                scope.local_address = None;
+                scope.route_source.clear();
+                scope.provider_scope = None;
+            }
+        }
+    }
+
+    let device_ids = services
+        .iter()
+        .map(|service| service.device_id.clone())
+        .collect::<std::collections::HashSet<_>>();
+    let mut devices = snapshot
+        .devices
+        .iter()
+        .filter(|device| device_ids.contains(&device.id))
+        .cloned()
+        .collect::<Vec<_>>();
+    for device in &mut devices {
+        device.koi_presence = KoiPresence::Observed;
+        device.mesh_identity.state = MeshIdentityState::Unknown;
+        device.mesh_identity.observation_ids.clear();
+        for name in &mut device.names {
+            name.observation_ids.clear();
+        }
+        for address in &mut device.addresses {
+            address.observation_ids.clear();
+        }
+    }
+
+    koi_common::service::CatalogSnapshot {
+        schema: snapshot.schema,
+        epoch: "pond-public".to_string(),
+        revision: snapshot.revision,
+        generated_at: snapshot.generated_at,
+        devices,
+        services,
+        local_candidates: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod browser_projection_tests {
+    #[test]
+    fn public_snapshot_excludes_authenticated_discovery_provenance() {
+        let snapshot = koi_common::mdns_browser::BrowserSnapshot {
+            browse_active: true,
+            instances: vec![koi_common::mdns_browser::ServiceInstance {
+                name: "private-unresolved-instance".into(),
+                service_type: "_private._tcp".into(),
+                ..Default::default()
+            }],
+            service_types: vec![koi_common::mdns_browser::TypeSummary {
+                service_type: "_private._tcp".into(),
+                count: 1,
+                ..Default::default()
+            }],
+            total_instances: 1,
+            total_types: 1,
+            discovery: koi_common::integration::MdnsDiscoverySnapshot {
+                revision: 91,
+                sources: vec![koi_common::integration::MdnsDiscoverySource {
+                    query: "private-query".into(),
+                    provider: Some("private-provider".into()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let value = super::public_browser_snapshot(snapshot);
+        assert!(value.get("discovery").is_none());
+        assert!(value.get("browse_active").is_none());
+        let encoded = value.to_string();
+        assert!(!encoded.contains("private-provider"));
+        assert!(!encoded.contains("private-query"));
+        assert!(!encoded.contains("private-unresolved-instance"));
+        assert_eq!(value["total_instances"], 0);
+        assert_eq!(value["total_types"], 0);
     }
 }
 
@@ -1425,12 +1342,6 @@ fn public_routes(runtime: PondRuntime) -> Router {
 fn public_routes_for_domain(domain: PondDomain) -> Router {
     Router::new()
         .route("/", get(ui_selector_handler))
-        .route("/_koi/ui/{revision}", get(ui_generation_redirect_handler))
-        .route("/_koi/ui/{revision}/", get(ui_generation_index_handler))
-        .route(
-            "/_koi/ui/{revision}/{asset}",
-            get(ui_generation_asset_handler),
-        )
         .route("/healthz", get(pond_health_handler))
         .route("/v1/status", get(pond_status_projection_handler))
         .route(
@@ -1444,7 +1355,6 @@ fn public_routes_for_domain(domain: PondDomain) -> Router {
 /// Routes mounted only on the full operator adapter. DAT middleware remains outside.
 pub fn operator_routes(runtime: PondRuntime) -> Router {
     Router::new()
-        .route("/v1/ui", put(ui_publish_handler).delete(ui_clear_handler))
         .route(
             "/v1/pond",
             get(pond_operator_status_handler)
@@ -1454,95 +1364,58 @@ pub fn operator_routes(runtime: PondRuntime) -> Router {
         .layer(Extension(runtime))
 }
 
-async fn ui_selector_handler(Extension(domain): Extension<PondDomain>) -> Response {
-    let Some(bundle) = domain.ui_bundle() else {
-        return unpublished_ui_response();
-    };
-    generation_redirect(bundle.safe_revision())
-}
-
-async fn ui_generation_redirect_handler(
-    AxumPath(revision): AxumPath<String>,
+async fn ui_selector_handler(
     Extension(domain): Extension<PondDomain>,
+    request: Request,
 ) -> Response {
-    if !crate::pond_ui::is_public_revision_segment(&revision) {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-    let Some(bundle) = domain.ui_generation(&revision) else {
-        return StatusCode::NOT_FOUND.into_response();
+    let state = match koi_ui::UiState::parse_query(request.uri().query().unwrap_or_default()) {
+        Ok(state) => state,
+        Err(error) => return (StatusCode::BAD_REQUEST, error).into_response(),
     };
-    generation_redirect(bundle.safe_revision())
-}
-
-fn generation_redirect(safe_revision: &str) -> Response {
-    let location = format!("{VERSIONED_UI_PREFIX}/{safe_revision}/");
-    let mut response = Redirect::temporary(&location).into_response();
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        header::HeaderValue::from_static("no-store, max-age=0"),
+    let status = domain.inner.config.system_status.status();
+    let public_status = crate::pond_public_status::project(
+        status.as_ref(),
+        domain.inner.config.started_at.elapsed().as_secs(),
     );
-    response
-}
-
-async fn ui_generation_index_handler(
-    AxumPath(revision): AxumPath<String>,
-    Extension(domain): Extension<PondDomain>,
-) -> Response {
-    if !crate::pond_ui::is_public_revision_segment(&revision) {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-    let Some(bundle) = domain.ui_generation(&revision) else {
-        return StatusCode::NOT_FOUND.into_response();
+    let operator = koi_ui::OperatorSnapshot {
+        revision: public_status.revision,
+        capabilities: public_status
+            .capabilities
+            .into_iter()
+            .map(|capability| koi_common::capability::CapabilityStatus {
+                name: capability.name,
+                summary: if !capability.enabled {
+                    "Not enabled".to_string()
+                } else if capability.healthy {
+                    "Available".to_string()
+                } else {
+                    "Needs attention".to_string()
+                },
+                healthy: capability.healthy,
+            })
+            .collect(),
+        ..Default::default()
     };
-    let mut response = generation_file_response(&bundle, "index.html", "text/html; charset=utf-8");
-    response.headers_mut().insert(
-        header::CONTENT_SECURITY_POLICY,
-        header::HeaderValue::from_static(POND_HTML_CSP),
+    let catalog = public_catalog(&status.catalog);
+    let document = koi_ui::render_with_operator_state(
+        koi_ui::View::Snapshot(&catalog),
+        Some(&operator),
+        koi_ui::Links {
+            refresh: Some("./"),
+            endpoint_actions: koi_ui::EndpointActions::OpenOnly,
+            preference_actions: false,
+            operator_actions: koi_ui::OperatorActions::None,
+        },
+        &state,
     );
-    response
-}
-
-async fn ui_generation_asset_handler(
-    AxumPath((revision, asset)): AxumPath<(String, String)>,
-    Extension(domain): Extension<PondDomain>,
-) -> Response {
-    if !crate::pond_ui::is_public_revision_segment(&revision) {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-    let content_type = match asset.as_str() {
-        "app.js" | "sentences.js" => "text/javascript; charset=utf-8",
-        "styles.css" => "text/css; charset=utf-8",
-        "koi.png" => "image/png",
-        _ => return StatusCode::NOT_FOUND.into_response(),
-    };
-    let Some(bundle) = domain.ui_generation(&revision) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    generation_file_response(&bundle, &asset, content_type)
-}
-
-fn generation_file_response(bundle: &UiBundle, name: &str, content_type: &str) -> Response {
-    let Some(bytes) = bundle.file(name) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
     (
         [
-            (header::CONTENT_TYPE, content_type),
-            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CONTENT_SECURITY_POLICY, POND_HTML_CSP),
+            (header::CACHE_CONTROL, "no-store"),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
         ],
-        bytes.as_ref().to_vec(),
-    )
-        .into_response()
-}
-
-fn unpublished_ui_response() -> Response {
-    (
-        StatusCode::SERVICE_UNAVAILABLE,
-        Json(serde_json::json!({
-            "error": "capability_disabled",
-            "message": "Pond UI is not published"
-        })),
+        document,
     )
         .into_response()
 }
@@ -1566,7 +1439,52 @@ async fn pond_browser_snapshot_handler(Extension(domain): Extension<PondDomain>)
         return disabled_response("mdns-browser");
     };
     browser.meta.touch();
-    Json(browser.cache.snapshot().await).into_response()
+    Json(public_browser_snapshot(browser.cache.snapshot().await)).into_response()
+}
+
+// Explicit public wire allowlist: adding authenticated inspection evidence to the
+// common snapshot must never expand Pond's public projection.
+fn public_browser_snapshot(
+    mut snapshot: koi_common::mdns_browser::BrowserSnapshot,
+) -> serde_json::Value {
+    // Found-only evidence is operator inspection data. Conservatively retain
+    // only resolved rows (including their existing removal tombstones).
+    snapshot.instances.retain(|instance| instance.resolved);
+    let reported_types = snapshot
+        .discovery
+        .service_types
+        .iter()
+        .map(|value| value.trim_end_matches('.').trim_end_matches(".local"))
+        .collect::<std::collections::HashSet<_>>();
+    snapshot.service_types.retain_mut(|service_type| {
+        service_type.count = snapshot
+            .instances
+            .iter()
+            .filter(|instance| {
+                instance.service_type == service_type.service_type && instance.removed_at.is_none()
+            })
+            .count();
+        reported_types.contains(service_type.service_type.as_str())
+            || snapshot
+                .instances
+                .iter()
+                .any(|instance| instance.service_type == service_type.service_type)
+    });
+    snapshot.total_types = snapshot.service_types.len();
+    snapshot.total_instances = snapshot
+        .instances
+        .iter()
+        .filter(|instance| instance.removed_at.is_none())
+        .count();
+    serde_json::json!({
+        "revision": snapshot.revision,
+        "total_types": snapshot.total_types,
+        "total_instances": snapshot.total_instances,
+        "service_types": snapshot.service_types,
+        "instances": snapshot.instances,
+        "cache_age_secs": snapshot.cache_age_secs,
+        "burst": snapshot.burst,
+    })
 }
 
 async fn pond_dns_entries_handler(Extension(domain): Extension<PondDomain>) -> Response {
@@ -1586,108 +1504,6 @@ fn disabled_response(capability: &str) -> Response {
         })),
     )
         .into_response()
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum PondUiPublishError {
-    #[error("invalid Pond UI bundle: {0}")]
-    Invalid(String),
-    #[error("Pond UI bundle was not persisted: {0}")]
-    Persist(#[source] std::io::Error),
-    #[error("Pond UI selection is visible, but crash durability could not be confirmed: {0}")]
-    DurabilityUncertain(#[source] std::io::Error),
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum PondUiClearError {
-    #[error("Pond UI selection was not persisted: {0}")]
-    Persist(#[source] std::io::Error),
-    #[error(
-        "Pond UI selection is visibly clear, but crash durability could not be confirmed: {0}"
-    )]
-    DurabilityUncertain(#[source] std::io::Error),
-}
-
-#[utoipa::path(put, path = "/v1/ui", tag = "pond",
-    summary = "Publish the fixed Pond browser bundle",
-    request_body = PondUiPublish,
-    responses(
-        (status = 200, description = "Complete bundle published"),
-        (status = 400, description = "Bundle is incomplete or contains another file"),
-        (status = 500, description = "Persistence failed or durability is uncertain"),
-        (status = 401, description = "Daemon access token required")
-    ))]
-async fn ui_publish_handler(
-    Extension(runtime): Extension<PondRuntime>,
-    Json(publish): Json<PondUiPublish>,
-) -> Response {
-    match runtime.publish_ui(publish).await {
-        Ok(status) => Json(serde_json::json!({
-            "published": UI_FILES.len(),
-            "ok": true,
-            "revision": status.ui.revision,
-            "status_revision": status.revision,
-        }))
-        .into_response(),
-        Err(PondUiPublishError::Invalid(message)) => (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "invalid_pond_bundle",
-                "message": message,
-            })),
-        )
-            .into_response(),
-        Err(PondUiPublishError::Persist(error)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "error": "pond_bundle_not_persisted",
-                "message": error.to_string(),
-            })),
-        )
-            .into_response(),
-        Err(PondUiPublishError::DurabilityUncertain(error)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "error": "pond_ui_durability_uncertain",
-                "message": error.to_string(),
-            })),
-        )
-            .into_response(),
-    }
-}
-
-#[utoipa::path(delete, path = "/v1/ui", tag = "pond",
-    summary = "Clear the selected Pond browser bundle without deleting generations",
-    responses(
-        (status = 200, description = "Serving selection cleared"),
-        (status = 500, description = "Persistence failed or durability is uncertain"),
-        (status = 401, description = "Daemon access token required")
-    ))]
-async fn ui_clear_handler(Extension(runtime): Extension<PondRuntime>) -> Response {
-    match runtime.clear_ui().await {
-        Ok(status) => Json(serde_json::json!({
-            "ok": true,
-            "selected": false,
-            "status_revision": status.revision,
-        }))
-        .into_response(),
-        Err(PondUiClearError::Persist(error)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "error": "pond_ui_selection_not_persisted",
-                "message": error.to_string(),
-            })),
-        )
-            .into_response(),
-        Err(PondUiClearError::DurabilityUncertain(error)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "error": "pond_ui_durability_uncertain",
-                "message": error.to_string(),
-            })),
-        )
-            .into_response(),
-    }
 }
 
 #[utoipa::path(get, path = "/v1/pond", tag = "pond",
@@ -1770,15 +1586,11 @@ async fn pond_disable_handler(Extension(runtime): Extension<PondRuntime>) -> Res
 #[derive(OpenApi)]
 #[openapi(
     paths(
-        ui_publish_handler,
-        ui_clear_handler,
         pond_operator_status_handler,
         pond_enable_handler,
         pond_disable_handler
     ),
     components(schemas(
-        PondUiFile,
-        PondUiPublish,
         PondStatus,
         PondState,
         PondFirewallStatus,
@@ -1793,7 +1605,6 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
-    use axum::middleware;
     use tower::ServiceExt;
 
     fn unique_root(name: &str) -> PathBuf {
@@ -1804,7 +1615,6 @@ mod tests {
     fn test_config(root: &std::path::Path, parent_cancel: CancellationToken) -> PondConfig {
         PondConfig {
             port: DEFAULT_POND_PORT,
-            ui_dir: root.join("ui"),
             intent_path: root.join("pond.json"),
             started_at: Instant::now(),
             browser: None,
@@ -1826,43 +1636,6 @@ mod tests {
             }
         }
         desired
-    }
-
-    fn test_bundle(marker: &str) -> PondUiPublish {
-        PondUiPublish {
-            files: UI_FILES
-                .iter()
-                .map(|path| PondUiFile {
-                    path: (*path).to_string(),
-                    content: if *path == "koi.png" {
-                        "aGVsbG8=".to_string()
-                    } else {
-                        format!("{path}-{marker}")
-                    },
-                })
-                .collect(),
-        }
-    }
-
-    fn browser_bundle(marker: &str) -> PondUiPublish {
-        use base64::Engine as _;
-
-        PondUiPublish {
-            files: UI_FILES
-                .iter()
-                .map(|path| PondUiFile {
-                    path: (*path).to_string(),
-                    content: match *path {
-                        "index.html" => format!(
-                            "<link href=\"styles.css\"><img src=\"koi.png\"><script src=\"sentences.js\"></script><script src=\"app.js\"></script><!-- {marker} -->"
-                        ),
-                        "koi.png" => base64::engine::general_purpose::STANDARD
-                            .encode(format!("png-{marker}")),
-                        _ => format!("{path}-{marker}"),
-                    },
-                })
-                .collect(),
-        }
     }
 
     #[test]
@@ -2032,7 +1805,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn durability_uncertainty_is_explicit_on_existing_http_boundaries() {
+    async fn intent_durability_uncertainty_is_explicit_on_the_http_boundary() {
         let lifecycle_root = unique_root("uncertain-intent-http");
         let mut config = test_config(&lifecycle_root, CancellationToken::new());
         config.port = 0;
@@ -2047,42 +1820,10 @@ mod tests {
         assert_eq!(body["error"], "pond_intent_durability_uncertain");
         assert!(lifecycle.status().desired);
 
-        let ui_root = unique_root("uncertain-ui-http");
-        let ui = PondRuntime::new(test_config(&ui_root, CancellationToken::new())).unwrap();
-        ui.inner
-            .domain
-            .inner
-            .ui_repository
-            .make_next_pointer_durability_uncertain();
-        let response =
-            ui_publish_handler(Extension(ui.clone()), Json(test_bundle("uncertain-http"))).await;
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(body["error"], "pond_ui_durability_uncertain");
-        assert!(ui.status().ui.available);
-
-        ui.inner
-            .domain
-            .inner
-            .ui_repository
-            .make_next_pointer_durability_uncertain();
-        let response = ui_clear_handler(Extension(ui.clone())).await;
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(body["error"], "pond_ui_durability_uncertain");
-        assert_eq!(ui.status().ui, PondUiStatus::default());
-
         lifecycle
             .shutdown_with_timeout(Duration::from_millis(10))
             .await;
         let _ = std::fs::remove_dir_all(lifecycle_root);
-        let _ = std::fs::remove_dir_all(ui_root);
     }
 
     #[tokio::test]
@@ -2330,10 +2071,6 @@ mod tests {
         let mut config = test_config(&root, CancellationToken::new());
         config.port = 0;
         let runtime = PondRuntime::new(config).unwrap();
-        runtime
-            .publish_ui(browser_bundle("drop-owner"))
-            .await
-            .unwrap();
         let enabled = runtime.enable().await.unwrap();
         assert!(
             enabled.running,
@@ -2711,439 +2448,43 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn fixed_bundle_commit_is_atomic_revisioned_and_restart_safe() {
-        let root = unique_root("pond-republish");
-        let runtime = PondRuntime::new(test_config(&root, CancellationToken::new())).unwrap();
-        let mut events = runtime.subscribe();
-
-        let first = runtime.publish_ui(test_bundle("first")).await.unwrap();
-        assert!(first.ui.available);
-        let first_revision = first.ui.revision.clone().unwrap();
-        assert_eq!(runtime.status().as_ref(), &first);
-        assert_eq!(
-            events.recv().await.unwrap(),
-            PondEvent::UiPublished {
-                revision: first_revision.clone(),
-            }
-        );
-
-        let duplicate = runtime.publish_ui(test_bundle("first")).await.unwrap();
-        assert_eq!(duplicate.revision, first.revision);
-        assert_eq!(duplicate.ui, first.ui);
-        assert!(matches!(
-            events.try_recv(),
-            Err(broadcast::error::TryRecvError::Empty)
-        ));
-
-        let second = runtime.publish_ui(test_bundle("second")).await.unwrap();
-        assert_ne!(second.ui.revision, first.ui.revision);
-        assert!(second.revision > first.revision);
-        assert_eq!(
-            runtime.ui_file("app.js").unwrap().as_ref(),
-            b"app.js-second"
-        );
-        assert_eq!(runtime.ui_file("koi.png").unwrap().as_ref(), b"hello");
-
-        let restarted = PondRuntime::new(test_config(&root, CancellationToken::new())).unwrap();
-        assert_eq!(restarted.status().ui, second.ui);
-        assert_eq!(
-            restarted.ui_file("app.js").unwrap().as_ref(),
-            b"app.js-second"
-        );
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[tokio::test]
-    async fn clear_ui_commits_status_then_event_and_retains_generation_after_restart() {
-        let root = unique_root("pond-clear-ui");
-        let runtime = PondRuntime::new(test_config(&root, CancellationToken::new())).unwrap();
-        let mut events = runtime.subscribe();
-        let selected = runtime
-            .publish_ui(browser_bundle("retained"))
-            .await
-            .unwrap();
-        assert!(matches!(
-            events.recv().await.unwrap(),
-            PondEvent::UiPublished { .. }
-        ));
-        let selected_revision = selected.ui.revision.clone().unwrap();
-        let selected_safe = crate::pond_ui::safe_revision_segment(&selected_revision)
-            .unwrap()
-            .to_string();
-        let mut statuses = runtime.watch_status();
-
-        let cleared = runtime.clear_ui().await.unwrap();
-        statuses.changed().await.unwrap();
-        assert_eq!(statuses.borrow_and_update().as_ref(), &cleared);
-        assert_eq!(runtime.status().as_ref(), &cleared);
-        assert_eq!(cleared.ui, PondUiStatus::default());
-        assert_eq!(events.recv().await.unwrap(), PondEvent::UiCleared);
-
-        let retained_path = format!("{VERSIONED_UI_PREFIX}/{selected_safe}/app.js");
-        let response = public_routes(runtime.clone())
-            .oneshot(Request::get(&retained_path).body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let restarted = PondRuntime::new(test_config(&root, CancellationToken::new())).unwrap();
-        assert_eq!(restarted.status().ui, PondUiStatus::default());
-        let routes = public_routes(restarted);
-        assert_eq!(
-            routes
-                .clone()
-                .oneshot(Request::get("/").body(Body::empty()).unwrap())
-                .await
-                .unwrap()
-                .status(),
-            StatusCode::SERVICE_UNAVAILABLE
-        );
-        assert_eq!(
-            routes
-                .oneshot(Request::get(&retained_path).body(Body::empty()).unwrap(),)
-                .await
-                .unwrap()
-                .status(),
-            StatusCode::OK
-        );
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[tokio::test]
-    async fn duplicate_clear_is_a_status_event_and_persistence_noop() {
-        let root = unique_root("pond-clear-noop");
-        let runtime = PondRuntime::new(test_config(&root, CancellationToken::new())).unwrap();
-        runtime.publish_ui(test_bundle("selected")).await.unwrap();
-        runtime.clear_ui().await.unwrap();
-        let pointer = root.join("ui/.koi-pond-ui/current.json");
-        let pointer_before = std::fs::read(&pointer).unwrap();
-        let before = runtime.status();
-        let statuses = runtime.watch_status();
-        let mut events = runtime.subscribe();
-
-        let duplicate = runtime.clear_ui().await.unwrap();
-        assert_eq!(duplicate, *before);
-        assert!(Arc::ptr_eq(&before, &runtime.status()));
-        assert_eq!(std::fs::read(pointer).unwrap(), pointer_before);
-        assert!(statuses.has_changed().is_ok_and(|changed| !changed));
-        assert!(matches!(
-            events.try_recv(),
-            Err(broadcast::error::TryRecvError::Empty)
-        ));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[tokio::test]
-    async fn cancelled_clear_waiting_for_command_ownership_changes_nothing() {
-        let root = unique_root("pond-clear-cancelled");
-        let runtime = PondRuntime::new(test_config(&root, CancellationToken::new())).unwrap();
-        runtime.publish_ui(test_bundle("selected")).await.unwrap();
-        let pointer = root.join("ui/.koi-pond-ui/current.json");
-        let pointer_before = std::fs::read(&pointer).unwrap();
-        let before = runtime.status();
-        let statuses = runtime.watch_status();
-        let mut events = runtime.subscribe();
-        let owner = runtime.inner.domain.inner.publish.lock().await;
-        let clear = tokio::spawn({
-            let runtime = runtime.clone();
-            async move { runtime.clear_ui().await }
-        });
-        tokio::task::yield_now().await;
-        assert!(!clear.is_finished());
-
-        clear.abort();
-        assert!(clear.await.unwrap_err().is_cancelled());
-        drop(owner);
-        assert!(Arc::ptr_eq(&before, &runtime.status()));
-        assert_eq!(std::fs::read(pointer).unwrap(), pointer_before);
-        assert!(statuses.has_changed().is_ok_and(|changed| !changed));
-        assert!(matches!(
-            events.try_recv(),
-            Err(broadcast::error::TryRecvError::Empty)
-        ));
-        let restarted = PondRuntime::new(test_config(&root, CancellationToken::new())).unwrap();
-        assert_eq!(restarted.status().ui, before.ui);
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[tokio::test]
-    async fn failed_clear_commit_publishes_neither_status_nor_event() {
-        let root = unique_root("pond-clear-persist-failure");
-        let runtime = PondRuntime::new(test_config(&root, CancellationToken::new())).unwrap();
-        runtime.publish_ui(test_bundle("selected")).await.unwrap();
-        std::fs::write(root.join("ui/.koi-pond-ui/current.json"), b"{corrupt").unwrap();
-        let before = runtime.status();
-        let before_bytes = runtime.ui_file("app.js").unwrap();
-        let statuses = runtime.watch_status();
-        let mut events = runtime.subscribe();
-
-        assert!(runtime.clear_ui().await.is_err());
-        assert!(Arc::ptr_eq(&before, &runtime.status()));
-        assert!(Arc::ptr_eq(
-            &before_bytes,
-            &runtime.ui_file("app.js").unwrap()
-        ));
-        assert!(statuses.has_changed().is_ok_and(|changed| !changed));
-        assert!(matches!(
-            events.try_recv(),
-            Err(broadcast::error::TryRecvError::Empty)
-        ));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[tokio::test]
-    async fn visible_clear_returns_typed_uncertainty_and_remains_retryable() {
-        let root = unique_root("pond-clear-pointer-uncertain");
-        let runtime = PondRuntime::new(test_config(&root, CancellationToken::new())).unwrap();
-        runtime.publish_ui(test_bundle("selected")).await.unwrap();
-        let mut statuses = runtime.watch_status();
-        let mut events = runtime.subscribe();
-        runtime
-            .inner
-            .domain
-            .inner
-            .ui_repository
-            .make_next_pointer_durability_uncertain();
-
-        let error = runtime
-            .clear_ui()
-            .await
-            .expect_err("visible clear with unconfirmed durability is not command success");
-        assert!(matches!(error, PondUiClearError::DurabilityUncertain(_)));
-        statuses.changed().await.unwrap();
-        assert_eq!(statuses.borrow_and_update().ui, PondUiStatus::default());
-        assert_eq!(runtime.status().ui, PondUiStatus::default());
-        assert_eq!(events.recv().await.unwrap(), PondEvent::UiCleared);
-
-        let revision = runtime.status().revision;
-        let confirmed = runtime
-            .clear_ui()
-            .await
-            .expect("retry must reflush the uncertain clear pointer");
-        assert_eq!(confirmed.revision, revision);
-        assert!(statuses.has_changed().is_ok_and(|changed| !changed));
-        assert!(matches!(
-            events.try_recv(),
-            Err(broadcast::error::TryRecvError::Empty)
-        ));
-        let restarted = PondRuntime::new(test_config(&root, CancellationToken::new())).unwrap();
-        assert_eq!(restarted.status().ui, PondUiStatus::default());
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[tokio::test]
-    async fn operator_delete_requires_the_dat_and_clears_ui_selection() {
-        let root = unique_root("pond-clear-http");
-        let runtime = PondRuntime::new(test_config(&root, CancellationToken::new())).unwrap();
-        runtime.publish_ui(test_bundle("selected")).await.unwrap();
-        let expected = Arc::new("secret-token".to_string());
-        let routes =
-            operator_routes(runtime.clone()).layer(middleware::from_fn(move |request, next| {
-                let expected = Arc::clone(&expected);
-                crate::http::dat_auth_middleware(request, next, expected)
-            }));
-
-        let response = routes
-            .clone()
-            .oneshot(Request::delete("/v1/ui").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        assert!(runtime.status().ui.available);
-
-        let response = routes
-            .oneshot(
-                Request::delete("/v1/ui")
-                    .header("x-koi-token", "secret-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(runtime.status().ui, PondUiStatus::default());
-        let _ = std::fs::remove_dir_all(root);
-    }
-
     #[test]
-    fn pond_openapi_exposes_publish_and_clear_on_one_ui_resource() {
+    fn pond_openapi_excludes_retired_bundle_publication() {
         let spec = PondApiDoc::openapi();
-        let ui = spec.paths.paths.get("/v1/ui").expect("Pond UI path");
-
-        assert!(ui.put.is_some(), "Pond UI publish operation is missing");
-        assert!(ui.delete.is_some(), "Pond UI clear operation is missing");
+        assert!(!spec.paths.paths.contains_key("/v1/ui"));
     }
 
     #[tokio::test]
-    async fn selector_pins_every_browser_request_to_one_retained_generation() {
-        let root = unique_root("pond-generation-routing");
+    async fn public_root_uses_shared_renderer_and_has_no_bundle_assets() {
+        let root = unique_root("pond-shared-renderer");
         let runtime = PondRuntime::new(test_config(&root, CancellationToken::new())).unwrap();
-        let first = runtime.publish_ui(browser_bundle("first")).await.unwrap();
-        let first_safe = first
-            .ui
-            .revision
-            .as_deref()
-            .and_then(crate::pond_ui::safe_revision_segment)
-            .unwrap()
-            .to_string();
-        let app = public_routes(runtime.clone());
-
-        let selector = app
+        let app = public_routes(runtime);
+        let response = app
             .clone()
-            .oneshot(Request::get("/").body(Body::empty()).unwrap())
+            .oneshot(Request::get("/?tab=about").body(Body::empty()).unwrap())
             .await
             .unwrap();
-        assert_eq!(selector.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
-            selector.headers()[header::CACHE_CONTROL],
-            "no-store, max-age=0"
+            response.headers()[header::CONTENT_SECURITY_POLICY],
+            koi_ui::DOCUMENT_CSP
         );
-        let first_location = selector.headers()[header::LOCATION]
-            .to_str()
-            .unwrap()
-            .to_string();
-        assert_eq!(
-            first_location,
-            format!("{VERSIONED_UI_PREFIX}/{first_safe}/")
-        );
-
-        runtime.publish_ui(browser_bundle("second")).await.unwrap();
-        runtime.publish_ui(browser_bundle("third")).await.unwrap();
-
-        let index = app
-            .clone()
-            .oneshot(
-                Request::get(first_location.as_str())
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
-        assert_eq!(index.status(), StatusCode::OK);
-        assert_eq!(
-            index.headers()[header::CACHE_CONTROL],
-            "public, max-age=31536000, immutable"
-        );
-        let csp = index.headers()[header::CONTENT_SECURITY_POLICY]
-            .to_str()
-            .unwrap();
-        assert!(csp.contains("script-src 'self'"));
-        assert!(!csp.contains("script-src 'unsafe-inline'"));
-        let index_bytes = axum::body::to_bytes(index.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let index_text = std::str::from_utf8(&index_bytes).unwrap();
-        assert!(index_text.contains("<!-- first -->"));
-        assert!(index_text.contains("src=\"app.js\""));
-        assert!(!index_text.contains(VERSIONED_UI_PREFIX));
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("id=\"about\""));
+        assert!(html.contains(">Certmesh<"));
+        assert!(!html.contains("app.js"));
+        assert!(!html.contains("Legacy"));
 
-        for (asset, expected, content_type) in [
-            (
-                "app.js",
-                b"app.js-first".as_slice(),
-                "text/javascript; charset=utf-8",
-            ),
-            (
-                "styles.css",
-                b"styles.css-first".as_slice(),
-                "text/css; charset=utf-8",
-            ),
-            (
-                "sentences.js",
-                b"sentences.js-first".as_slice(),
-                "text/javascript; charset=utf-8",
-            ),
-            ("koi.png", b"png-first".as_slice(), "image/png"),
-        ] {
+        for retired in ["/app.js", "/styles.css", "/_koi/ui/old/app.js"] {
             let response = app
                 .clone()
-                .oneshot(
-                    Request::get(format!("{first_location}{asset}"))
-                        .body(Body::empty())
-                        .unwrap(),
-                )
+                .oneshot(Request::get(retired).body(Body::empty()).unwrap())
                 .await
                 .unwrap();
-            assert_eq!(response.status(), StatusCode::OK, "{asset}");
-            assert_eq!(response.headers()[header::CONTENT_TYPE], content_type);
-            assert_eq!(
-                response.headers()[header::X_CONTENT_TYPE_OPTIONS],
-                "nosniff"
-            );
-            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-                .await
-                .unwrap();
-            assert_eq!(bytes.as_ref(), expected, "{asset}");
-        }
-
-        let latest = app
-            .clone()
-            .oneshot(Request::get("/").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        assert_ne!(latest.headers()[header::LOCATION], first_location);
-
-        let without_slash = app
-            .clone()
-            .oneshot(
-                Request::get(format!("{VERSIONED_UI_PREFIX}/{first_safe}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(without_slash.status(), StatusCode::TEMPORARY_REDIRECT);
-        assert_eq!(without_slash.headers()[header::LOCATION], first_location);
-
-        for absent in [
-            "/app.js".to_string(),
-            format!("{VERSIONED_UI_PREFIX}/not-a-digest/"),
-            format!("{VERSIONED_UI_PREFIX}/{}/", "0".repeat(64)),
-            format!("{VERSIONED_UI_PREFIX}/sha256:{first_safe}/"),
-            format!("{VERSIONED_UI_PREFIX}/sha256%3A{first_safe}/app.js"),
-            format!("{VERSIONED_UI_PREFIX}/{}/", first_safe.to_ascii_uppercase()),
-            format!("{VERSIONED_UI_PREFIX}/{first_safe}/unknown.js"),
-        ] {
-            let response = app
-                .clone()
-                .oneshot(Request::get(absent).body(Body::empty()).unwrap())
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::NOT_FOUND);
-        }
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[tokio::test]
-    async fn lifecycle_changes_preserve_ui_truth_without_duplicate_publication_events() {
-        let root = unique_root("pond-ui-lifecycle-ownership");
-        let mut config = test_config(&root, CancellationToken::new());
-        config.port = 0;
-        let runtime = PondRuntime::new(config).unwrap();
-        let mut events = runtime.subscribe();
-
-        let published = runtime
-            .publish_ui(browser_bundle("retained"))
-            .await
-            .unwrap();
-        let ui = published.ui.clone();
-        assert!(matches!(
-            events.recv().await.unwrap(),
-            PondEvent::UiPublished { .. }
-        ));
-
-        assert_eq!(runtime.enable().await.unwrap().ui, ui);
-        assert_eq!(runtime.disable().await.unwrap().ui, ui);
-        assert_eq!(runtime.enable().await.unwrap().ui, ui);
-        assert_eq!(runtime.disable().await.unwrap().ui, ui);
-        assert_eq!(runtime.status().ui, ui);
-
-        while let Ok(event) = events.try_recv() {
-            assert!(
-                !matches!(event, PondEvent::UiPublished { .. }),
-                "lifecycle publication must not re-emit unchanged UI"
-            );
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{retired}");
         }
         let _ = std::fs::remove_dir_all(root);
     }
@@ -3156,7 +2497,6 @@ mod tests {
         let mut config = test_config(&root, CancellationToken::new());
         config.port = 0;
         let runtime = PondRuntime::new(config).unwrap();
-        runtime.publish_ui(browser_bundle("drain")).await.unwrap();
         let port = runtime.enable().await.unwrap().port;
 
         let mut client = tokio::time::timeout(Duration::from_secs(2), async {
@@ -3180,109 +2520,6 @@ mod tests {
             .unwrap();
         assert!(!disabled.running);
         assert_eq!(disabled.state, PondState::Disabled);
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[tokio::test]
-    async fn failed_bundle_never_replaces_serving_bytes_status_or_event() {
-        let root = unique_root("pond-publish-failure");
-        let runtime = PondRuntime::new(test_config(&root, CancellationToken::new())).unwrap();
-        runtime.publish_ui(test_bundle("accepted")).await.unwrap();
-        let before = runtime.status();
-        let before_bytes = runtime.ui_file("app.js").unwrap();
-        let statuses = runtime.watch_status();
-        let mut events = runtime.subscribe();
-        let mut invalid = test_bundle("rejected");
-        invalid
-            .files
-            .iter_mut()
-            .find(|file| file.path == "koi.png")
-            .unwrap()
-            .content = "not base64!".to_string();
-
-        assert!(matches!(
-            runtime.publish_ui(invalid).await,
-            Err(PondUiPublishError::Invalid(_))
-        ));
-        assert!(Arc::ptr_eq(&before, &runtime.status()));
-        assert!(Arc::ptr_eq(
-            &before_bytes,
-            &runtime.ui_file("app.js").unwrap()
-        ));
-        assert!(statuses.has_changed().is_ok_and(|changed| !changed));
-        assert!(matches!(
-            events.try_recv(),
-            Err(broadcast::error::TryRecvError::Empty)
-        ));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[tokio::test]
-    async fn failed_bundle_commit_publishes_neither_status_nor_event() {
-        let root = unique_root("pond-publish-persist-failure");
-        let runtime = PondRuntime::new(test_config(&root, CancellationToken::new())).unwrap();
-        std::fs::write(root.join("ui/.koi-pond-ui/current.json"), b"{corrupt").unwrap();
-        let before = runtime.status();
-        let statuses = runtime.watch_status();
-        let mut events = runtime.subscribe();
-
-        assert!(matches!(
-            runtime.publish_ui(test_bundle("rejected")).await,
-            Err(PondUiPublishError::Persist(_))
-        ));
-        assert!(Arc::ptr_eq(&before, &runtime.status()));
-        assert!(runtime.ui_file("app.js").is_none());
-        assert!(statuses.has_changed().is_ok_and(|changed| !changed));
-        assert!(matches!(
-            events.try_recv(),
-            Err(broadcast::error::TryRecvError::Empty)
-        ));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[tokio::test]
-    async fn visible_publish_returns_typed_uncertainty_without_hiding_the_fact() {
-        let root = unique_root("pond-publish-pointer-uncertain");
-        let runtime = PondRuntime::new(test_config(&root, CancellationToken::new())).unwrap();
-        let mut statuses = runtime.watch_status();
-        let mut events = runtime.subscribe();
-        runtime
-            .inner
-            .domain
-            .inner
-            .ui_repository
-            .make_next_pointer_durability_uncertain();
-
-        let error = runtime
-            .publish_ui(test_bundle("accepted-uncertain"))
-            .await
-            .expect_err("visible publish with unconfirmed durability is not command success");
-        assert!(matches!(error, PondUiPublishError::DurabilityUncertain(_)));
-        statuses.changed().await.unwrap();
-        let published = runtime.status();
-        assert_eq!(statuses.borrow_and_update().ui, published.ui);
-        assert!(published.ui.available);
-        assert_eq!(
-            events.recv().await.unwrap(),
-            PondEvent::UiPublished {
-                revision: published.ui.revision.clone().unwrap(),
-            }
-        );
-
-        let status_revision = published.revision;
-        let confirmed = runtime
-            .publish_ui(test_bundle("accepted-uncertain"))
-            .await
-            .expect("identical retry confirms the visible pointer");
-        assert_eq!(confirmed.revision, status_revision);
-        assert!(statuses.has_changed().is_ok_and(|changed| !changed));
-        assert!(matches!(
-            events.try_recv(),
-            Err(broadcast::error::TryRecvError::Empty)
-        ));
-
-        let restarted = PondRuntime::new(test_config(&root, CancellationToken::new())).unwrap();
-        assert_eq!(restarted.status().ui, published.ui);
         let _ = std::fs::remove_dir_all(root);
     }
 

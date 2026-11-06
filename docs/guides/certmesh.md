@@ -1,16 +1,28 @@
-# Certmesh - Certificate Mesh
+# Private-space identity and trust with Certmesh
 
-TLS is the foundation of trust on the internet. But on a local network, getting TLS right is surprisingly hard. Let's Encrypt doesn't issue certificates for `.local` names or private IPs. Self-signed certs trigger browser warnings and break API clients. Manually copying PEM files between machines is fragile and doesn't scale past two hosts. Corporate PKI requires infrastructure most teams don't have.
+Certmesh gives machines and participating applications a locally governed trust
+group. Operate your own CA, enroll members, renew their certificate-backed
+identities and distribute signed membership/revocation information. Koi-aware
+applications can verify peers and signed messages, then apply their own access rules.
 
-Koi's certmesh solves this by running a private Certificate Authority directly on your LAN. Two machines can establish mutual TLS trust in under a minute, with no external infrastructure, no manual certificate copying, and no self-signed warnings. The CA handles enrollment, issuance, renewal, and revocation automatically.
+Use it for shared identity within a homelab, small team or lab. Authority and
+recovery material stay under your control. It is optional for the initial
+[container application trial](../../CONTAINERS.md). A CA, member identity,
+service-name certificate and a client's root trust are separate responsibilities.
 
-**When to use certmesh**: You have multiple machines on a LAN that need to communicate over TLS. A homelab where services should trust each other. A development team that needs HTTPS without public DNS. A staging environment that mirrors production's TLS requirements. If you need real certificates but don't have (or want) a public CA, certmesh is the answer.
+This is an advanced current-source guide. Use release-matched documentation and
+[release readiness](../launch/README.md) for a supported artifact or client claim.
 
-All CLI commands use the `koi certmesh` prefix. All HTTP endpoints live under `/v1/certmesh/`. Certmesh commands require a running daemon - use `koi install` or `koi --daemon` first.
+Certmesh provides creation, enrollment, renewal, revocation metadata and recovery
+primitives. It does not automatically make a browser trust a container's vanity
+name. See [host-member HTTPS](../tutorials/trusted-https.md) for a manual path and
+[container TLS](recipes/container-trusted-cert.md) for the incomplete exact-name
+public workflow. Ordinary TLS clients can accept an unexpired revoked leaf when
+they do not consume Koi's metadata.
 
-The full member exchange - create, invite, cross-machine join over the DAT-gated HTTP API, member-pull rotate-key renewal over mTLS, revocation, and boot-time clone refusal - is exercised end to end by an automated cross-participant integration suite (two-daemon, docker-compose cross-host, and Windows↔Linux cross-platform), so the behavior described here is validated, not just intended.
-
----
+Use a running daemon, preserve the CA's key custody and recovery material, and
+verify the actual client URL after each setup or renewal. Source tests are useful
+regressions, not proof of an arbitrary installed client journey.
 
 ## Creating a certificate mesh
 
@@ -248,7 +260,9 @@ The daemon listens on two ports with different security postures:
 
 The mTLS port only starts when the CA is initialized and the daemon has self-enrolled. Client certificates must be signed by the certmesh CA. The authenticated Common Name (CN) from the client certificate is used for per-caller authorization — a member can only set hooks for its own hostname, report its own health, and receive its own renewals.
 
-If certmesh is disabled (`--no-certmesh`), the mTLS port is not opened. The ACME port (5643) starts on the same self-enrollment, gated by `--no-acme` / `KOI_NO_ACME`; it lets any standard ACME client (Caddy, Traefik, lego) obtain certs from the CA without Koi-specific config — see the [ACME guide](acme.md).
+If certmesh is disabled (`--no-certmesh`), the mTLS port is not opened. The ACME port (5643) starts on the same self-enrollment, gated by `--no-acme` / `KOI_NO_ACME`; clients need P-256 account support, a DNS provider and an exact account-bound
+service-name grant. The public grant/listener workflow remains incomplete; see
+[ACME limits](acme.md).
 
 ---
 

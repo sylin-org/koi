@@ -1,0 +1,82 @@
+{
+  "observed_on": "2026-09-12",
+  "method": "Unauthenticated public REST requests using PowerShell Invoke-RestMethod. These are counters, not active-user or unique-install measurements.",
+  "local_source": {
+    "commit": "791f87ebe0a8ba93246f60ce0b283c13fb86595b",
+    "version": "1.0.0-dev.0",
+    "initial_worktree": "clean"
+  },
+  "github": {
+    "source": "https://api.github.com/repos/sylin-org/koi",
+    "created_at": "2026-02-07T19:48:07Z",
+    "default_branch": "main",
+    "stars": 1,
+    "forks": 0,
+    "subscribers": 0,
+    "homepage": null,
+    "listed_human_contributors": 1,
+    "contributors_source": "https://api.github.com/repos/sylin-org/koi/contributors?per_page=100",
+    "issue_and_pr_items": 45,
+    "actual_issues": 0,
+    "issue_and_pr_authors": ["lbotinelly", "dependabot[bot]", "ecc-tools[bot]"],
+    "issues_source": "https://api.github.com/repos/sylin-org/koi/issues?state=all&per_page=100",
+    "release_count": 20,
+    "aggregate_release_asset_downloads": 199,
+    "latest_stable_tag": "v0.9.0",
+    "latest_prerelease_tag": "v1.0.0-rc.2",
+    "latest_prerelease_published_at": "2026-08-24T18:58:36Z",
+    "latest_prerelease_asset_downloads": 7,
+    "releases_source": "https://api.github.com/repos/sylin-org/koi/releases?per_page=100"
+  },
+  "crates_io": {
+    "source": "https://crates.io/api/v1/crates/koi-net",
+    "crate": "koi-net",
+    "downloads": 247,
+    "recent_downloads": 186,
+    "max_version": "1.0.0-rc.2",
+    "max_stable_version": "0.9.0",
+    "rc2_downloads": 17
+  },
+  "npm": {
+    "registry_url": "https://registry.npmjs.org/@sylin-org%2fkoi",
+    "registry_response": "404 Not found",
+    "downloads_url": "https://api.npmjs.org/downloads/point/last-month/@sylin-org/koi",
+    "downloads_response": "package @sylin-org/koi not found",
+    "interpretation": "The advertised scoped package was not publicly available at observation time; local packaging scaffolds are not registry publication."
+  },
+  "hosted_validation": {
+    "local_head_ci": {
+      "commit": "791f87ebe0a8ba93246f60ce0b283c13fb86595b",
+      "conclusion": "success",
+      "url": "https://github.com/sylin-org/koi/actions/runs/34014784712"
+    },
+    "latest_observed_dev_ci": {
+      "commit": "5a8bb1e8a263fad28b7204e95a434587a4722d5b",
+      "created_at": "2026-09-07T05:57:52Z",
+      "conclusion": "success",
+      "url": "https://github.com/sylin-org/koi/actions/runs/34088797694"
+    },
+    "latest_observed_main_ci": {
+      "commit": "b09f0f3224c9f27aca28d2b9e6a15b391f1b271e",
+      "created_at": "2026-09-04T13:28:17Z",
+      "conclusion": "failure",
+      "url": "https://github.com/sylin-org/koi/actions/runs/33878240432"
+    },
+    "latest_observed_scheduled_qa": {
+      "branch": "main",
+      "commit": "b09f0f3224c9f27aca28d2b9e6a15b391f1b271e",
+      "created_at": "2026-09-07T03:01:43Z",
+      "conclusion": "failure",
+      "failed_jobs": ["service-windows", "integration-windows", "integration-macos", "integration-linux"],
+      "successful_jobs": ["concurrency-linux", "concurrency-windows"],
+      "url": "https://github.com/sylin-org/koi/actions/runs/34078224022",
+      "limitation": "Job and failed-step outcomes were inspected; logs were not diagnosed. These failures do not establish their cause or apply automatically to local development HEAD."
+    }
+  },
+  "limitations": [
+    "Downloads can include maintainer activity, CI, bots, checksums, repeat retrievals and registry mirrors.",
+    "No unique active installations, retention, private deployments, GHCR usage or user interviews were measured.",
+    "A single listed human contributor is a public maintenance signal, not an exhaustive account of all contributions.",
+    "Public API counters take precedence over stale search-engine snapshots in this assessment."
+  ]
+}

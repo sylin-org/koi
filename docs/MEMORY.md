@@ -1,23 +1,19 @@
-# Project Memory — pointer index
+# Current project map
 
-Durable, model-agnostic project memory lives in tracked files; this page only
-points at it. Working/sensitive memory (credential locations, operator
-out-of-band answers) lives in gitignored `local/NOTES.md` — see
-`local/README.md` for the split. Never duplicate state between them.
+| Need | Authority |
+| --- | --- |
+| Product target and scope | [ADR-046](adr/046-container-lan-adoption.md) |
+| Work definitions | [Epic 004](../fleet/epics/004-container-lan-adoption.md) |
+| Claims and progress | [Launch ledger](../fleet/launch/LEDGER.md) |
+| Artifacts, channels and scenario acceptance | [Readiness](launch/README.md) |
+| Native execution | [Fleet entry](../fleet/task.md), [coordination](../fleet/coordination.md) |
+| Architecture and security | [Architecture](reference/architecture.md), [security](reference/security-model.md) |
+| Technical proof and independent usage | [Proof](launch/proof.md), [cohort](launch/cohort.md) |
+| Validation guards | [SURFACES](SURFACES.md) |
+| Contributor rules | [Context](../.agentic/CONTEXT.md), [operating rules](lessons-learned.md) |
+| Decision and research evidence | [ADRs](adr/), [research index](assessment/README.md) |
+| Private working machine notes | gitignored local/ |
 
-| Kind | Where |
-|---|---|
-| Universal fleet entry (self-routing execution contract) | [`fleet/task.md`](../fleet/task.md) |
-| Current native fleet campaign and dispatch (single live pointer) | [`fleet/coordination.md`](../fleet/coordination.md) |
-| Linux delight realignment dispatch, executable prompts and progress | [`dispatcher`](../fleet/delight-dispatch.md), [`Epic 003`](../fleet/epics/003-delight-realignment.md), [`prompt pack`](prompts/delight/README.md), [`ledger`](prompts/delight/LEDGER.md) |
-| Historical v1 campaign ledger and release-gated residue | [`SESSION-HANDOFF.md`](../SESSION-HANDOFF.md) |
-| Product experience mandates and proposed UX direction (2026-09-04; requirements distinguished from recommendations) | [`docs/assessment/2026-09-delight-mandates-and-ux-direction.md`](assessment/2026-09-delight-mandates-and-ux-direction.md) |
-| Source-derived Sylin visual dictionary for Koi (2026-09-04) | [`docs/assessment/2026-09-sylin-visual-dictionary.md`](assessment/2026-09-sylin-visual-dictionary.md) |
-| Lessons/rules that govern how work is done (RL-1..RL-16) | [`docs/lessons-learned.md`](lessons-learned.md) |
-| Decision records (why things are built this way) | [`docs/adr/`](adr/) |
-| Standing lab facts (hosts, credentials-by-env-name, catalog) | [`tools/koi-lab/lab.json`](../tools/koi-lab/lab.json), `local/NOTES.md` |
-| Tool-agnostic agent bootstrap | [`.agentic/CONTEXT.md`](../.agentic/CONTEXT.md) |
-
-Update rule: record discoveries in the same breath as the work that produced
-them, not at session end. Fleet evidence belongs in the hat journals selected by
-`fleet/task.md`; update the epic table only when a whole gate changes state.
+Current docs describe current behavior and the chosen launch. Do not duplicate
+progress in personal handoffs or prompt packs. Preserve secrets and personal
+network details outside tracked documentation.
