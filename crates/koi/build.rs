@@ -5,6 +5,8 @@
 //! binary as compile-time environment variables; main() hands it to
 //! koi_common::build at startup, so libraries never recompile when it changes.
 
+// The VERSIONINFO packer only runs on Windows hosts.
+#[cfg_attr(not(windows), allow(dead_code))]
 #[path = "src/build_version.rs"]
 mod build_version;
 
