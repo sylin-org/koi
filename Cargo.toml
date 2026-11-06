@@ -169,3 +169,10 @@ rmcp = { version = "3.9", features = [
     "transport-streamable-http-server",
     "macros",
 ] }
+
+# Debug builds derive keys at the production Argon2id cost (64 MiB, t=3, p=4).
+# Unoptimized, each derivation takes seconds and `certmesh create` runs several,
+# which overran the CLI's 10 s read bound in the cross-host CI test. Optimizing
+# the KDF alone makes it about 18x faster; release builds are unaffected.
+[profile.dev.package.argon2]
+opt-level = 3
