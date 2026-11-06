@@ -264,7 +264,7 @@ impl CertmeshCore {
         let keypair = koi_crypto::key_agreement::EphemeralKeyPair::generate();
         let public = keypair.public_key_bytes();
         let mut random = [0u8; 16];
-        use rand::RngCore;
+        use rand::Rng;
         rand::rng().fill_bytes(&mut random);
         let id = koi_common::encoding::hex_encode(&random);
         *self.state.pending_promotion.lock() = Some(PendingPromotion {

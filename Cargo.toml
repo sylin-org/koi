@@ -74,15 +74,15 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 thiserror = "2"
-toml = "0.8"
+toml = "1.2"
 uuid = { version = "1", features = ["v7", "serde"] }
 axum = "0.8"
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.7", features = ["cors"] }
 clap = { version = "4", features = ["derive", "env"] }
 anyhow = "1"
 async-stream = "0.3"
 async-trait = "0.1"
-base64 = "0.22"
+base64 = "0.23"
 chrono = { version = "0.4", features = ["serde"] }
 hostname = "0.4"
 if-addrs = "0.15"
@@ -99,11 +99,11 @@ hyper-util = { version = "0.1", features = ["server", "tokio"] }
 http-body-util = "0.1"
 tokio-rustls = "0.26"
 x509-parser = { version = "0.16", features = ["verify"] }
-notify = "6"
+notify = "8"
 rustls = "0.23"
 rustls-pemfile = "2"
 url = "2"
-console = "0.15"
+console = "0.16"
 is-terminal = "0.4"
 supports-color = "3"
 terminal_size = "0.4"
@@ -128,7 +128,7 @@ p256 = { version = "0.13", features = ["ecdsa", "pem"] }
 aes-gcm = "0.10"
 argon2 = "0.5"
 sha2 = "0.10"
-rand = "0.9"
+rand = "0.10"
 zeroize = { version = "1", features = ["derive"] }
 subtle = "2"
 hmac = "0.12"
@@ -138,7 +138,7 @@ pem = "3"
 rcgen = "0.13"
 time = "0.3"
 proptest = "1"
-crossterm = "0.28"
+crossterm = "0.29"
 indicatif = "0.18"
 instant-acme = { version = "0.8.5", features = ["hyper-rustls", "rcgen"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }

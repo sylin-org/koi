@@ -10,7 +10,7 @@
 use std::path::Path;
 
 use chrono::{DateTime, Duration, Utc};
-use rand::RngCore;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 

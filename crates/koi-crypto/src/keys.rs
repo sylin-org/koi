@@ -12,7 +12,7 @@ use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use argon2::{Argon2, Params};
 use p256::ecdsa::SigningKey;
 use p256::pkcs8::{DecodePrivateKey, EncodePrivateKey};
-use rand::RngCore;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;

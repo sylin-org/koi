@@ -18,7 +18,7 @@ use std::collections::HashSet;
 use std::sync::Mutex;
 
 use base64::Engine;
-use rand::RngCore;
+use rand::Rng;
 
 /// Number of random bytes per nonce before base64url encoding.
 const NONCE_BYTES: usize = 24;

@@ -25,7 +25,7 @@
 //! The salt/nonce in `ca-key.enc` are from the master-key encryption, not
 //! from any passphrase KDF.
 
-use rand::RngCore;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;

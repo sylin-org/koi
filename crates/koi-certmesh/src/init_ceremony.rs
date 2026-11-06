@@ -1067,7 +1067,7 @@ fn profile_prompt() -> Prompt {
 }
 
 fn generate_server_entropy_hex() -> String {
-    use rand::RngCore;
+    use rand::Rng;
     let mut buf = [0u8; 32];
     rand::rng().fill_bytes(&mut buf);
     hex_encode(&buf)

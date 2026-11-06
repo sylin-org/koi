@@ -92,7 +92,7 @@ pub(crate) async fn shutdown_signal(cancel: CancellationToken) {
 /// service so the two boot paths generate it identically.
 pub(crate) fn mint_dat() -> String {
     use base64::Engine;
-    use rand::RngCore;
+    use rand::Rng;
     let mut token_bytes = [0u8; 32];
     rand::rng().fill_bytes(&mut token_bytes);
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(token_bytes)

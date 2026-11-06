@@ -110,7 +110,7 @@ impl CertmeshCore {
     /// any holder of the CA can verify it. The consumer calls this identically in
     /// both postures.
     pub async fn sign(&self, bytes: &[u8]) -> koi_common::envelope::Envelope {
-        use rand::RngCore;
+        use rand::Rng;
         let mut nonce = [0u8; 16];
         rand::rng().fill_bytes(&mut nonce);
         let ts = chrono::Utc::now().timestamp();
@@ -224,7 +224,7 @@ impl CertmeshCore {
                  encrypted (group-key confidentiality is not yet available)"
             );
         });
-        use rand::RngCore;
+        use rand::Rng;
         let mut nonce = [0u8; 16];
         rand::rng().fill_bytes(&mut nonce);
         let ts = chrono::Utc::now().timestamp();

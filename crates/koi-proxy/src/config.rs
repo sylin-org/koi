@@ -24,7 +24,7 @@ pub(crate) fn load_entries(path: &std::path::Path) -> Result<Vec<ProxyEntry>, Pr
         return Ok(Vec::new());
     }
     let raw = std::fs::read_to_string(path).map_err(|e| ProxyError::Io(e.to_string()))?;
-    let value: toml::Value = raw
+    let value: toml::Table = raw
         .parse()
         .map_err(|e| ProxyError::Config(format!("Invalid config.toml: {e}")))?;
     let proxy = value
@@ -51,7 +51,8 @@ fn save_entries_to_with(
 ) -> Result<(), ProxyError> {
     let mut root = if path.exists() {
         let raw = std::fs::read_to_string(path).map_err(|e| ProxyError::Io(e.to_string()))?;
-        raw.parse::<toml::Value>()
+        raw.parse::<toml::Table>()
+            .map(toml::Value::Table)
             .map_err(|e| ProxyError::Config(format!("Invalid config.toml: {e}")))?
     } else {
         toml::Value::Table(toml::map::Map::new())
@@ -145,7 +146,7 @@ entries = [
 ]
 "#;
         std::fs::write(&path, original).unwrap();
-        let before = original.parse::<toml::Value>().unwrap();
+        let before = original.parse::<toml::Table>().unwrap();
         let replacement = ProxyEntry {
             name: "new".to_string(),
             listen_port: 8443,
@@ -157,7 +158,7 @@ entries = [
 
         let after = std::fs::read_to_string(&path)
             .unwrap()
-            .parse::<toml::Value>()
+            .parse::<toml::Table>()
             .unwrap();
         assert_eq!(after.get("version"), before.get("version"));
         assert_eq!(after.get("dns_port"), before.get("dns_port"));

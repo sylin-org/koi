@@ -10,7 +10,7 @@
 //! generate an XKCD-style passphrase (via the EFF large wordlist). The passphrase
 //! protects the key at rest; the entropy seed determines the key itself.
 
-use rand::RngCore;
+use rand::Rng;
 use sha2::{Digest, Sha256};
 
 use crate::wordlist::EFF_WORDLIST;

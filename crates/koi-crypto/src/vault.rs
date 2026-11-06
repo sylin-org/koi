@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
-use rand::RngCore;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 

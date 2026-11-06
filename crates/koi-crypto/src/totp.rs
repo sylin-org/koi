@@ -6,7 +6,7 @@
 
 use std::time::{Duration, SystemTime};
 
-use rand::RngCore;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 use zeroize::Zeroize;

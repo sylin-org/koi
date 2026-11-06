@@ -746,7 +746,7 @@ impl CertmeshDomain {
 }
 
 fn new_credential_cleanup_path(paths: &CertmeshPaths) -> std::path::PathBuf {
-    use rand::RngCore;
+    use rand::Rng;
 
     loop {
         let mut random = [0u8; 16];

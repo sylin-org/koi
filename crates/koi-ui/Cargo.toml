@@ -21,4 +21,4 @@ serde.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
-scraper = "=0.24.0"
+scraper = "=0.29.0"

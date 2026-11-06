@@ -391,7 +391,12 @@ pub async fn serve(
         .allow_headers([header::CONTENT_TYPE, HeaderName::from_static("x-koi-token")])
         .allow_origin(tower_http::cors::AllowOrigin::predicate(|origin, _| {
             is_loopback_origin(origin.to_str().unwrap_or(""))
-        }));
+        }))
+        // tower-http 0.7 narrowed the default `Vary` to `Origin` for this
+        // configuration; keep the full preflight set it sent before.
+        .vary(tower_http::cors::Vary::list(
+            tower_http::cors::preflight_request_headers(),
+        ));
     app = app.layer(cors);
 
     tracing::info!("HTTP adapter listening on {local_addr}");
